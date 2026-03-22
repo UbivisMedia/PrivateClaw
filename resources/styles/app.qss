@@ -1,0 +1,41 @@
+QMainWindow {
+    background: #f5f2ea;
+}
+
+QListWidget {
+    background: #fdfaf4;
+    border: 1px solid #d9cfbf;
+    padding: 6px;
+}
+
+QListWidget::item {
+    padding: 8px 10px;
+    margin: 2px 0;
+    border-radius: 6px;
+}
+
+QListWidget::item:selected {
+    background: #dcc5a0;
+    color: #1f1b16;
+}
+
+QFrame[panelCard="true"] {
+    background: #fffdf8;
+    border: 1px solid #d9cfbf;
+    border-radius: 10px;
+}
+
+QLabel[sectionTitle="true"] {
+    font-size: 18px;
+    font-weight: 700;
+    color: #2b251d;
+}
+
+QLabel[sectionBody="true"] {
+    color: #5f5548;
+}
+
+QStatusBar {
+    background: #efe6d6;
+}
+
