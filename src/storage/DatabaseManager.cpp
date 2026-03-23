@@ -10,6 +10,50 @@
 
 namespace privateclaw::storage {
 
+namespace {
+
+bool tableHasColumn(QSqlDatabase database, const QString& tableName, const QString& columnName)
+{
+    QSqlQuery query(database);
+    query.prepare(QString("PRAGMA table_info(%1)").arg(tableName));
+    if (!query.exec()) {
+        return false;
+    }
+
+    while (query.next()) {
+        if (query.value(1).toString().compare(columnName, Qt::CaseInsensitive) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool ensureColumnExists(
+    QSqlDatabase database,
+    const QString& tableName,
+    const QString& columnName,
+    const QString& alterStatement,
+    QString* errorMessage
+)
+{
+    if (tableHasColumn(database, tableName, columnName)) {
+        return true;
+    }
+
+    QSqlQuery query(database);
+    if (query.exec(alterStatement)) {
+        return true;
+    }
+
+    if (errorMessage != nullptr) {
+        *errorMessage = query.lastError().text();
+    }
+    return false;
+}
+
+} // namespace
+
 DatabaseManager::DatabaseManager(QString connectionName)
     : m_connectionName(std::move(connectionName))
 {
@@ -76,6 +120,7 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
         "CREATE TABLE IF NOT EXISTS projects ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "name TEXT NOT NULL,"
+        "provider_name TEXT NOT NULL DEFAULT 'Ollama',"
         "description TEXT NOT NULL DEFAULT '',"
         "default_model TEXT NOT NULL DEFAULT '',"
         "system_prompt TEXT NOT NULL DEFAULT '',"
@@ -130,6 +175,16 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
             }
             return false;
         }
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "projects",
+            "provider_name",
+            "ALTER TABLE projects ADD COLUMN provider_name TEXT NOT NULL DEFAULT 'Ollama'",
+            errorMessage
+        )) {
+        return false;
     }
 
     return true;

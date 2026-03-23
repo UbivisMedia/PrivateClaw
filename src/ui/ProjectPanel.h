@@ -13,6 +13,7 @@ class QListWidget;
 class QTextEdit;
 
 namespace privateclaw::providers {
+class ILlmProvider;
 class ProviderManager;
 }
 
@@ -37,11 +38,15 @@ public:
 private:
     void buildUi();
     void refreshProjects(qint64 projectIdToSelect = -1);
+    void populateProviderChoices(const QString& providerToSelect = QString());
     void refreshModelList();
     void loadProjectFromRow(int row);
     void saveProject();
     void deleteProject();
-    void testOllamaConnection();
+    void testSelectedProviderConnection();
+    void updateSelectedProviderUi(bool resetStatusMessage = true);
+    providers::ILlmProvider* currentProvider() const;
+    QString currentProviderName() const;
     void clearForm();
     int indexOfProject(qint64 projectId) const;
     QString formatProjectLabel(const domain::Project& project) const;
@@ -54,10 +59,11 @@ private:
 
     QListWidget* m_projectList = nullptr;
     QLabel* m_projectCountLabel = nullptr;
-    QLabel* m_ollamaEndpointLabel = nullptr;
-    QLabel* m_ollamaStatusLabel = nullptr;
+    QLabel* m_providerEndpointLabel = nullptr;
+    QLabel* m_providerStatusLabel = nullptr;
     QLabel* m_formTitleLabel = nullptr;
     QLineEdit* m_nameEdit = nullptr;
+    QComboBox* m_providerCombo = nullptr;
     QComboBox* m_modelCombo = nullptr;
     QTextEdit* m_descriptionEdit = nullptr;
     QTextEdit* m_systemPromptEdit = nullptr;

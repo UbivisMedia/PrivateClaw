@@ -56,24 +56,24 @@ void ProjectPanel::buildUi()
     providerCard->setProperty("panelCard", true);
 
     auto* providerLayout = new QVBoxLayout(providerCard);
-    auto* providerTitle = new QLabel("Ollama-Verbindung", providerCard);
+    auto* providerTitle = new QLabel("Provider-Verbindung", providerCard);
     providerTitle->setProperty("sectionTitle", true);
 
     auto* providerBody = new QLabel(
-        "Hier pruefen wir, ob der lokale Ollama-Endpoint erreichbar ist und Modelle liefert.",
+        "Hier pruefen wir den aktuell gewaehlten Provider und laden dessen verfuegbare Modelle.",
         providerCard
     );
     providerBody->setProperty("sectionBody", true);
     providerBody->setWordWrap(true);
 
-    m_ollamaEndpointLabel = new QLabel(providerCard);
-    m_ollamaEndpointLabel->setProperty("sectionBody", true);
+    m_providerEndpointLabel = new QLabel(providerCard);
+    m_providerEndpointLabel->setProperty("sectionBody", true);
 
-    m_ollamaStatusLabel = new QLabel("Status: Noch nicht getestet.", providerCard);
-    m_ollamaStatusLabel->setProperty("sectionBody", true);
-    m_ollamaStatusLabel->setWordWrap(true);
+    m_providerStatusLabel = new QLabel("Status: Noch nicht getestet.", providerCard);
+    m_providerStatusLabel->setProperty("sectionBody", true);
+    m_providerStatusLabel->setWordWrap(true);
 
-    auto* testButton = new QPushButton("Ollama testen", providerCard);
+    auto* testButton = new QPushButton("Provider testen", providerCard);
     auto* refreshModelsButton = new QPushButton("Modelle laden", providerCard);
 
     auto* providerButtonLayout = new QHBoxLayout();
@@ -83,8 +83,8 @@ void ProjectPanel::buildUi()
 
     providerLayout->addWidget(providerTitle);
     providerLayout->addWidget(providerBody);
-    providerLayout->addWidget(m_ollamaEndpointLabel);
-    providerLayout->addWidget(m_ollamaStatusLabel);
+    providerLayout->addWidget(m_providerEndpointLabel);
+    providerLayout->addWidget(m_providerStatusLabel);
     providerLayout->addLayout(providerButtonLayout);
 
     auto* contentSplitter = new QSplitter(Qt::Horizontal, this);
@@ -123,7 +123,7 @@ void ProjectPanel::buildUi()
     m_formTitleLabel->setProperty("sectionTitle", true);
 
     auto* formBody = new QLabel(
-        "Name, Standardmodell und Systemprompt werden direkt in SQLite gespeichert.",
+        "Name, Provider, Standardmodell und Systemprompt werden direkt in SQLite gespeichert.",
         formCard
     );
     formBody->setProperty("sectionBody", true);
@@ -135,10 +135,12 @@ void ProjectPanel::buildUi()
     m_nameEdit = new QLineEdit(formCard);
     m_nameEdit->setPlaceholderText("z. B. PrivateClaw MVP");
 
+    m_providerCombo = new QComboBox(formCard);
+
     m_modelCombo = new QComboBox(formCard);
     m_modelCombo->setEditable(true);
     m_modelCombo->setInsertPolicy(QComboBox::NoInsert);
-    m_modelCombo->setPlaceholderText("Ollama-Modell auswaehlen oder eintragen");
+    m_modelCombo->setPlaceholderText("Modell des gewaehlten Providers auswaehlen oder eintragen");
 
     m_descriptionEdit = new QTextEdit(formCard);
     m_descriptionEdit->setPlaceholderText("Kurzbeschreibung des Projekts");
@@ -149,6 +151,7 @@ void ProjectPanel::buildUi()
     m_systemPromptEdit->setMinimumHeight(120);
 
     formLayout->addRow("Name", m_nameEdit);
+    formLayout->addRow("Provider", m_providerCombo);
     formLayout->addRow("Standardmodell", m_modelCombo);
     formLayout->addRow("Beschreibung", m_descriptionEdit);
     formLayout->addRow("Systemprompt", m_systemPromptEdit);
@@ -196,27 +199,29 @@ void ProjectPanel::buildUi()
     });
 
     connect(testButton, &QPushButton::clicked, this, [this]() {
-        testOllamaConnection();
+        testSelectedProviderConnection();
     });
 
     connect(refreshModelsButton, &QPushButton::clicked, this, [this]() {
         refreshModelList();
     });
 
+    connect(m_providerCombo, &QComboBox::currentTextChanged, this, [this]() {
+        updateSelectedProviderUi();
+    });
+
     connect(m_projectList, &QListWidget::currentRowChanged, this, [this](const int row) {
         loadProjectFromRow(row);
     });
 
-    if (auto* ollamaProvider = m_providerManager.providerByName("Ollama")) {
-        m_ollamaEndpointLabel->setText(QString("Endpoint: %1").arg(ollamaProvider->baseUrl()));
-    } else {
-        m_ollamaEndpointLabel->setText("Endpoint: Ollama-Provider ist nicht registriert.");
-    }
+    populateProviderChoices();
+    updateSelectedProviderUi();
 }
 
 void ProjectPanel::refreshProjects(const qint64 projectIdToSelect)
 {
     const qint64 targetProjectId = projectIdToSelect > 0 ? projectIdToSelect : m_currentProjectId;
+    populateProviderChoices(currentProviderName());
     m_projects = m_projectService.listProjects();
 
     int rowToSelect = indexOfProject(targetProjectId);
@@ -243,12 +248,49 @@ void ProjectPanel::refreshProjects(const qint64 projectIdToSelect)
     loadProjectFromRow(m_projectList->currentRow());
 }
 
+void ProjectPanel::populateProviderChoices(const QString& providerToSelect)
+{
+    const QString desiredProvider = providerToSelect.trimmed();
+    QString fallbackProvider = desiredProvider;
+    if (fallbackProvider.isEmpty()) {
+        fallbackProvider = currentProviderName().trimmed();
+    }
+    if (fallbackProvider.isEmpty()) {
+        fallbackProvider = "Ollama";
+    }
+
+    {
+        const QSignalBlocker blocker(m_providerCombo);
+        m_providerCombo->clear();
+        for (providers::ILlmProvider* provider : m_providerManager.providers()) {
+            if (provider != nullptr) {
+                m_providerCombo->addItem(provider->name());
+            }
+        }
+    }
+
+    if (m_providerCombo->count() == 0) {
+        m_providerCombo->setEnabled(false);
+        return;
+    }
+
+    m_providerCombo->setEnabled(true);
+    const int targetIndex = m_providerCombo->findText(fallbackProvider);
+    if (targetIndex >= 0) {
+        m_providerCombo->setCurrentIndex(targetIndex);
+    } else {
+        m_providerCombo->setCurrentIndex(0);
+    }
+}
+
 void ProjectPanel::refreshModelList()
 {
-    auto* provider = m_providerManager.providerByName("Ollama");
+    auto* provider = currentProvider();
     if (provider == nullptr) {
-        m_ollamaStatusLabel->setStyleSheet("color: #8b2f2f;");
-        m_ollamaStatusLabel->setText("Status: Ollama-Provider ist nicht registriert.");
+        m_providerStatusLabel->setStyleSheet("color: #8b2f2f;");
+        m_providerStatusLabel->setText(
+            QString("Status: Provider '%1' ist nicht registriert.").arg(currentProviderName())
+        );
         return;
     }
 
@@ -269,16 +311,18 @@ void ProjectPanel::refreshModelList()
     }
 
     if (models.isEmpty()) {
-        m_ollamaStatusLabel->setStyleSheet("color: #8b5e2f;");
-        m_ollamaStatusLabel->setText(
-            "Status: Keine Modelle geladen. Bitte Ollama pruefen oder Modellname manuell eintragen."
+        m_providerStatusLabel->setStyleSheet("color: #8b5e2f;");
+        m_providerStatusLabel->setText(
+            QString(
+                "Status: Keine Modelle aus %1 geladen. Bitte Provider pruefen oder Modellname manuell eintragen."
+            ).arg(provider->name())
         );
         return;
     }
 
-    m_ollamaStatusLabel->setStyleSheet("color: #2f6b3a;");
-    m_ollamaStatusLabel->setText(
-        QString("Status: %1 Modell(e) aus Ollama geladen.").arg(models.size())
+    m_providerStatusLabel->setStyleSheet("color: #2f6b3a;");
+    m_providerStatusLabel->setText(
+        QString("Status: %1 Modell(e) aus %2 geladen.").arg(models.size()).arg(provider->name())
     );
 }
 
@@ -295,6 +339,8 @@ void ProjectPanel::loadProjectFromRow(const int row)
     m_currentProjectId = project.id;
     m_formTitleLabel->setText("Projekt bearbeiten");
     m_nameEdit->setText(project.name);
+    populateProviderChoices(project.providerName);
+    updateSelectedProviderUi();
     m_modelCombo->setEditText(project.defaultModel);
     m_descriptionEdit->setPlainText(project.description);
     m_systemPromptEdit->setPlainText(project.systemPrompt);
@@ -305,6 +351,7 @@ void ProjectPanel::saveProject()
     domain::Project project;
     project.id = m_currentProjectId;
     project.name = m_nameEdit->text();
+    project.providerName = currentProviderName();
     project.defaultModel = m_modelCombo->currentText();
     project.description = m_descriptionEdit->toPlainText();
     project.systemPrompt = m_systemPromptEdit->toPlainText();
@@ -376,12 +423,14 @@ void ProjectPanel::deleteProject()
     }
 }
 
-void ProjectPanel::testOllamaConnection()
+void ProjectPanel::testSelectedProviderConnection()
 {
-    auto* provider = m_providerManager.providerByName("Ollama");
+    auto* provider = currentProvider();
     if (provider == nullptr) {
-        m_ollamaStatusLabel->setStyleSheet("color: #8b2f2f;");
-        m_ollamaStatusLabel->setText("Status: Ollama-Provider ist nicht registriert.");
+        m_providerStatusLabel->setStyleSheet("color: #8b2f2f;");
+        m_providerStatusLabel->setText(
+            QString("Status: Provider '%1' ist nicht registriert.").arg(currentProviderName())
+        );
         return;
     }
 
@@ -390,8 +439,10 @@ void ProjectPanel::testOllamaConnection()
     QApplication::restoreOverrideCursor();
 
     if (!health.success) {
-        m_ollamaStatusLabel->setStyleSheet("color: #8b2f2f;");
-        m_ollamaStatusLabel->setText(QString("Status: Nicht erreichbar. %1").arg(health.message));
+        m_providerStatusLabel->setStyleSheet("color: #8b2f2f;");
+        m_providerStatusLabel->setText(
+            QString("Status: %1 ist nicht erreichbar. %2").arg(provider->name(), health.message)
+        );
         return;
     }
 
@@ -400,8 +451,65 @@ void ProjectPanel::testOllamaConnection()
         detail += QString(" Modelle: %1").arg(health.models.mid(0, 5).join(", "));
     }
 
-    m_ollamaStatusLabel->setStyleSheet("color: #2f6b3a;");
-    m_ollamaStatusLabel->setText(detail);
+    m_providerStatusLabel->setStyleSheet("color: #2f6b3a;");
+    m_providerStatusLabel->setText(detail);
+}
+
+void ProjectPanel::updateSelectedProviderUi(const bool resetStatusMessage)
+{
+    auto* provider = currentProvider();
+    const QString providerName = currentProviderName().trimmed();
+
+    if (provider == nullptr) {
+        m_providerEndpointLabel->setText(
+            QString("Endpoint: Provider '%1' ist nicht registriert.").arg(providerName.isEmpty() ? "Unbekannt" : providerName)
+        );
+        if (resetStatusMessage) {
+            m_providerStatusLabel->setStyleSheet("color: #8b2f2f;");
+            m_providerStatusLabel->setText("Status: Provider ist nicht verfuegbar.");
+        }
+        return;
+    }
+
+    const QString endpoint = provider->baseUrl().trimmed().isEmpty() ? "nicht konfiguriert" : provider->baseUrl().trimmed();
+    m_providerEndpointLabel->setText(QString("Endpoint (%1): %2").arg(provider->name(), endpoint));
+    m_modelCombo->setPlaceholderText(QString("%1-Modell auswaehlen oder eintragen").arg(provider->name()));
+
+    const QString currentModel = m_modelCombo->currentText();
+    {
+        const QSignalBlocker blocker(m_modelCombo);
+        m_modelCombo->clear();
+        if (!currentModel.trimmed().isEmpty()) {
+            m_modelCombo->setEditText(currentModel);
+        }
+    }
+
+    if (!resetStatusMessage) {
+        return;
+    }
+
+    if (!provider->isConfigured()) {
+        m_providerStatusLabel->setStyleSheet("color: #8b5e2f;");
+        m_providerStatusLabel->setText(
+            QString("Status: %1 ist ausgewaehlt, aber noch nicht konfiguriert.").arg(provider->name())
+        );
+        return;
+    }
+
+    m_providerStatusLabel->setStyleSheet(QString());
+    m_providerStatusLabel->setText(
+        QString("Status: %1 ist ausgewaehlt. Verbindung kann jetzt getestet werden.").arg(provider->name())
+    );
+}
+
+providers::ILlmProvider* ProjectPanel::currentProvider() const
+{
+    return m_providerManager.providerByName(currentProviderName());
+}
+
+QString ProjectPanel::currentProviderName() const
+{
+    return m_providerCombo != nullptr ? m_providerCombo->currentText().trimmed() : QString();
 }
 
 void ProjectPanel::clearForm()
@@ -413,10 +521,12 @@ void ProjectPanel::clearForm()
     }
     m_formTitleLabel->setText("Neues Projekt anlegen");
     m_nameEdit->clear();
+    populateProviderChoices("Ollama");
     m_modelCombo->setCurrentIndex(-1);
     m_modelCombo->setEditText(QString());
     m_descriptionEdit->clear();
     m_systemPromptEdit->clear();
+    updateSelectedProviderUi();
 }
 
 int ProjectPanel::indexOfProject(const qint64 projectId) const
@@ -432,11 +542,15 @@ int ProjectPanel::indexOfProject(const qint64 projectId) const
 
 QString ProjectPanel::formatProjectLabel(const domain::Project& project) const
 {
+    const QString providerName = project.providerName.trimmed().isEmpty()
+        ? "Ollama"
+        : project.providerName.trimmed();
+
     if (project.defaultModel.trimmed().isEmpty()) {
-        return project.name;
+        return QString("%1 [%2]").arg(project.name, providerName);
     }
 
-    return QString("%1 [%2]").arg(project.name, project.defaultModel);
+    return QString("%1 [%2 | %3]").arg(project.name, providerName, project.defaultModel);
 }
 
 } // namespace privateclaw::ui

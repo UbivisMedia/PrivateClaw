@@ -1,6 +1,7 @@
 #include "ui/WorkflowPanel.h"
 
 #include "providers/ILlmProvider.h"
+#include "providers/LmStudioProvider.h"
 #include "providers/OllamaProvider.h"
 #include "providers/ProviderManager.h"
 #include "services/MemoryService.h"
@@ -86,6 +87,31 @@ QString formatMemorySnippet(const domain::MemoryEntry& entry)
     parts.append(QString("Inhalt: %1").arg(content));
 
     return QString("- %1").arg(parts.join(" | "));
+}
+
+core::ExecutionResult executeWorkflowWithProvider(
+    const QString& providerName,
+    const QString& providerBaseUrl,
+    const domain::Workflow& workflow,
+    const core::RunContext& runContext
+)
+{
+    core::WorkflowEngine workflowEngine;
+
+    if (providerName.compare("Ollama", Qt::CaseInsensitive) == 0) {
+        providers::OllamaProvider provider(providerBaseUrl);
+        return workflowEngine.executeWorkflow(workflow, runContext, provider);
+    }
+
+    if (providerName.compare("LM Studio", Qt::CaseInsensitive) == 0) {
+        providers::LmStudioProvider provider(providerBaseUrl);
+        return workflowEngine.executeWorkflow(workflow, runContext, provider);
+    }
+
+    core::ExecutionResult result;
+    result.errorMessage = QString("Provider '%1' wird aktuell nicht unterstuetzt.").arg(providerName);
+    result.logs.append(QString("[engine] Abbruch: %1").arg(result.errorMessage));
+    return result;
 }
 
 } // namespace
@@ -239,7 +265,7 @@ void WorkflowPanel::buildUi()
 
     auto* editorActions = new QHBoxLayout();
     auto* saveButton = new QPushButton("Workflow speichern", editorCard);
-    auto* runButton = new QPushButton("Mit Ollama ausfuehren", editorCard);
+    auto* runButton = new QPushButton("Workflow ausfuehren", editorCard);
     auto* resetButton = new QPushButton("Editor zuruecksetzen", editorCard);
     editorActions->addWidget(saveButton);
     editorActions->addWidget(runButton);
@@ -429,19 +455,22 @@ void WorkflowPanel::executeWorkflow()
         return;
     }
 
-    auto* provider = m_providerManager.providerByName("Ollama");
+    const QString providerName = project->providerName.trimmed().isEmpty()
+        ? "Ollama"
+        : project->providerName.trimmed();
+    auto* provider = m_providerManager.providerByName(providerName);
     if (provider == nullptr) {
         m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
-        m_feedbackLabel->setText("Ollama-Provider ist nicht registriert.");
-        publishExecutionLog("[ui] Ollama-Provider ist nicht registriert.");
+        m_feedbackLabel->setText(QString("Provider '%1' ist nicht registriert.").arg(providerName));
+        publishExecutionLog(QString("[ui] Provider '%1' ist nicht registriert.").arg(providerName));
         return;
     }
 
     const QString providerBaseUrl = provider->baseUrl();
     if (providerBaseUrl.trimmed().isEmpty()) {
         m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
-        m_feedbackLabel->setText("Ollama-URL ist nicht konfiguriert.");
-        publishExecutionLog("[ui] Ollama-URL ist nicht konfiguriert.");
+        m_feedbackLabel->setText(QString("Provider-URL fuer '%1' ist nicht konfiguriert.").arg(provider->name()));
+        publishExecutionLog(QString("[ui] Provider-URL fuer '%1' ist nicht konfiguriert.").arg(provider->name()));
         return;
     }
 
@@ -497,9 +526,10 @@ void WorkflowPanel::executeWorkflow()
         QString("Workflow-Lauf #%1 wurde im Hintergrund gestartet. Die UI bleibt nutzbar.").arg(runId)
     );
     publishExecutionLog(
-        QString("[run:%1] Workflow '%2' wurde im Hintergrund gestartet.")
+        QString("[run:%1] Workflow '%2' wurde im Hintergrund ueber Provider '%3' gestartet.")
             .arg(runId)
             .arg(workflow.name)
+            .arg(provider->name())
     );
     publishExecutionLog(
         QString("[run:%1] %2 Memory-Eintraege als Projektkontext geladen.")
@@ -582,10 +612,8 @@ void WorkflowPanel::executeWorkflow()
         );
     });
 
-    watcher->setFuture(QtConcurrent::run([workflow, runContext, providerBaseUrl]() {
-        providers::OllamaProvider provider(providerBaseUrl);
-        core::WorkflowEngine workflowEngine;
-        return workflowEngine.executeWorkflow(workflow, runContext, provider);
+    watcher->setFuture(QtConcurrent::run([workflow, runContext, providerBaseUrl, providerName]() {
+        return executeWorkflowWithProvider(providerName, providerBaseUrl, workflow, runContext);
     }));
 }
 

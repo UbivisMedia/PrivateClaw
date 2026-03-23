@@ -10,6 +10,7 @@ struct Project
 {
     qint64 id = -1;
     QString name;
+    QString providerName = "Ollama";
     QString description;
     QString defaultModel;
     QString systemPrompt;
@@ -19,4 +20,3 @@ struct Project
 };
 
 } // namespace privateclaw::domain
-

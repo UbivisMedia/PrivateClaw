@@ -35,10 +35,11 @@ bool ProjectService::createProject(domain::Project* project, QString* errorMessa
 
     QSqlQuery query(m_databaseManager.database());
     query.prepare(
-        "INSERT INTO projects (name, description, default_model, system_prompt, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)"
+        "INSERT INTO projects (name, provider_name, description, default_model, system_prompt, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)"
     );
     query.addBindValue(project->name.trimmed());
+    query.addBindValue(project->providerName.trimmed().isEmpty() ? "Ollama" : project->providerName.trimmed());
     query.addBindValue(project->description.trimmed());
     query.addBindValue(project->defaultModel.trimmed());
     query.addBindValue(project->systemPrompt.trimmed());
@@ -54,6 +55,7 @@ bool ProjectService::createProject(domain::Project* project, QString* errorMessa
 
     project->id = query.lastInsertId().toLongLong();
     project->name = project->name.trimmed();
+    project->providerName = project->providerName.trimmed().isEmpty() ? "Ollama" : project->providerName.trimmed();
     project->description = project->description.trimmed();
     project->defaultModel = project->defaultModel.trimmed();
     project->systemPrompt = project->systemPrompt.trimmed();
@@ -83,10 +85,11 @@ bool ProjectService::updateProject(const domain::Project& project, QString* erro
     QSqlQuery query(m_databaseManager.database());
     query.prepare(
         "UPDATE projects "
-        "SET name = ?, description = ?, default_model = ?, system_prompt = ?, updated_at = ? "
+        "SET name = ?, provider_name = ?, description = ?, default_model = ?, system_prompt = ?, updated_at = ? "
         "WHERE id = ?"
     );
     query.addBindValue(project.name.trimmed());
+    query.addBindValue(project.providerName.trimmed().isEmpty() ? "Ollama" : project.providerName.trimmed());
     query.addBindValue(project.description.trimmed());
     query.addBindValue(project.defaultModel.trimmed());
     query.addBindValue(project.systemPrompt.trimmed());
@@ -171,7 +174,7 @@ QList<domain::Project> ProjectService::listProjects() const
 
     QSqlQuery query(m_databaseManager.database());
     query.prepare(
-        "SELECT id, name, description, default_model, system_prompt, created_at, updated_at "
+        "SELECT id, name, provider_name, description, default_model, system_prompt, created_at, updated_at "
         "FROM projects "
         "ORDER BY updated_at DESC, id DESC"
     );
@@ -184,11 +187,14 @@ QList<domain::Project> ProjectService::listProjects() const
         domain::Project project;
         project.id = query.value(0).toLongLong();
         project.name = query.value(1).toString();
-        project.description = query.value(2).toString();
-        project.defaultModel = query.value(3).toString();
-        project.systemPrompt = query.value(4).toString();
-        project.createdAt = QDateTime::fromString(query.value(5).toString(), Qt::ISODate);
-        project.updatedAt = QDateTime::fromString(query.value(6).toString(), Qt::ISODate);
+        project.providerName = query.value(2).toString().trimmed().isEmpty()
+            ? "Ollama"
+            : query.value(2).toString();
+        project.description = query.value(3).toString();
+        project.defaultModel = query.value(4).toString();
+        project.systemPrompt = query.value(5).toString();
+        project.createdAt = QDateTime::fromString(query.value(6).toString(), Qt::ISODate);
+        project.updatedAt = QDateTime::fromString(query.value(7).toString(), Qt::ISODate);
         projects.append(project);
     }
 
