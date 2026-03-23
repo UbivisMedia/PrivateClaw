@@ -5,6 +5,7 @@
 #include "providers/ProviderManager.h"
 #include "services/MemoryService.h"
 #include "services/ProjectService.h"
+#include "services/ScheduleService.h"
 #include "services/SettingsService.h"
 #include "services/WorkflowService.h"
 #include "storage/DatabaseManager.h"
@@ -34,6 +35,7 @@ private:
     services::ProjectService m_projectService;
     services::WorkflowService m_workflowService;
     services::MemoryService m_memoryService;
+    services::ScheduleService m_scheduleService;
     std::unique_ptr<ui::MainWindow> m_mainWindow;
 };
 

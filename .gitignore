@@ -14,3 +14,4 @@ aqtinstall.log
 *.lib
 *.exp
 *.db
+artifacts/

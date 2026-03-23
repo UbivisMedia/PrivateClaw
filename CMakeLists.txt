@@ -66,6 +66,8 @@ set(PRIVATECLAW_SOURCES
     src/services/WorkflowService.h
     src/services/MemoryService.cpp
     src/services/MemoryService.h
+    src/services/ScheduleService.cpp
+    src/services/ScheduleService.h
     src/tools/ToolExecutor.cpp
     src/tools/ToolExecutor.h
     src/utils/Logger.cpp

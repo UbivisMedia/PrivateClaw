@@ -163,6 +163,7 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
         "trigger_type TEXT NOT NULL,"
         "trigger_expression TEXT NOT NULL,"
         "next_run_at TEXT,"
+        "last_run_at TEXT,"
         "enabled INTEGER NOT NULL DEFAULT 1"
         ")"
     };
@@ -182,6 +183,16 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
             "projects",
             "provider_name",
             "ALTER TABLE projects ADD COLUMN provider_name TEXT NOT NULL DEFAULT 'Ollama'",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "schedules",
+            "last_run_at",
+            "ALTER TABLE schedules ADD COLUMN last_run_at TEXT",
             errorMessage
         )) {
         return false;

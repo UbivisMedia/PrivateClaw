@@ -13,8 +13,8 @@ struct Schedule
     QString triggerType;
     QString triggerExpression;
     QDateTime nextRunAt;
+    QDateTime lastRunAt;
     bool enabled = true;
 };
 
 } // namespace privateclaw::domain
-
