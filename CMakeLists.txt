@@ -15,8 +15,9 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 option(PRIVATECLAW_BUILD_TESTS "Build test targets" OFF)
+option(PRIVATECLAW_DEPLOY_QT_RUNTIME "Copy Qt runtime files into the build output directory on Windows" ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network Sql)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Sql Concurrent)
 
 qt_standard_project_setup()
 
@@ -59,6 +60,8 @@ set(PRIVATECLAW_SOURCES
     src/services/SettingsService.h
     src/services/ProjectService.cpp
     src/services/ProjectService.h
+    src/services/WorkflowService.cpp
+    src/services/WorkflowService.h
     src/services/MemoryService.cpp
     src/services/MemoryService.h
     src/tools/ToolExecutor.cpp
@@ -80,10 +83,35 @@ target_link_libraries(PrivateClaw
         Qt6::Widgets
         Qt6::Network
         Qt6::Sql
+        Qt6::Concurrent
 )
 
 if(WIN32)
     set_target_properties(PrivateClaw PROPERTIES WIN32_EXECUTABLE TRUE)
+
+    if(PRIVATECLAW_DEPLOY_QT_RUNTIME)
+        get_target_property(PRIVATECLAW_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)
+        get_filename_component(PRIVATECLAW_QT_BIN_DIR "${PRIVATECLAW_QMAKE_EXECUTABLE}" DIRECTORY)
+        find_program(
+            PRIVATECLAW_WINDEPLOYQT_EXECUTABLE
+            NAMES windeployqt
+            HINTS "${PRIVATECLAW_QT_BIN_DIR}"
+            REQUIRED
+        )
+
+        add_custom_command(
+            TARGET PrivateClaw
+            POST_BUILD
+            COMMAND
+                "${PRIVATECLAW_WINDEPLOYQT_EXECUTABLE}"
+                --dir "$<TARGET_FILE_DIR:PrivateClaw>"
+                --no-translations
+                "$<IF:$<CONFIG:Debug>,--debug,--release>"
+                "$<TARGET_FILE:PrivateClaw>"
+            COMMENT "Deploying Qt runtime dependencies to the build output directory"
+            VERBATIM
+        )
+    endif()
 endif()
 
 if(PRIVATECLAW_BUILD_TESTS)

@@ -1,7 +1,10 @@
 #include "ui/MainWindow.h"
 
 #include "providers/ProviderManager.h"
+#include "services/MemoryService.h"
+#include "services/ProjectService.h"
 #include "services/SettingsService.h"
+#include "services/WorkflowService.h"
 #include "storage/DatabaseManager.h"
 #include "ui/MemoryPanel.h"
 #include "ui/ProjectPanel.h"
@@ -21,12 +24,18 @@ namespace privateclaw::ui {
 MainWindow::MainWindow(
     storage::DatabaseManager& databaseManager,
     services::SettingsService& settingsService,
+    services::ProjectService& projectService,
+    services::MemoryService& memoryService,
+    services::WorkflowService& workflowService,
     providers::ProviderManager& providerManager,
     QWidget* parent
 )
     : QMainWindow(parent)
     , m_databaseManager(databaseManager)
     , m_settingsService(settingsService)
+    , m_projectService(projectService)
+    , m_memoryService(memoryService)
+    , m_workflowService(workflowService)
     , m_providerManager(providerManager)
 {
     setWindowTitle("PrivateClaw");
@@ -50,17 +59,37 @@ void MainWindow::buildUi()
     m_navigation->setFixedWidth(220);
 
     m_pages = new QStackedWidget(topSplitter);
-    m_projectPanel = new ProjectPanel(m_pages);
-    m_workflowPanel = new WorkflowPanel(m_pages);
-    m_memoryPanel = new MemoryPanel(m_pages);
+    m_projectPanel = new ProjectPanel(m_projectService, m_providerManager, m_pages);
+    m_projectPanel->setOnProjectDataChanged([this]() {
+        refreshProjectDependentViews();
+    });
+    m_memoryPanel = new MemoryPanel(m_projectService, m_memoryService, m_pages);
+    m_memoryPanel->setOnMemoryDataChanged([this]() {
+        updateStatusBar();
+    });
     m_schedulePanel = new SchedulePanel(m_pages);
+
+    m_runLogPanel = new RunLogPanel(rootSplitter);
+
+    m_workflowPanel = new WorkflowPanel(
+        m_projectService,
+        m_settingsService,
+        m_memoryService,
+        m_workflowService,
+        m_providerManager,
+        m_pages
+    );
+    m_workflowPanel->setOnWorkflowDataChanged([this]() {
+        updateStatusBar();
+    });
+    m_workflowPanel->setOnExecutionLogChanged([this](const QString& text) {
+        m_runLogPanel->appendLogLine(text);
+    });
 
     m_pages->addWidget(m_projectPanel);
     m_pages->addWidget(m_workflowPanel);
     m_pages->addWidget(m_memoryPanel);
     m_pages->addWidget(m_schedulePanel);
-
-    m_runLogPanel = new RunLogPanel(rootSplitter);
 
     topSplitter->setStretchFactor(0, 0);
     topSplitter->setStretchFactor(1, 1);
@@ -78,11 +107,28 @@ void MainWindow::buildUi()
     m_navigation->setCurrentRow(0);
 }
 
+void MainWindow::refreshProjectDependentViews()
+{
+    updateStatusBar();
+    if (m_workflowPanel != nullptr) {
+        m_workflowPanel->reloadData();
+    }
+    if (m_memoryPanel != nullptr) {
+        m_memoryPanel->reloadData();
+    }
+}
+
 void MainWindow::updateStatusBar()
 {
     statusBar()->showMessage(
-        QString("Datenbank: %1 | Provider: %2")
-            .arg(m_databaseManager.databasePath(), QString::number(m_providerManager.providers().size()))
+        QString("Datenbank: %1 | Provider: %2 | Projekte: %3 | Workflows: %4 | Memory: %5")
+            .arg(
+                m_databaseManager.databasePath(),
+                QString::number(m_providerManager.providers().size()),
+                QString::number(m_projectService.projectCount()),
+                QString::number(m_workflowService.workflowCount()),
+                QString::number(m_memoryService.memoryCount())
+            )
     );
 }
 

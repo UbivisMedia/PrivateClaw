@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDateTime>
 #include <QJsonObject>
 #include <QString>
 #include <QVector>
@@ -20,8 +21,11 @@ struct Workflow
     qint64 projectId = -1;
     QString name;
     QString description;
+    QString definitionJson;
     QVector<WorkflowStep> steps;
     bool active = true;
+    QDateTime createdAt;
+    QDateTime updatedAt;
 };
 
 } // namespace privateclaw::domain

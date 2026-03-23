@@ -2,17 +2,36 @@
 
 #include "core/RunContext.h"
 #include "domain/Workflow.h"
+#include "providers/ILlmProvider.h"
 
+#include <QHash>
 #include <QString>
+#include <QStringList>
 
 namespace privateclaw::core {
+
+struct ExecutionResult
+{
+    bool success = false;
+    QString errorMessage;
+    QString finalOutput;
+    QStringList logs;
+    QHash<QString, QString> variables;
+};
 
 class WorkflowEngine
 {
 public:
     QString validateWorkflow(const domain::Workflow& workflow) const;
     QString previewExecution(const domain::Workflow& workflow, const RunContext& runContext) const;
+    ExecutionResult executeWorkflow(
+        const domain::Workflow& workflow,
+        RunContext runContext,
+        providers::ILlmProvider& provider
+    ) const;
+
+private:
+    QString renderTemplate(const QString& templateText, const RunContext& runContext) const;
 };
 
 } // namespace privateclaw::core
-

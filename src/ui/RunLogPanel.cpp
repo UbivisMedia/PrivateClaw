@@ -26,18 +26,44 @@ RunLogPanel::RunLogPanel(QWidget* parent)
     body->setProperty("sectionBody", true);
     body->setWordWrap(true);
 
-    auto* logView = new QPlainTextEdit(card);
-    logView->setReadOnly(true);
-    logView->setPlainText(
+    m_logView = new QPlainTextEdit(card);
+    m_logView->setReadOnly(true);
+    m_logView->setPlainText(
         "[bootstrap] UI-Grundgeruest initialisiert.\n"
         "[todo] Workflow-Engine und Live-Logs anbinden."
     );
 
     cardLayout->addWidget(title);
     cardLayout->addWidget(body);
-    cardLayout->addWidget(logView);
+    cardLayout->addWidget(m_logView);
     layout->addWidget(card);
 }
 
-} // namespace privateclaw::ui
+void RunLogPanel::clearLog()
+{
+    if (m_logView != nullptr) {
+        m_logView->clear();
+        m_hasUserLog = false;
+    }
+}
 
+void RunLogPanel::appendLogLine(const QString& line)
+{
+    if (m_logView != nullptr) {
+        if (!m_hasUserLog) {
+            m_logView->clear();
+            m_hasUserLog = true;
+        }
+        m_logView->appendPlainText(line);
+    }
+}
+
+void RunLogPanel::setLogText(const QString& text)
+{
+    if (m_logView != nullptr) {
+        m_logView->setPlainText(text);
+        m_hasUserLog = !text.trimmed().isEmpty();
+    }
+}
+
+} // namespace privateclaw::ui

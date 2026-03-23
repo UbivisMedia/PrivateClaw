@@ -6,6 +6,7 @@
 #include "services/MemoryService.h"
 #include "services/ProjectService.h"
 #include "services/SettingsService.h"
+#include "services/WorkflowService.h"
 #include "storage/DatabaseManager.h"
 
 namespace privateclaw::ui {
@@ -31,9 +32,9 @@ private:
     services::SettingsService m_settingsService;
     providers::ProviderManager m_providerManager;
     services::ProjectService m_projectService;
+    services::WorkflowService m_workflowService;
     services::MemoryService m_memoryService;
     std::unique_ptr<ui::MainWindow> m_mainWindow;
 };
 
 } // namespace privateclaw::app
-

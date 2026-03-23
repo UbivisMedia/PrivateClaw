@@ -15,6 +15,9 @@ class ProjectService
 public:
     explicit ProjectService(storage::DatabaseManager& databaseManager);
 
+    bool createProject(domain::Project* project, QString* errorMessage = nullptr) const;
+    bool updateProject(const domain::Project& project, QString* errorMessage = nullptr) const;
+    bool deleteProject(qint64 projectId, QString* errorMessage = nullptr) const;
     int projectCount() const;
     QList<domain::Project> listProjects() const;
 
@@ -23,4 +26,3 @@ private:
 };
 
 } // namespace privateclaw::services
-

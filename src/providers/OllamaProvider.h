@@ -12,6 +12,7 @@ public:
     QString name() const override;
     QString baseUrl() const override;
     bool isConfigured() const override;
+    ProviderHealth healthCheck() override;
     QStringList listModels() override;
     ChatResponse chat(const ChatRequest& request) override;
 
@@ -20,4 +21,3 @@ private:
 };
 
 } // namespace privateclaw::providers
-

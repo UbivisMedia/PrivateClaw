@@ -10,7 +10,10 @@ class ProviderManager;
 }
 
 namespace privateclaw::services {
+class MemoryService;
+class ProjectService;
 class SettingsService;
+class WorkflowService;
 }
 
 namespace privateclaw::storage {
@@ -31,9 +34,14 @@ public:
     MainWindow(
         storage::DatabaseManager& databaseManager,
         services::SettingsService& settingsService,
+        services::ProjectService& projectService,
+        services::MemoryService& memoryService,
+        services::WorkflowService& workflowService,
         providers::ProviderManager& providerManager,
         QWidget* parent = nullptr
     );
+
+    void refreshProjectDependentViews();
 
 private:
     void buildUi();
@@ -41,6 +49,9 @@ private:
 
     storage::DatabaseManager& m_databaseManager;
     services::SettingsService& m_settingsService;
+    services::ProjectService& m_projectService;
+    services::MemoryService& m_memoryService;
+    services::WorkflowService& m_workflowService;
     providers::ProviderManager& m_providerManager;
 
     QListWidget* m_navigation = nullptr;
@@ -53,4 +64,3 @@ private:
 };
 
 } // namespace privateclaw::ui
-

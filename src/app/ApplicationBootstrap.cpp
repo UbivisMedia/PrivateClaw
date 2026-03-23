@@ -13,6 +13,7 @@ namespace privateclaw::app {
 ApplicationBootstrap::ApplicationBootstrap()
     : m_databaseManager("privateclaw-main")
     , m_projectService(m_databaseManager)
+    , m_workflowService(m_databaseManager)
     , m_memoryService(m_databaseManager)
 {
 }
@@ -40,6 +41,9 @@ bool ApplicationBootstrap::initialize(QString* errorMessage)
     m_mainWindow = std::make_unique<ui::MainWindow>(
         m_databaseManager,
         m_settingsService,
+        m_projectService,
+        m_memoryService,
+        m_workflowService,
         m_providerManager
     );
 
@@ -75,4 +79,3 @@ void ApplicationBootstrap::registerProviders()
 }
 
 } // namespace privateclaw::app
-

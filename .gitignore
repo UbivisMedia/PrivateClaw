@@ -1,7 +1,9 @@
 build/
+build-*/
 out/
 .vs/
 .vscode/
+aqtinstall.log
 *.user
 *.obj
 *.pdb
@@ -12,4 +14,3 @@ out/
 *.lib
 *.exp
 *.db
-
