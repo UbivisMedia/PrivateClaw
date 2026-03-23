@@ -80,7 +80,7 @@ void MainWindow::buildUi()
         m_pages
     );
     m_workflowPanel->setOnWorkflowDataChanged([this]() {
-        updateStatusBar();
+        refreshProjectDependentViews();
     });
     m_workflowPanel->setOnExecutionLogChanged([this](const QString& text) {
         m_runLogPanel->appendLogLine(text);

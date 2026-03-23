@@ -142,7 +142,8 @@ void WorkflowPanel::buildUi()
 
     auto* infoBody = new QLabel(
         "Workflows werden als JSON gespeichert. Erwartet wird ein Objekt mit einem Array 'steps'. "
-        "Jeder Schritt braucht mindestens 'id' und 'type'.",
+        "Jeder Schritt braucht mindestens 'id' und 'type'. "
+        "Aktuell werden 'prompt', 'save_memory' und 'decision' unterstuetzt.",
         infoCard
     );
     infoBody->setProperty("sectionBody", true);
@@ -520,6 +521,50 @@ void WorkflowPanel::executeWorkflow()
         publishExecutionLog(prefixRunLog(runId, result.logs.join('\n')));
         m_executionOutputView->setPlainText(result.finalOutput);
 
+        int savedMemoryCount = 0;
+        bool memoryPersistenceFailed = false;
+        QString memoryPersistenceError;
+        for (domain::MemoryEntry entry : result.memoryEntriesToPersist) {
+            QString saveError;
+            if (!m_memoryService.saveEntry(&entry, &saveError)) {
+                memoryPersistenceFailed = true;
+                if (memoryPersistenceError.isEmpty()) {
+                    memoryPersistenceError = saveError;
+                }
+                publishExecutionLog(
+                    QString("[run:%1] Memory-Speichern fehlgeschlagen: %2")
+                        .arg(runId)
+                        .arg(saveError)
+                );
+                continue;
+            }
+
+            ++savedMemoryCount;
+            QString preview = entry.content.simplified();
+            if (preview.size() > 120) {
+                preview = preview.left(117) + "...";
+            }
+            publishExecutionLog(
+                QString("[run:%1] Memory-Eintrag gespeichert: %2")
+                    .arg(runId)
+                    .arg(preview)
+            );
+        }
+
+        if (savedMemoryCount > 0 && m_onWorkflowDataChanged) {
+            m_onWorkflowDataChanged();
+        }
+
+        if (memoryPersistenceFailed && result.success) {
+            m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
+            m_feedbackLabel->setText(
+                QString("Workflow-Ausfuehrung #%1 abgeschlossen, aber Memory konnte nicht vollstaendig gespeichert werden: %2")
+                    .arg(runId)
+                    .arg(memoryPersistenceError)
+            );
+            return;
+        }
+
         if (!result.success) {
             m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
             m_feedbackLabel->setText(
@@ -530,9 +575,10 @@ void WorkflowPanel::executeWorkflow()
 
         m_feedbackLabel->setStyleSheet("color: #2f6b3a;");
         m_feedbackLabel->setText(
-            QString("Workflow-Ausfuehrung #%1 erfolgreich abgeschlossen. Letzte Ausgabezeichen: %2")
+            QString("Workflow-Ausfuehrung #%1 erfolgreich abgeschlossen. Letzte Ausgabezeichen: %2 | Memory: %3")
                 .arg(runId)
                 .arg(result.finalOutput.size())
+                .arg(savedMemoryCount)
         );
     });
 

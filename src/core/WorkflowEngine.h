@@ -1,9 +1,11 @@
 #pragma once
 
 #include "core/RunContext.h"
+#include "domain/MemoryEntry.h"
 #include "domain/Workflow.h"
 #include "providers/ILlmProvider.h"
 
+#include <QList>
 #include <QHash>
 #include <QString>
 #include <QStringList>
@@ -17,6 +19,7 @@ struct ExecutionResult
     QString finalOutput;
     QStringList logs;
     QHash<QString, QString> variables;
+    QList<domain::MemoryEntry> memoryEntriesToPersist;
 };
 
 class WorkflowEngine
