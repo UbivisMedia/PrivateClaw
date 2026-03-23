@@ -4,6 +4,7 @@
 #include "domain/MemoryEntry.h"
 #include "domain/Workflow.h"
 #include "providers/ILlmProvider.h"
+#include "tools/ToolExecutor.h"
 
 #include <QList>
 #include <QHash>
@@ -25,6 +26,9 @@ struct ExecutionResult
 class WorkflowEngine
 {
 public:
+    explicit WorkflowEngine(const tools::ToolExecutor* toolExecutor = nullptr);
+
+    void setToolExecutor(const tools::ToolExecutor* toolExecutor);
     QString validateWorkflow(const domain::Workflow& workflow) const;
     QString previewExecution(const domain::Workflow& workflow, const RunContext& runContext) const;
     ExecutionResult executeWorkflow(
@@ -35,6 +39,8 @@ public:
 
 private:
     QString renderTemplate(const QString& templateText, const RunContext& runContext) const;
+
+    const tools::ToolExecutor* m_toolExecutor = nullptr;
 };
 
 } // namespace privateclaw::core

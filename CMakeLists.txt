@@ -58,6 +58,8 @@ set(PRIVATECLAW_SOURCES
     src/storage/DatabaseManager.h
     src/services/SettingsService.cpp
     src/services/SettingsService.h
+    src/services/ComfyUiMetadataService.cpp
+    src/services/ComfyUiMetadataService.h
     src/services/ProjectService.cpp
     src/services/ProjectService.h
     src/services/WorkflowService.cpp

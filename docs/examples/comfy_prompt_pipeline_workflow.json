@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "id": "draft_positive_prompt",
+      "type": "prompt",
+      "name": "Positiven Bildprompt erzeugen",
+      "config": {
+        "output": "positive_prompt",
+        "prompt": "Du bist Prompt-Designer fuer lokale Bildmodelle. Erzeuge nur einen kompakten positiven Bildprompt in einer einzigen englischen Zeile. Thema: a cinematic portrait of a cyberpunk detective in a rain-soaked neon alley at night. Stil: dramatic lighting, ultra detailed, moody atmosphere, 35mm photography, sharp focus. Keine Erklaerung, kein Markdown, nur den Prompt."
+      }
+    },
+    {
+      "id": "draft_negative_prompt",
+      "type": "prompt",
+      "name": "Negativen Bildprompt erzeugen",
+      "config": {
+        "output": "negative_prompt",
+        "prompt": "Du erstellst den negativen Prompt fuer dasselbe Bild. Gib nur eine englische Zeile zur Vermeidung typischer Bildfehler aus: low quality, blurry, bad anatomy, bad hands, extra fingers, extra limbs, deformed face, text, watermark, logo, oversaturated, cropped. Keine Erklaerung, kein Markdown, nur den Prompt."
+      }
+    },
+    {
+      "id": "save_prompt_pair",
+      "type": "save_memory",
+      "name": "Prompt-Paar merken",
+      "config": {
+        "content": "Positive prompt:\n{{positive_prompt}}\n\nNegative prompt:\n{{negative_prompt}}",
+        "entry_type": "artifact",
+        "source": "workflow:comfy_prompt_pipeline/prompts",
+        "tags": "image,prompt,comfyui,example",
+        "relevance": 75
+      }
+    },
+    {
+      "id": "render_image",
+      "type": "tool",
+      "name": "Bild ueber ComfyUI rendern",
+      "config": {
+        "tool": "comfyui.workflow",
+        "builder_mode": "txt2img",
+        "checkpoint": "REPLACE_WITH_YOUR_CHECKPOINT",
+        "positive_prompt": "{{positive_prompt}}",
+        "negative_prompt": "{{negative_prompt}}",
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1,
+        "steps": 28,
+        "seed": 0,
+        "randomize_seed": true,
+        "cfg": 6.5,
+        "denoise": 1.0,
+        "sampler_name": "euler",
+        "scheduler": "normal",
+        "clip_skip": -1,
+        "filename_prefix": "PrivateClaw/example_prompt_pipeline",
+        "download_images": true,
+        "save_outputs_to": "artifacts/comfy/example_prompt_pipeline",
+        "include_history_json": false,
+        "poll_interval_ms": 1500,
+        "timeout_ms": 0,
+        "output": "render_summary"
+      }
+    },
+    {
+      "id": "save_render_summary",
+      "type": "save_memory",
+      "name": "Render-Ergebnis merken",
+      "config": {
+        "content": "Render summary:\n{{render_summary}}\n\nPositive prompt:\n{{positive_prompt}}\n\nNegative prompt:\n{{negative_prompt}}",
+        "entry_type": "artifact",
+        "source": "workflow:comfy_prompt_pipeline/render",
+        "tags": "image,render,comfyui,example",
+        "relevance": 80
+      }
+    }
+  ]
+}

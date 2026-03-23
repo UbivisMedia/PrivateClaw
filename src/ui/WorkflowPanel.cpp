@@ -8,13 +8,16 @@
 #include "services/ProjectService.h"
 #include "services/SettingsService.h"
 #include "services/WorkflowService.h"
+#include "tools/ToolExecutor.h"
 
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QFutureWatcher>
 #include <QFrame>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -26,15 +29,19 @@
 #include <QListWidgetItem>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QSplitter>
+#include <QTableWidget>
+#include <QTableWidgetItem>
 #include <QTextEdit>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
+#include <limits>
 #include <utility>
 
 namespace privateclaw::ui {
@@ -115,6 +122,38 @@ void setJsonTextValue(QJsonObject* object, const QString& key, const QString& va
     object->insert(key, normalizedValue);
 }
 
+void setComboItemsWithEditableText(
+    QComboBox* comboBox,
+    const QStringList& items,
+    const QString& currentText,
+    const bool includeEmptyOption = false
+)
+{
+    if (comboBox == nullptr) {
+        return;
+    }
+
+    const QSignalBlocker blocker(comboBox);
+    comboBox->clear();
+    if (includeEmptyOption) {
+        comboBox->addItem("<Standard>");
+    }
+    comboBox->addItems(items);
+
+    const QString desiredText = currentText.trimmed();
+    if (desiredText.isEmpty()) {
+        comboBox->setCurrentIndex(0);
+        return;
+    }
+
+    const int index = comboBox->findText(desiredText);
+    if (index >= 0) {
+        comboBox->setCurrentIndex(index);
+    } else {
+        comboBox->setEditText(desiredText);
+    }
+}
+
 void removeConfigKeys(QJsonObject* config, const QStringList& keys)
 {
     if (config == nullptr) {
@@ -138,6 +177,11 @@ QJsonObject defaultStepObject(const QString& stepType, const QString& stepId)
         config.insert("content", "{{last_response}}");
         config.insert("entry_type", "note");
         config.insert("relevance", 50);
+    } else if (stepType == "tool") {
+        step.insert("name", "Tool ausfuehren");
+        config.insert("tool", "file.read");
+        config.insert("path", "docs/entwicklungsplan_llm_desktop_app.md");
+        config.insert("max_chars", 4000);
     } else if (stepType == "decision") {
         step.insert("name", "Entscheidung treffen");
         config.insert("input", "{{last_response}}");
@@ -157,11 +201,14 @@ QJsonObject defaultStepObject(const QString& stepType, const QString& stepId)
 core::ExecutionResult executeWorkflowWithProvider(
     const QString& providerName,
     const QString& providerBaseUrl,
+    const QString& workspaceRoot,
+    const QString& comfyUiBaseUrl,
     const domain::Workflow& workflow,
     const core::RunContext& runContext
 )
 {
-    core::WorkflowEngine workflowEngine;
+    const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl);
+    core::WorkflowEngine workflowEngine(&toolExecutor);
 
     if (providerName.compare("Ollama", Qt::CaseInsensitive) == 0) {
         providers::OllamaProvider provider(providerBaseUrl);
@@ -234,7 +281,7 @@ void WorkflowPanel::buildUi()
     auto* infoBody = new QLabel(
         "Workflows werden als JSON gespeichert. Erwartet wird ein Objekt mit einem Array 'steps'. "
         "Jeder Schritt braucht mindestens 'id' und 'type'. "
-        "Aktuell werden 'prompt', 'save_memory' und 'decision' unterstuetzt. "
+        "Aktuell werden 'prompt', 'save_memory', 'decision' und 'tool' unterstuetzt. "
         "Optional hilft ein visueller Editor beim Bearbeiten und haelt das JSON live synchron.",
         infoCard
     );
@@ -342,9 +389,11 @@ void WorkflowPanel::buildUi()
     auto* addPromptButton = new QPushButton("Prompt", visualListCard);
     auto* addMemoryButton = new QPushButton("Memory", visualListCard);
     auto* addDecisionButton = new QPushButton("Decision", visualListCard);
+    auto* addToolButton = new QPushButton("Tool", visualListCard);
     visualAddLayout->addWidget(addPromptButton);
     visualAddLayout->addWidget(addMemoryButton);
     visualAddLayout->addWidget(addDecisionButton);
+    visualAddLayout->addWidget(addToolButton);
 
     auto* visualMoveLayout = new QHBoxLayout();
     auto* moveUpButton = new QPushButton("Hoch", visualListCard);
@@ -359,9 +408,15 @@ void WorkflowPanel::buildUi()
     visualListLayout->addLayout(visualAddLayout);
     visualListLayout->addLayout(visualMoveLayout);
 
-    auto* visualDetailCard = new QFrame(visualSplitter);
+    auto* visualDetailScrollArea = new QScrollArea(visualSplitter);
+    visualDetailScrollArea->setWidgetResizable(true);
+    visualDetailScrollArea->setFrameShape(QFrame::NoFrame);
+    visualDetailScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    auto* visualDetailCard = new QFrame(visualDetailScrollArea);
     auto* visualDetailLayout = new QVBoxLayout(visualDetailCard);
     visualDetailLayout->setContentsMargins(0, 0, 0, 0);
+    visualDetailLayout->setSizeConstraint(QLayout::SetMinAndMaxSize);
 
     auto* visualFormLayout = new QFormLayout();
     visualFormLayout->setLabelAlignment(Qt::AlignLeft);
@@ -371,6 +426,7 @@ void WorkflowPanel::buildUi()
     m_visualStepTypeCombo->addItem("prompt");
     m_visualStepTypeCombo->addItem("save_memory");
     m_visualStepTypeCombo->addItem("decision");
+    m_visualStepTypeCombo->addItem("tool");
     m_visualStepNameEdit = new QLineEdit(visualDetailCard);
 
     visualFormLayout->addRow("Schritt-ID", m_visualStepIdEdit);
@@ -453,6 +509,281 @@ void WorkflowPanel::buildUi()
     decisionLayout->addRow("", m_decisionCaseSensitiveCheckBox);
     m_visualStepConfigStack->addWidget(decisionPage);
 
+    auto* toolPage = new QWidget(m_visualStepConfigStack);
+    auto* toolLayout = new QFormLayout(toolPage);
+    toolLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolNameCombo = new QComboBox(toolPage);
+    m_toolNameCombo->addItems(QStringList{
+        "file.read",
+        "directory.read_recursive",
+        "directory.read_changed",
+        "memory.ingest_directory",
+        "file.edit_diff",
+        "comfyui.workflow"
+    });
+    m_toolOutputEdit = new QLineEdit(toolPage);
+
+    m_toolConfigStack = new QStackedWidget(toolPage);
+
+    auto* fileReadPage = new QWidget(m_toolConfigStack);
+    auto* fileReadLayout = new QFormLayout(fileReadPage);
+    fileReadLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolFileReadPathEdit = new QLineEdit(fileReadPage);
+    m_toolFileReadLineStartSpin = new QSpinBox(fileReadPage);
+    m_toolFileReadLineStartSpin->setRange(1, 1000000);
+    m_toolFileReadLineStartSpin->setValue(1);
+    m_toolFileReadLineEndSpin = new QSpinBox(fileReadPage);
+    m_toolFileReadLineEndSpin->setRange(0, 1000000);
+    m_toolFileReadLineEndSpin->setValue(0);
+    m_toolFileReadLineEndSpin->setSpecialValueText("Bis Dateiende");
+    m_toolFileReadMaxCharsSpin = new QSpinBox(fileReadPage);
+    m_toolFileReadMaxCharsSpin->setRange(0, 2000000);
+    m_toolFileReadMaxCharsSpin->setValue(20000);
+    m_toolFileReadMaxCharsSpin->setSpecialValueText("Unbegrenzt");
+    fileReadLayout->addRow("Pfad", m_toolFileReadPathEdit);
+    fileReadLayout->addRow("Startzeile", m_toolFileReadLineStartSpin);
+    fileReadLayout->addRow("Endzeile", m_toolFileReadLineEndSpin);
+    fileReadLayout->addRow("Max. Zeichen", m_toolFileReadMaxCharsSpin);
+    m_toolConfigStack->addWidget(fileReadPage);
+
+    auto* directoryReadPage = new QWidget(m_toolConfigStack);
+    auto* directoryReadLayout = new QFormLayout(directoryReadPage);
+    directoryReadLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolDirectoryReadPathEdit = new QLineEdit(directoryReadPage);
+    m_toolDirectoryReadExtensionsEdit = new QLineEdit(directoryReadPage);
+    m_toolDirectoryReadExtensionsEdit->setPlaceholderText(".cpp,.h,.md,.txt");
+    m_toolDirectoryReadExcludeEdit = new QLineEdit(directoryReadPage);
+    m_toolDirectoryReadExcludeEdit->setPlaceholderText(".git,build,node_modules,__pycache__");
+    m_toolDirectoryReadModifiedAfterEdit = new QLineEdit(directoryReadPage);
+    m_toolDirectoryReadModifiedAfterEdit->setPlaceholderText("2026-03-23T10:15:00Z");
+    m_toolMemoryIngestModeCombo = new QComboBox(directoryReadPage);
+    m_toolMemoryIngestModeCombo->addItem("Vollimport", "recursive");
+    m_toolMemoryIngestModeCombo->addItem("Nur geaenderte Dateien", "changed");
+    m_toolMemoryIngestTypeEdit = new QLineEdit(directoryReadPage);
+    m_toolMemoryIngestTypeEdit->setText("artifact");
+    m_toolMemoryIngestSourceEdit = new QLineEdit(directoryReadPage);
+    m_toolMemoryIngestSourceEdit->setPlaceholderText("workflow:projekt/ingest");
+    m_toolMemoryIngestTagsEdit = new QLineEdit(directoryReadPage);
+    m_toolMemoryIngestTagsEdit->setPlaceholderText("codebase,kontext,ingest");
+    m_toolMemoryIngestRelevanceSpin = new QSpinBox(directoryReadPage);
+    m_toolMemoryIngestRelevanceSpin->setRange(0, 100);
+    m_toolMemoryIngestRelevanceSpin->setValue(80);
+    m_toolDirectoryReadMaxFilesSpin = new QSpinBox(directoryReadPage);
+    m_toolDirectoryReadMaxFilesSpin->setRange(1, 5000);
+    m_toolDirectoryReadMaxFilesSpin->setValue(40);
+    m_toolDirectoryReadWithinMinutesSpin = new QSpinBox(directoryReadPage);
+    m_toolDirectoryReadWithinMinutesSpin->setRange(0, 525600);
+    m_toolDirectoryReadWithinMinutesSpin->setValue(0);
+    m_toolDirectoryReadWithinMinutesSpin->setSpecialValueText("Deaktiviert");
+    m_toolDirectoryReadMaxCharsPerFileSpin = new QSpinBox(directoryReadPage);
+    m_toolDirectoryReadMaxCharsPerFileSpin->setRange(0, 2000000);
+    m_toolDirectoryReadMaxCharsPerFileSpin->setValue(8000);
+    m_toolDirectoryReadMaxCharsPerFileSpin->setSpecialValueText("Unbegrenzt");
+    m_toolDirectoryReadMaxTotalCharsSpin = new QSpinBox(directoryReadPage);
+    m_toolDirectoryReadMaxTotalCharsSpin->setRange(0, 5000000);
+    m_toolDirectoryReadMaxTotalCharsSpin->setValue(120000);
+    m_toolDirectoryReadMaxTotalCharsSpin->setSpecialValueText("Unbegrenzt");
+    m_toolDirectoryReadIncludeHiddenCheckBox = new QCheckBox("Versteckte Dateien einbeziehen", directoryReadPage);
+    m_toolDirectoryReadSkipBinaryCheckBox = new QCheckBox("Binaerdateien ueberspringen", directoryReadPage);
+    m_toolDirectoryReadSkipBinaryCheckBox->setChecked(true);
+    directoryReadLayout->addRow("Verzeichnis", m_toolDirectoryReadPathEdit);
+    directoryReadLayout->addRow("Extensions", m_toolDirectoryReadExtensionsEdit);
+    directoryReadLayout->addRow("Ausschliessen", m_toolDirectoryReadExcludeEdit);
+    directoryReadLayout->addRow("Geaendert seit (ISO)", m_toolDirectoryReadModifiedAfterEdit);
+    directoryReadLayout->addRow("Oder letzte Minuten", m_toolDirectoryReadWithinMinutesSpin);
+    directoryReadLayout->addRow("Ingest-Modus", m_toolMemoryIngestModeCombo);
+    directoryReadLayout->addRow("Memory-Typ", m_toolMemoryIngestTypeEdit);
+    directoryReadLayout->addRow("Quelle (optional)", m_toolMemoryIngestSourceEdit);
+    directoryReadLayout->addRow("Tags", m_toolMemoryIngestTagsEdit);
+    directoryReadLayout->addRow("Relevanz", m_toolMemoryIngestRelevanceSpin);
+    directoryReadLayout->addRow("Max. Dateien", m_toolDirectoryReadMaxFilesSpin);
+    directoryReadLayout->addRow("Max. Zeichen/Datei", m_toolDirectoryReadMaxCharsPerFileSpin);
+    directoryReadLayout->addRow("Max. Gesamtzeichen", m_toolDirectoryReadMaxTotalCharsSpin);
+    directoryReadLayout->addRow("", m_toolDirectoryReadIncludeHiddenCheckBox);
+    directoryReadLayout->addRow("", m_toolDirectoryReadSkipBinaryCheckBox);
+    m_toolConfigStack->addWidget(directoryReadPage);
+
+    auto* fileEditPage = new QWidget(m_toolConfigStack);
+    auto* fileEditLayout = new QFormLayout(fileEditPage);
+    fileEditLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolFileEditPathEdit = new QLineEdit(fileEditPage);
+    m_toolFileEditReturnContentCheckBox = new QCheckBox("Aktualisierten Dateiinhalt zurueckgeben", fileEditPage);
+    m_toolFileEditDiffEdit = new QPlainTextEdit(fileEditPage);
+    m_toolFileEditDiffEdit->setMinimumHeight(140);
+    m_toolFileEditDiffEdit->setPlaceholderText(
+        "--- a/datei.txt\n+++ b/datei.txt\n@@ -1,1 +1,1 @@\n-alter Text\n+neuer Text"
+    );
+    fileEditLayout->addRow("Pfad (optional)", m_toolFileEditPathEdit);
+    fileEditLayout->addRow("Diff/Patch", m_toolFileEditDiffEdit);
+    fileEditLayout->addRow("", m_toolFileEditReturnContentCheckBox);
+    m_toolConfigStack->addWidget(fileEditPage);
+
+    auto* comfyPage = new QWidget(m_toolConfigStack);
+    auto* comfyLayout = new QVBoxLayout(comfyPage);
+    comfyLayout->setContentsMargins(0, 0, 0, 0);
+    auto* comfyMetaRow = new QHBoxLayout();
+    m_toolComfyRefreshButton = new QPushButton("ComfyUI-Daten laden", comfyPage);
+    m_toolComfyStatusLabel = new QLabel("ComfyUI-Daten: noch nicht geladen.", comfyPage);
+    m_toolComfyStatusLabel->setProperty("sectionBody", true);
+    m_toolComfyStatusLabel->setWordWrap(true);
+    comfyMetaRow->addWidget(m_toolComfyRefreshButton);
+    comfyMetaRow->addWidget(m_toolComfyStatusLabel, 1);
+
+    auto* comfyModeLayout = new QFormLayout();
+    comfyModeLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolComfyModeCombo = new QComboBox(comfyPage);
+    m_toolComfyModeCombo->addItem("Formular (txt2img)", "txt2img");
+    m_toolComfyModeCombo->addItem("Formular (img2img)", "img2img");
+    m_toolComfyModeCombo->addItem("Formular (Inpainting)", "inpainting");
+    m_toolComfyModeCombo->addItem("Rohes Workflow-JSON", "raw_json");
+    comfyModeLayout->addRow("Bearbeitungsmodus", m_toolComfyModeCombo);
+
+    m_toolComfyModeStack = new QStackedWidget(comfyPage);
+
+    auto* comfyFormPage = new QWidget(m_toolComfyModeStack);
+    auto* comfyFormLayout = new QFormLayout(comfyFormPage);
+    comfyFormLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolComfyCheckpointCombo = new QComboBox(comfyFormPage);
+    m_toolComfyCheckpointCombo->setEditable(true);
+    m_toolComfyVaeCombo = new QComboBox(comfyFormPage);
+    m_toolComfyVaeCombo->setEditable(true);
+    m_toolComfyImageCombo = new QComboBox(comfyFormPage);
+    m_toolComfyImageCombo->setEditable(true);
+    m_toolComfyImageCombo->setToolTip("Entweder vorhandenes ComfyUI-Input-Bild oder lokaler Dateipfad.");
+    m_toolComfyMaskImageCombo = new QComboBox(comfyFormPage);
+    m_toolComfyMaskImageCombo->setEditable(true);
+    m_toolComfyMaskImageCombo->setToolTip("Maskenbild fuer Inpainting. Lokaler Dateipfad wird automatisch hochgeladen.");
+    m_toolComfyMaskChannelCombo = new QComboBox(comfyFormPage);
+    m_toolComfyMaskChannelCombo->setEditable(true);
+    m_toolComfyMaskGrowSpin = new QSpinBox(comfyFormPage);
+    m_toolComfyMaskGrowSpin->setRange(0, 64);
+    m_toolComfyMaskGrowSpin->setValue(6);
+    m_toolComfyPositivePromptEdit = new QTextEdit(comfyFormPage);
+    m_toolComfyPositivePromptEdit->setMinimumHeight(90);
+    m_toolComfyNegativePromptEdit = new QTextEdit(comfyFormPage);
+    m_toolComfyNegativePromptEdit->setMinimumHeight(70);
+    m_toolComfyWidthSpin = new QSpinBox(comfyFormPage);
+    m_toolComfyWidthSpin->setRange(16, 16384);
+    m_toolComfyWidthSpin->setSingleStep(8);
+    m_toolComfyWidthSpin->setValue(1024);
+    m_toolComfyHeightSpin = new QSpinBox(comfyFormPage);
+    m_toolComfyHeightSpin->setRange(16, 16384);
+    m_toolComfyHeightSpin->setSingleStep(8);
+    m_toolComfyHeightSpin->setValue(1024);
+    m_toolComfyBatchSizeSpin = new QSpinBox(comfyFormPage);
+    m_toolComfyBatchSizeSpin->setRange(1, 256);
+    m_toolComfyBatchSizeSpin->setValue(1);
+    m_toolComfyStepsSpin = new QSpinBox(comfyFormPage);
+    m_toolComfyStepsSpin->setRange(1, 10000);
+    m_toolComfyStepsSpin->setValue(20);
+    m_toolComfySeedSpin = new QSpinBox(comfyFormPage);
+    m_toolComfySeedSpin->setRange(0, std::numeric_limits<int>::max());
+    m_toolComfyRandomizeSeedCheckBox = new QCheckBox("Neuen Seed pro Lauf erzeugen", comfyFormPage);
+    m_toolComfyCfgSpin = new QDoubleSpinBox(comfyFormPage);
+    m_toolComfyCfgSpin->setRange(0.0, 100.0);
+    m_toolComfyCfgSpin->setDecimals(2);
+    m_toolComfyCfgSpin->setSingleStep(0.1);
+    m_toolComfyCfgSpin->setValue(8.0);
+    m_toolComfyDenoiseSpin = new QDoubleSpinBox(comfyFormPage);
+    m_toolComfyDenoiseSpin->setRange(0.0, 1.0);
+    m_toolComfyDenoiseSpin->setDecimals(2);
+    m_toolComfyDenoiseSpin->setSingleStep(0.01);
+    m_toolComfyDenoiseSpin->setValue(1.0);
+    m_toolComfySamplerCombo = new QComboBox(comfyFormPage);
+    m_toolComfySamplerCombo->setEditable(true);
+    m_toolComfySchedulerCombo = new QComboBox(comfyFormPage);
+    m_toolComfySchedulerCombo->setEditable(true);
+    m_toolComfyClipSkipSpin = new QSpinBox(comfyFormPage);
+    m_toolComfyClipSkipSpin->setRange(-24, -1);
+    m_toolComfyClipSkipSpin->setValue(-1);
+    m_toolComfyFilenamePrefixEdit = new QLineEdit(comfyFormPage);
+    m_toolComfyFilenamePrefixEdit->setPlaceholderText("PrivateClaw");
+    m_toolComfyLoraTable = new QTableWidget(comfyFormPage);
+    m_toolComfyLoraTable->setColumnCount(4);
+    m_toolComfyLoraTable->setHorizontalHeaderLabels(QStringList{ "Aktiv", "LoRA", "Model", "CLIP" });
+    m_toolComfyLoraTable->horizontalHeader()->setStretchLastSection(false);
+    m_toolComfyLoraTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_toolComfyLoraTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_toolComfyLoraTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_toolComfyLoraTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_toolComfyLoraTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_toolComfyLoraTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_toolComfyLoraTable->setMinimumHeight(150);
+    auto* comfyLoraButtons = new QHBoxLayout();
+    m_toolComfyAddLoraButton = new QPushButton("LoRA hinzufuegen", comfyFormPage);
+    m_toolComfyRemoveLoraButton = new QPushButton("LoRA entfernen", comfyFormPage);
+    comfyLoraButtons->addWidget(m_toolComfyAddLoraButton);
+    comfyLoraButtons->addWidget(m_toolComfyRemoveLoraButton);
+    comfyLoraButtons->addStretch();
+    auto* comfyLoraBox = new QWidget(comfyFormPage);
+    auto* comfyLoraBoxLayout = new QVBoxLayout(comfyLoraBox);
+    comfyLoraBoxLayout->setContentsMargins(0, 0, 0, 0);
+    comfyLoraBoxLayout->addWidget(m_toolComfyLoraTable);
+    comfyLoraBoxLayout->addLayout(comfyLoraButtons);
+    comfyFormLayout->addRow("Checkpoint", m_toolComfyCheckpointCombo);
+    comfyFormLayout->addRow("VAE-Override", m_toolComfyVaeCombo);
+    comfyFormLayout->addRow("Startbild", m_toolComfyImageCombo);
+    comfyFormLayout->addRow("Maskenbild", m_toolComfyMaskImageCombo);
+    comfyFormLayout->addRow("Maskenkanal", m_toolComfyMaskChannelCombo);
+    comfyFormLayout->addRow("Maske erweitern", m_toolComfyMaskGrowSpin);
+    comfyFormLayout->addRow("Positiver Prompt", m_toolComfyPositivePromptEdit);
+    comfyFormLayout->addRow("Negativer Prompt", m_toolComfyNegativePromptEdit);
+    comfyFormLayout->addRow("Breite", m_toolComfyWidthSpin);
+    comfyFormLayout->addRow("Hoehe", m_toolComfyHeightSpin);
+    comfyFormLayout->addRow("Batch-Groesse", m_toolComfyBatchSizeSpin);
+    comfyFormLayout->addRow("Sampling Steps", m_toolComfyStepsSpin);
+    comfyFormLayout->addRow("CFG", m_toolComfyCfgSpin);
+    comfyFormLayout->addRow("Denoise", m_toolComfyDenoiseSpin);
+    comfyFormLayout->addRow("Seed", m_toolComfySeedSpin);
+    comfyFormLayout->addRow("", m_toolComfyRandomizeSeedCheckBox);
+    comfyFormLayout->addRow("Sampler", m_toolComfySamplerCombo);
+    comfyFormLayout->addRow("Scheduler", m_toolComfySchedulerCombo);
+    comfyFormLayout->addRow("CLIP Stop Layer", m_toolComfyClipSkipSpin);
+    comfyFormLayout->addRow("Dateipraefix", m_toolComfyFilenamePrefixEdit);
+    comfyFormLayout->addRow("LoRA-Stack", comfyLoraBox);
+    m_toolComfyModeStack->addWidget(comfyFormPage);
+
+    auto* comfyRawPage = new QWidget(m_toolComfyModeStack);
+    auto* comfyRawLayout = new QFormLayout(comfyRawPage);
+    comfyRawLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolComfyWorkflowEdit = new QPlainTextEdit(comfyRawPage);
+    m_toolComfyWorkflowEdit->setMinimumHeight(220);
+    m_toolComfyWorkflowEdit->setPlaceholderText("{\n  \"3\": { ... }\n}");
+    comfyRawLayout->addRow("Workflow-JSON", m_toolComfyWorkflowEdit);
+    m_toolComfyModeStack->addWidget(comfyRawPage);
+
+    m_toolComfyOutputDirEdit = new QLineEdit(comfyPage);
+    m_toolComfyDownloadImagesCheckBox = new QCheckBox("Bilder herunterladen", comfyPage);
+    m_toolComfyIncludeHistoryCheckBox = new QCheckBox("History-JSON in Ausgabe einbetten", comfyPage);
+    m_toolComfyPollIntervalSpin = new QSpinBox(comfyPage);
+    m_toolComfyPollIntervalSpin->setRange(200, 60000);
+    m_toolComfyPollIntervalSpin->setSingleStep(100);
+    m_toolComfyPollIntervalSpin->setValue(1500);
+    m_toolComfyPollIntervalSpin->setSuffix(" ms");
+    m_toolComfyTimeoutSpin = new QSpinBox(comfyPage);
+    m_toolComfyTimeoutSpin->setRange(0, 3600000);
+    m_toolComfyTimeoutSpin->setSingleStep(1000);
+    m_toolComfyTimeoutSpin->setValue(0);
+    m_toolComfyTimeoutSpin->setSpecialValueText("Ohne lokales Timeout");
+    m_toolComfyTimeoutSpin->setSuffix(" ms");
+    auto* comfyCommonLayout = new QFormLayout();
+    comfyCommonLayout->setLabelAlignment(Qt::AlignLeft);
+    comfyCommonLayout->addRow("Output-Ordner", m_toolComfyOutputDirEdit);
+    comfyCommonLayout->addRow("", m_toolComfyDownloadImagesCheckBox);
+    comfyCommonLayout->addRow("", m_toolComfyIncludeHistoryCheckBox);
+    comfyCommonLayout->addRow("Polling", m_toolComfyPollIntervalSpin);
+    comfyCommonLayout->addRow("Timeout", m_toolComfyTimeoutSpin);
+    comfyLayout->addLayout(comfyMetaRow);
+    comfyLayout->addLayout(comfyModeLayout);
+    comfyLayout->addWidget(m_toolComfyModeStack);
+    comfyLayout->addLayout(comfyCommonLayout);
+    m_toolConfigStack->addWidget(comfyPage);
+
+    toolLayout->addRow("Tool", m_toolNameCombo);
+    toolLayout->addRow("Output-Variable", m_toolOutputEdit);
+    toolLayout->addRow("Konfiguration", m_toolConfigStack);
+    m_visualStepConfigStack->addWidget(toolPage);
+
     m_visualEditorStatusLabel = new QLabel("Status: Visueller Editor bereit.", visualDetailCard);
     m_visualEditorStatusLabel->setProperty("sectionBody", true);
     m_visualEditorStatusLabel->setWordWrap(true);
@@ -460,6 +791,8 @@ void WorkflowPanel::buildUi()
     visualDetailLayout->addLayout(visualFormLayout);
     visualDetailLayout->addWidget(m_visualStepConfigStack, 1);
     visualDetailLayout->addWidget(m_visualEditorStatusLabel);
+    visualDetailLayout->addStretch();
+    visualDetailScrollArea->setWidget(visualDetailCard);
 
     visualSplitter->setStretchFactor(0, 2);
     visualSplitter->setStretchFactor(1, 3);
@@ -468,8 +801,8 @@ void WorkflowPanel::buildUi()
     visualEditorLayout->addWidget(visualEditorBody);
     visualEditorLayout->addWidget(visualSplitter, 1);
 
-    auto* jsonLabel = new QLabel("JSON-Definition", editorCard);
-    jsonLabel->setProperty("sectionBody", true);
+    m_jsonDefinitionLabel = new QLabel("JSON-Definition", editorCard);
+    m_jsonDefinitionLabel->setProperty("sectionBody", true);
 
     m_definitionEdit = new QPlainTextEdit(editorCard);
     m_definitionEdit->setMinimumHeight(320);
@@ -505,7 +838,7 @@ void WorkflowPanel::buildUi()
     editorLayout->addLayout(formLayout);
     editorLayout->addWidget(m_visualEditorToggle);
     editorLayout->addWidget(m_visualEditorFrame);
-    editorLayout->addWidget(jsonLabel);
+    editorLayout->addWidget(m_jsonDefinitionLabel);
     editorLayout->addWidget(m_definitionEdit, 1);
     editorLayout->addLayout(editorActions);
     editorLayout->addWidget(outputLabel);
@@ -563,6 +896,10 @@ void WorkflowPanel::buildUi()
 
     connect(addDecisionButton, &QPushButton::clicked, this, [this]() {
         addVisualStep("decision");
+    });
+
+    connect(addToolButton, &QPushButton::clicked, this, [this]() {
+        addVisualStep("tool");
     });
 
     connect(removeStepButton, &QPushButton::clicked, this, [this]() {
@@ -645,6 +982,176 @@ void WorkflowPanel::buildUi()
     connect(m_decisionCaseSensitiveCheckBox, &QCheckBox::toggled, this, [this]() {
         scheduleVisualStepApply();
     });
+    connect(m_toolNameCombo, &QComboBox::currentTextChanged, this, [this]() {
+        updateVisualToolConfigPage();
+        scheduleVisualStepApply();
+    });
+    connect(m_toolOutputEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolFileReadPathEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolFileReadLineStartSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolFileReadLineEndSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolFileReadMaxCharsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryReadPathEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryReadExtensionsEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryReadExcludeEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryReadModifiedAfterEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryIngestModeCombo, &QComboBox::currentTextChanged, this, [this]() {
+        updateVisualToolConfigPage();
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryIngestTypeEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryIngestSourceEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryIngestTagsEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryIngestRelevanceSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryReadMaxFilesSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryReadWithinMinutesSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryReadMaxCharsPerFileSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryReadMaxTotalCharsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryReadIncludeHiddenCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryReadSkipBinaryCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolFileEditPathEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolFileEditReturnContentCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolFileEditDiffEdit, &QPlainTextEdit::textChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyRefreshButton, &QPushButton::clicked, this, [this]() {
+        refreshComfyMetadata(true);
+    });
+    connect(m_toolComfyModeCombo, &QComboBox::currentTextChanged, this, [this]() {
+        updateVisualToolConfigPage();
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyCheckpointCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyVaeCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyImageCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyMaskImageCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyMaskChannelCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyMaskGrowSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyPositivePromptEdit, &QTextEdit::textChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyNegativePromptEdit, &QTextEdit::textChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyWidthSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyHeightSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyBatchSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyStepsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfySeedSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyRandomizeSeedCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyCfgSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyDenoiseSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfySamplerCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfySchedulerCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyClipSkipSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyFilenamePrefixEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyAddLoraButton, &QPushButton::clicked, this, [this]() {
+        addComfyLoraRow();
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyRemoveLoraButton, &QPushButton::clicked, this, [this]() {
+        removeSelectedComfyLoraRow();
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyLoraTable, &QTableWidget::itemChanged, this, [this](QTableWidgetItem*) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyWorkflowEdit, &QPlainTextEdit::textChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyOutputDirEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyDownloadImagesCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyIncludeHistoryCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyPollIntervalSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolComfyTimeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
 
     m_executionStatusTimer = new QTimer(this);
     m_executionStatusTimer->setInterval(450);
@@ -668,6 +1175,7 @@ void WorkflowPanel::buildUi()
 
     updateVisualEditorVisibility();
     syncVisualEditorFromJson();
+    applyComfyCatalogToUi();
 }
 
 void WorkflowPanel::refreshData(const qint64 workflowIdToSelect)
@@ -849,6 +1357,8 @@ void WorkflowPanel::executeWorkflow()
     runContext.variables.insert("project_name", project->name);
     runContext.variables.insert("project_description", project->description);
     runContext.variables.insert("workflow_name", workflow.name);
+    runContext.variables.insert("workspace_root", m_settingsService.workspaceRoot());
+    runContext.variables.insert("comfyui_base_url", m_settingsService.comfyUiBaseUrl());
 
     const QList<domain::MemoryEntry> memoryEntries = m_memoryService.recentEntries(project->id, 6);
     for (const domain::MemoryEntry& entry : memoryEntries) {
@@ -883,6 +1393,9 @@ void WorkflowPanel::executeWorkflow()
             .arg(runId)
             .arg(runContext.memorySnippets.size())
     );
+
+    const QString workspaceRoot = m_settingsService.workspaceRoot();
+    const QString comfyUiBaseUrl = m_settingsService.comfyUiBaseUrl();
 
     auto* watcher = new QFutureWatcher<core::ExecutionResult>(this);
     connect(watcher, &QFutureWatcher<core::ExecutionResult>::finished, this, [this, watcher, runId]() {
@@ -959,8 +1472,15 @@ void WorkflowPanel::executeWorkflow()
         );
     });
 
-    watcher->setFuture(QtConcurrent::run([workflow, runContext, providerBaseUrl, providerName]() {
-        return executeWorkflowWithProvider(providerName, providerBaseUrl, workflow, runContext);
+    watcher->setFuture(QtConcurrent::run([workflow, runContext, providerBaseUrl, providerName, workspaceRoot, comfyUiBaseUrl]() {
+        return executeWorkflowWithProvider(
+            providerName,
+            providerBaseUrl,
+            workspaceRoot,
+            comfyUiBaseUrl,
+            workflow,
+            runContext
+        );
     }));
 }
 
@@ -994,7 +1514,16 @@ void WorkflowPanel::updateVisualEditorVisibility()
         return;
     }
 
-    m_visualEditorFrame->setVisible(m_visualEditorToggle->isChecked());
+    const bool visualEditorEnabled = m_visualEditorToggle->isChecked();
+    m_visualEditorFrame->setVisible(visualEditorEnabled);
+
+    if (m_jsonDefinitionLabel != nullptr) {
+        m_jsonDefinitionLabel->setVisible(!visualEditorEnabled);
+    }
+
+    if (m_definitionEdit != nullptr) {
+        m_definitionEdit->setVisible(!visualEditorEnabled);
+    }
 }
 
 void WorkflowPanel::scheduleVisualSyncFromJson()
@@ -1130,6 +1659,57 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
         const QSignalBlocker decisionIfTrueBlocker(m_decisionIfTrueEdit);
         const QSignalBlocker decisionIfFalseBlocker(m_decisionIfFalseEdit);
         const QSignalBlocker decisionCaseBlocker(m_decisionCaseSensitiveCheckBox);
+        const QSignalBlocker toolNameBlocker(m_toolNameCombo);
+        const QSignalBlocker toolOutputBlocker(m_toolOutputEdit);
+        const QSignalBlocker toolFileReadPathBlocker(m_toolFileReadPathEdit);
+        const QSignalBlocker toolFileReadLineStartBlocker(m_toolFileReadLineStartSpin);
+        const QSignalBlocker toolFileReadLineEndBlocker(m_toolFileReadLineEndSpin);
+        const QSignalBlocker toolFileReadMaxCharsBlocker(m_toolFileReadMaxCharsSpin);
+        const QSignalBlocker toolDirectoryReadPathBlocker(m_toolDirectoryReadPathEdit);
+        const QSignalBlocker toolDirectoryReadExtensionsBlocker(m_toolDirectoryReadExtensionsEdit);
+        const QSignalBlocker toolDirectoryReadExcludeBlocker(m_toolDirectoryReadExcludeEdit);
+        const QSignalBlocker toolDirectoryReadModifiedAfterBlocker(m_toolDirectoryReadModifiedAfterEdit);
+        const QSignalBlocker toolMemoryIngestModeBlocker(m_toolMemoryIngestModeCombo);
+        const QSignalBlocker toolMemoryIngestTypeBlocker(m_toolMemoryIngestTypeEdit);
+        const QSignalBlocker toolMemoryIngestSourceBlocker(m_toolMemoryIngestSourceEdit);
+        const QSignalBlocker toolMemoryIngestTagsBlocker(m_toolMemoryIngestTagsEdit);
+        const QSignalBlocker toolMemoryIngestRelevanceBlocker(m_toolMemoryIngestRelevanceSpin);
+        const QSignalBlocker toolDirectoryReadMaxFilesBlocker(m_toolDirectoryReadMaxFilesSpin);
+        const QSignalBlocker toolDirectoryReadWithinMinutesBlocker(m_toolDirectoryReadWithinMinutesSpin);
+        const QSignalBlocker toolDirectoryReadMaxCharsPerFileBlocker(m_toolDirectoryReadMaxCharsPerFileSpin);
+        const QSignalBlocker toolDirectoryReadMaxTotalCharsBlocker(m_toolDirectoryReadMaxTotalCharsSpin);
+        const QSignalBlocker toolDirectoryReadIncludeHiddenBlocker(m_toolDirectoryReadIncludeHiddenCheckBox);
+        const QSignalBlocker toolDirectoryReadSkipBinaryBlocker(m_toolDirectoryReadSkipBinaryCheckBox);
+        const QSignalBlocker toolFileEditPathBlocker(m_toolFileEditPathEdit);
+        const QSignalBlocker toolFileEditReturnContentBlocker(m_toolFileEditReturnContentCheckBox);
+        const QSignalBlocker toolFileEditDiffBlocker(m_toolFileEditDiffEdit);
+        const QSignalBlocker toolComfyModeBlocker(m_toolComfyModeCombo);
+        const QSignalBlocker toolComfyCheckpointBlocker(m_toolComfyCheckpointCombo);
+        const QSignalBlocker toolComfyVaeBlocker(m_toolComfyVaeCombo);
+        const QSignalBlocker toolComfyImageBlocker(m_toolComfyImageCombo);
+        const QSignalBlocker toolComfyMaskImageBlocker(m_toolComfyMaskImageCombo);
+        const QSignalBlocker toolComfyMaskChannelBlocker(m_toolComfyMaskChannelCombo);
+        const QSignalBlocker toolComfyMaskGrowBlocker(m_toolComfyMaskGrowSpin);
+        const QSignalBlocker toolComfyPositivePromptBlocker(m_toolComfyPositivePromptEdit);
+        const QSignalBlocker toolComfyNegativePromptBlocker(m_toolComfyNegativePromptEdit);
+        const QSignalBlocker toolComfyWidthBlocker(m_toolComfyWidthSpin);
+        const QSignalBlocker toolComfyHeightBlocker(m_toolComfyHeightSpin);
+        const QSignalBlocker toolComfyBatchBlocker(m_toolComfyBatchSizeSpin);
+        const QSignalBlocker toolComfyStepsBlocker(m_toolComfyStepsSpin);
+        const QSignalBlocker toolComfySeedBlocker(m_toolComfySeedSpin);
+        const QSignalBlocker toolComfyRandomizeSeedBlocker(m_toolComfyRandomizeSeedCheckBox);
+        const QSignalBlocker toolComfyCfgBlocker(m_toolComfyCfgSpin);
+        const QSignalBlocker toolComfyDenoiseBlocker(m_toolComfyDenoiseSpin);
+        const QSignalBlocker toolComfySamplerBlocker(m_toolComfySamplerCombo);
+        const QSignalBlocker toolComfySchedulerBlocker(m_toolComfySchedulerCombo);
+        const QSignalBlocker toolComfyClipSkipBlocker(m_toolComfyClipSkipSpin);
+        const QSignalBlocker toolComfyFilenamePrefixBlocker(m_toolComfyFilenamePrefixEdit);
+        const QSignalBlocker toolComfyWorkflowBlocker(m_toolComfyWorkflowEdit);
+        const QSignalBlocker toolComfyOutputDirBlocker(m_toolComfyOutputDirEdit);
+        const QSignalBlocker toolComfyDownloadBlocker(m_toolComfyDownloadImagesCheckBox);
+        const QSignalBlocker toolComfyHistoryBlocker(m_toolComfyIncludeHistoryCheckBox);
+        const QSignalBlocker toolComfyPollBlocker(m_toolComfyPollIntervalSpin);
+        const QSignalBlocker toolComfyTimeoutBlocker(m_toolComfyTimeoutSpin);
 
         m_visualStepIdEdit->setText(stepObject.value("id").toString());
         m_visualStepNameEdit->setText(stepObject.value("name").toString());
@@ -1175,6 +1755,139 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
         m_decisionIfTrueEdit->setText(config.value("if_true").toString());
         m_decisionIfFalseEdit->setText(config.value("if_false").toString());
         m_decisionCaseSensitiveCheckBox->setChecked(config.value("case_sensitive").toBool(false));
+
+        const QString toolName = config.value("tool").toString();
+        const int toolIndex = m_toolNameCombo->findText(toolName);
+        m_toolNameCombo->setCurrentIndex(toolIndex >= 0 ? toolIndex : 0);
+        m_toolOutputEdit->setText(config.value("output").toString());
+        m_toolFileReadPathEdit->setText(config.value("path").toString());
+        m_toolFileReadLineStartSpin->setValue(qMax(1, config.value("line_start").toInt(1)));
+        m_toolFileReadLineEndSpin->setValue(qMax(0, config.value("line_end").toInt(0)));
+        m_toolFileReadMaxCharsSpin->setValue(qMax(0, config.value("max_chars").toInt(20000)));
+        m_toolDirectoryReadPathEdit->setText(config.value("path").toString());
+        if (config.value("include_extensions").isArray()) {
+            QStringList extensions;
+            const QJsonArray extensionArray = config.value("include_extensions").toArray();
+            for (const QJsonValue& value : extensionArray) {
+                const QString extension = value.toString().trimmed();
+                if (!extension.isEmpty()) {
+                    extensions.append(extension);
+                }
+            }
+            m_toolDirectoryReadExtensionsEdit->setText(extensions.join(", "));
+        } else {
+            m_toolDirectoryReadExtensionsEdit->setText(config.value("include_extensions").toString());
+        }
+        if (config.value("exclude_paths").isArray()) {
+            QStringList exclusions;
+            const QJsonArray excludeArray = config.value("exclude_paths").toArray();
+            for (const QJsonValue& value : excludeArray) {
+                const QString exclusion = value.toString().trimmed();
+                if (!exclusion.isEmpty()) {
+                    exclusions.append(exclusion);
+                }
+            }
+            m_toolDirectoryReadExcludeEdit->setText(exclusions.join(", "));
+        } else {
+            m_toolDirectoryReadExcludeEdit->setText(config.value("exclude_paths").toString());
+        }
+        m_toolDirectoryReadModifiedAfterEdit->setText(config.value("modified_after_iso").toString());
+        const QString ingestMode = config.value("mode").toString().trimmed().toLower();
+        const QString resolvedIngestMode = ingestMode.isEmpty()
+            ? ((config.contains("within_minutes") || config.contains("modified_after_iso")) ? "changed" : "recursive")
+            : ingestMode;
+        const int ingestModeIndex = m_toolMemoryIngestModeCombo->findData(resolvedIngestMode);
+        m_toolMemoryIngestModeCombo->setCurrentIndex(ingestModeIndex >= 0 ? ingestModeIndex : 0);
+        m_toolMemoryIngestTypeEdit->setText(
+            config.value("entry_type").toString().trimmed().isEmpty()
+                ? "artifact"
+                : config.value("entry_type").toString()
+        );
+        m_toolMemoryIngestSourceEdit->setText(config.value("source").toString());
+        if (config.value("tags").isArray()) {
+            QStringList tags;
+            const QJsonArray tagArray = config.value("tags").toArray();
+            for (const QJsonValue& value : tagArray) {
+                const QString tag = value.toString().trimmed();
+                if (!tag.isEmpty()) {
+                    tags.append(tag);
+                }
+            }
+            m_toolMemoryIngestTagsEdit->setText(tags.join(", "));
+        } else {
+            m_toolMemoryIngestTagsEdit->setText(config.value("tags").toString());
+        }
+        m_toolMemoryIngestRelevanceSpin->setValue(qBound(0, config.value("relevance").toInt(80), 100));
+        m_toolDirectoryReadMaxFilesSpin->setValue(qMax(1, config.value("max_files").toInt(40)));
+        m_toolDirectoryReadWithinMinutesSpin->setValue(qMax(0, config.value("within_minutes").toInt(0)));
+        m_toolDirectoryReadMaxCharsPerFileSpin->setValue(qMax(0, config.value("max_chars_per_file").toInt(8000)));
+        m_toolDirectoryReadMaxTotalCharsSpin->setValue(qMax(0, config.value("max_total_chars").toInt(120000)));
+        m_toolDirectoryReadIncludeHiddenCheckBox->setChecked(config.value("include_hidden").toBool(false));
+        m_toolDirectoryReadSkipBinaryCheckBox->setChecked(
+            config.contains("skip_binary") ? config.value("skip_binary").toBool(true) : true
+        );
+        m_toolFileEditPathEdit->setText(config.value("path").toString());
+        m_toolFileEditReturnContentCheckBox->setChecked(config.value("return_content").toBool(false));
+        const QString diffText = config.value("diff").toString().trimmed().isEmpty()
+            ? config.value("patch").toString()
+            : config.value("diff").toString();
+        m_toolFileEditDiffEdit->setPlainText(diffText);
+        if (config.value("workflow").isObject()) {
+            m_toolComfyWorkflowEdit->setPlainText(
+                QString::fromUtf8(QJsonDocument(config.value("workflow").toObject()).toJson(QJsonDocument::Indented))
+            );
+        } else {
+            m_toolComfyWorkflowEdit->setPlainText(config.value("workflow_json").toString());
+        }
+        const QString comfyMode = config.value("builder_mode").toString().trimmed().toLower() == "txt2img"
+            ? "txt2img"
+            : (config.value("workflow").isObject() || !config.value("workflow_json").toString().trimmed().isEmpty()
+                ? "raw_json"
+                : "txt2img");
+        const int comfyModeIndex = m_toolComfyModeCombo->findData(comfyMode);
+        m_toolComfyModeCombo->setCurrentIndex(comfyModeIndex >= 0 ? comfyModeIndex : 0);
+        setComboItemsWithEditableText(m_toolComfyCheckpointCombo, m_comfyCatalog.checkpoints, config.value("checkpoint").toString());
+        setComboItemsWithEditableText(m_toolComfyVaeCombo, m_comfyCatalog.vaes, config.value("vae_name").toString(), true);
+        setComboItemsWithEditableText(m_toolComfyImageCombo, m_comfyCatalog.inputImages, config.value("input_image").toString());
+        setComboItemsWithEditableText(m_toolComfyMaskImageCombo, m_comfyCatalog.inputImages, config.value("mask_image").toString());
+        setComboItemsWithEditableText(m_toolComfyMaskChannelCombo, m_comfyCatalog.maskChannels, config.value("mask_channel").toString());
+        m_toolComfyMaskGrowSpin->setValue(qMax(0, config.value("mask_grow_by").toInt(6)));
+        m_toolComfyPositivePromptEdit->setPlainText(config.value("positive_prompt").toString());
+        m_toolComfyNegativePromptEdit->setPlainText(config.value("negative_prompt").toString());
+        m_toolComfyWidthSpin->setValue(qBound(16, config.value("width").toInt(m_comfyCatalog.widthDefault), 16384));
+        m_toolComfyHeightSpin->setValue(qBound(16, config.value("height").toInt(m_comfyCatalog.heightDefault), 16384));
+        m_toolComfyBatchSizeSpin->setValue(qMax(1, config.value("batch_size").toInt(m_comfyCatalog.batchDefault)));
+        m_toolComfyStepsSpin->setValue(qMax(1, config.value("steps").toInt(m_comfyCatalog.stepsDefault)));
+        m_toolComfySeedSpin->setValue(qMax(0, config.value("seed").toInt(0)));
+        m_toolComfyRandomizeSeedCheckBox->setChecked(config.value("randomize_seed").toBool(false));
+        m_toolComfyCfgSpin->setValue(config.value("cfg").toDouble(m_comfyCatalog.cfgDefault));
+        m_toolComfyDenoiseSpin->setValue(config.value("denoise").toDouble(m_comfyCatalog.denoiseDefault));
+        setComboItemsWithEditableText(m_toolComfySamplerCombo, m_comfyCatalog.samplers, config.value("sampler_name").toString());
+        setComboItemsWithEditableText(m_toolComfySchedulerCombo, m_comfyCatalog.schedulers, config.value("scheduler").toString());
+        m_toolComfyClipSkipSpin->setRange(m_comfyCatalog.clipLayerMin, m_comfyCatalog.clipLayerMax);
+        m_toolComfyClipSkipSpin->setValue(config.value("clip_skip").toInt(m_comfyCatalog.clipLayerDefault));
+        m_toolComfyFilenamePrefixEdit->setText(config.value("filename_prefix").toString());
+        m_toolComfyLoraTable->setRowCount(0);
+        const QJsonArray loraArray = config.value("loras").toArray();
+        for (const QJsonValue& loraValue : loraArray) {
+            if (!loraValue.isObject()) {
+                continue;
+            }
+            const QJsonObject loraObject = loraValue.toObject();
+            addComfyLoraRow(
+                loraObject.value("name").toString(),
+                loraObject.value("strength_model").toDouble(1.0),
+                loraObject.value("strength_clip").toDouble(1.0),
+                !loraObject.contains("enabled") || loraObject.value("enabled").toBool(true)
+            );
+        }
+        m_toolComfyOutputDirEdit->setText(config.value("save_outputs_to").toString());
+        m_toolComfyDownloadImagesCheckBox->setChecked(
+            config.contains("download_images") ? config.value("download_images").toBool(false) : false
+        );
+        m_toolComfyIncludeHistoryCheckBox->setChecked(config.value("include_history_json").toBool(false));
+        m_toolComfyPollIntervalSpin->setValue(qBound(200, config.value("poll_interval_ms").toInt(1500), 60000));
+        m_toolComfyTimeoutSpin->setValue(qMax(0, config.value("timeout_ms").toInt(0)));
     }
 
     updateVisualConfigPage();
@@ -1257,6 +1970,66 @@ void WorkflowPanel::clearVisualStepEditor()
         m_decisionIfFalseEdit->setEnabled(false);
         m_decisionCaseSensitiveCheckBox->setEnabled(false);
     }
+    if (m_toolNameCombo != nullptr) {
+        m_toolNameCombo->setCurrentIndex(0);
+        m_toolOutputEdit->clear();
+        m_toolFileReadPathEdit->clear();
+        m_toolFileReadLineStartSpin->setValue(1);
+        m_toolFileReadLineEndSpin->setValue(0);
+        m_toolFileReadMaxCharsSpin->setValue(20000);
+        m_toolDirectoryReadPathEdit->clear();
+        m_toolDirectoryReadExtensionsEdit->clear();
+        m_toolDirectoryReadExcludeEdit->clear();
+        m_toolDirectoryReadModifiedAfterEdit->clear();
+        m_toolMemoryIngestModeCombo->setCurrentIndex(0);
+        m_toolMemoryIngestTypeEdit->setText("artifact");
+        m_toolMemoryIngestSourceEdit->clear();
+        m_toolMemoryIngestTagsEdit->clear();
+        m_toolMemoryIngestRelevanceSpin->setValue(80);
+        m_toolDirectoryReadMaxFilesSpin->setValue(40);
+        m_toolDirectoryReadWithinMinutesSpin->setValue(0);
+        m_toolDirectoryReadMaxCharsPerFileSpin->setValue(8000);
+        m_toolDirectoryReadMaxTotalCharsSpin->setValue(120000);
+        m_toolDirectoryReadIncludeHiddenCheckBox->setChecked(false);
+        m_toolDirectoryReadSkipBinaryCheckBox->setChecked(true);
+        m_toolFileEditPathEdit->clear();
+        m_toolFileEditReturnContentCheckBox->setChecked(false);
+        m_toolFileEditDiffEdit->clear();
+        m_toolComfyModeCombo->setCurrentIndex(0);
+        m_toolComfyCheckpointCombo->clearEditText();
+        m_toolComfyVaeCombo->clearEditText();
+        m_toolComfyImageCombo->clearEditText();
+        m_toolComfyMaskImageCombo->clearEditText();
+        m_toolComfyMaskChannelCombo->clearEditText();
+        m_toolComfyMaskGrowSpin->setValue(6);
+        m_toolComfyPositivePromptEdit->clear();
+        m_toolComfyNegativePromptEdit->clear();
+        m_toolComfyWidthSpin->setValue(m_comfyCatalog.success ? m_comfyCatalog.widthDefault : 1024);
+        m_toolComfyHeightSpin->setValue(m_comfyCatalog.success ? m_comfyCatalog.heightDefault : 1024);
+        m_toolComfyBatchSizeSpin->setValue(m_comfyCatalog.success ? m_comfyCatalog.batchDefault : 1);
+        m_toolComfyStepsSpin->setValue(m_comfyCatalog.success ? m_comfyCatalog.stepsDefault : 20);
+        m_toolComfySeedSpin->setValue(0);
+        m_toolComfyRandomizeSeedCheckBox->setChecked(false);
+        m_toolComfyCfgSpin->setValue(m_comfyCatalog.success ? m_comfyCatalog.cfgDefault : 8.0);
+        m_toolComfyDenoiseSpin->setValue(m_comfyCatalog.success ? m_comfyCatalog.denoiseDefault : 1.0);
+        m_toolComfySamplerCombo->clearEditText();
+        m_toolComfySchedulerCombo->clearEditText();
+        if (m_toolComfyClipSkipSpin != nullptr) {
+            m_toolComfyClipSkipSpin->setRange(
+                m_comfyCatalog.success ? m_comfyCatalog.clipLayerMin : -24,
+                m_comfyCatalog.success ? m_comfyCatalog.clipLayerMax : -1
+            );
+            m_toolComfyClipSkipSpin->setValue(m_comfyCatalog.success ? m_comfyCatalog.clipLayerDefault : -1);
+        }
+        m_toolComfyFilenamePrefixEdit->setText(m_comfyCatalog.success ? m_comfyCatalog.filenamePrefixDefault : "PrivateClaw");
+        m_toolComfyLoraTable->setRowCount(0);
+        m_toolComfyWorkflowEdit->clear();
+        m_toolComfyOutputDirEdit->clear();
+        m_toolComfyDownloadImagesCheckBox->setChecked(false);
+        m_toolComfyIncludeHistoryCheckBox->setChecked(false);
+        m_toolComfyPollIntervalSpin->setValue(1500);
+        m_toolComfyTimeoutSpin->setValue(0);
+    }
 
     updateVisualConfigPage();
     m_isSyncingVisualEditor = false;
@@ -1279,7 +2052,268 @@ void WorkflowPanel::updateVisualConfigPage()
         return;
     }
 
+    if (stepType == "tool") {
+        m_visualStepConfigStack->setCurrentIndex(3);
+        updateVisualToolConfigPage();
+        return;
+    }
+
     m_visualStepConfigStack->setCurrentIndex(0);
+}
+
+void WorkflowPanel::updateVisualToolConfigPage()
+{
+    if (m_toolConfigStack == nullptr || m_toolNameCombo == nullptr) {
+        return;
+    }
+
+    const QString toolName = m_toolNameCombo->currentText().trimmed().toLower();
+    const bool isMemoryIngest = toolName == "memory.ingest_directory";
+    const bool isComfyTool = toolName == "comfyui.workflow";
+    const bool usesChangedWindow = toolName == "directory.read_changed"
+        || (isMemoryIngest && m_toolMemoryIngestModeCombo != nullptr
+            && m_toolMemoryIngestModeCombo->currentData().toString().trimmed() == "changed");
+    if (m_toolMemoryIngestModeCombo != nullptr) {
+        m_toolMemoryIngestModeCombo->setEnabled(isMemoryIngest);
+    }
+    if (m_toolMemoryIngestTypeEdit != nullptr) {
+        m_toolMemoryIngestTypeEdit->setEnabled(isMemoryIngest);
+    }
+    if (m_toolMemoryIngestSourceEdit != nullptr) {
+        m_toolMemoryIngestSourceEdit->setEnabled(isMemoryIngest);
+    }
+    if (m_toolMemoryIngestTagsEdit != nullptr) {
+        m_toolMemoryIngestTagsEdit->setEnabled(isMemoryIngest);
+    }
+    if (m_toolMemoryIngestRelevanceSpin != nullptr) {
+        m_toolMemoryIngestRelevanceSpin->setEnabled(isMemoryIngest);
+    }
+    if (m_toolDirectoryReadModifiedAfterEdit != nullptr) {
+        m_toolDirectoryReadModifiedAfterEdit->setEnabled(usesChangedWindow);
+    }
+    if (m_toolDirectoryReadWithinMinutesSpin != nullptr) {
+        m_toolDirectoryReadWithinMinutesSpin->setEnabled(usesChangedWindow);
+    }
+    if (m_toolComfyModeStack != nullptr && m_toolComfyModeCombo != nullptr) {
+        const QString comfyMode = m_toolComfyModeCombo->currentData().toString().trimmed();
+        m_toolComfyModeStack->setCurrentIndex(comfyMode == "raw_json" ? 1 : 0);
+        const bool usesInputImage = comfyMode == "img2img" || comfyMode == "inpainting";
+        const bool usesMask = comfyMode == "inpainting";
+        if (m_toolComfyImageCombo != nullptr) {
+            m_toolComfyImageCombo->setEnabled(usesInputImage);
+        }
+        if (m_toolComfyMaskImageCombo != nullptr) {
+            m_toolComfyMaskImageCombo->setEnabled(usesMask);
+        }
+        if (m_toolComfyMaskChannelCombo != nullptr) {
+            m_toolComfyMaskChannelCombo->setEnabled(usesMask);
+        }
+        if (m_toolComfyMaskGrowSpin != nullptr) {
+            m_toolComfyMaskGrowSpin->setEnabled(usesMask);
+        }
+    }
+    if (m_toolComfyRefreshButton != nullptr) {
+        m_toolComfyRefreshButton->setEnabled(!m_comfyMetadataLoading);
+    }
+    if (isComfyTool && !m_comfyMetadataLoaded && !m_comfyMetadataLoading) {
+        refreshComfyMetadata(false);
+    }
+    if (toolName == "directory.read_recursive"
+        || toolName == "directory.read_changed"
+        || toolName == "memory.ingest_directory") {
+        m_toolConfigStack->setCurrentIndex(1);
+        return;
+    }
+
+    if (toolName == "file.edit_diff") {
+        m_toolConfigStack->setCurrentIndex(2);
+        return;
+    }
+
+    if (toolName == "comfyui.workflow") {
+        m_toolConfigStack->setCurrentIndex(3);
+        return;
+    }
+
+    m_toolConfigStack->setCurrentIndex(0);
+}
+
+void WorkflowPanel::refreshComfyMetadata(const bool forceReload)
+{
+    if (m_comfyMetadataLoading) {
+        return;
+    }
+    if (m_comfyMetadataLoaded && !forceReload) {
+        applyComfyCatalogToUi();
+        return;
+    }
+
+    m_comfyMetadataLoading = true;
+    if (m_toolComfyRefreshButton != nullptr) {
+        m_toolComfyRefreshButton->setEnabled(false);
+    }
+    if (m_toolComfyStatusLabel != nullptr) {
+        m_toolComfyStatusLabel->setStyleSheet("color: #5f5548;");
+        m_toolComfyStatusLabel->setText("ComfyUI-Daten werden geladen...");
+    }
+
+    const QString baseUrl = m_settingsService.comfyUiBaseUrl();
+    auto* watcher = new QFutureWatcher<services::ComfyUiCatalog>(this);
+    connect(
+        watcher,
+        &QFutureWatcher<services::ComfyUiCatalog>::finished,
+        this,
+        [this, watcher]() {
+            m_comfyMetadataLoading = false;
+            m_comfyCatalog = watcher->result();
+            m_comfyMetadataLoaded = m_comfyCatalog.success;
+            if (m_comfyCatalog.success) {
+                applyComfyCatalogToUi();
+            } else if (m_toolComfyStatusLabel != nullptr) {
+                m_toolComfyStatusLabel->setStyleSheet("color: #8b2f2f;");
+                m_toolComfyStatusLabel->setText(
+                    QString("ComfyUI-Daten konnten nicht geladen werden: %1")
+                        .arg(m_comfyCatalog.errorMessage)
+                );
+            }
+            if (m_toolComfyRefreshButton != nullptr) {
+                m_toolComfyRefreshButton->setEnabled(true);
+            }
+            watcher->deleteLater();
+        }
+    );
+
+    watcher->setFuture(
+        QtConcurrent::run([baseUrl]() {
+            return services::ComfyUiMetadataService::fetchCatalog(baseUrl);
+        })
+    );
+}
+
+void WorkflowPanel::applyComfyCatalogToUi()
+{
+    if (!m_comfyCatalog.success) {
+        return;
+    }
+
+    setComboItemsWithEditableText(m_toolComfyCheckpointCombo, m_comfyCatalog.checkpoints, m_toolComfyCheckpointCombo->currentText());
+    setComboItemsWithEditableText(m_toolComfyVaeCombo, m_comfyCatalog.vaes, m_toolComfyVaeCombo->currentText(), true);
+    setComboItemsWithEditableText(m_toolComfyImageCombo, m_comfyCatalog.inputImages, m_toolComfyImageCombo->currentText());
+    setComboItemsWithEditableText(m_toolComfyMaskImageCombo, m_comfyCatalog.inputImages, m_toolComfyMaskImageCombo->currentText());
+    setComboItemsWithEditableText(m_toolComfyMaskChannelCombo, m_comfyCatalog.maskChannels, m_toolComfyMaskChannelCombo->currentText());
+    setComboItemsWithEditableText(m_toolComfySamplerCombo, m_comfyCatalog.samplers, m_toolComfySamplerCombo->currentText());
+    setComboItemsWithEditableText(m_toolComfySchedulerCombo, m_comfyCatalog.schedulers, m_toolComfySchedulerCombo->currentText());
+
+    if (m_toolComfyWidthSpin != nullptr && m_toolComfyWidthSpin->value() <= 16) {
+        m_toolComfyWidthSpin->setValue(m_comfyCatalog.widthDefault);
+    }
+    if (m_toolComfyHeightSpin != nullptr && m_toolComfyHeightSpin->value() <= 16) {
+        m_toolComfyHeightSpin->setValue(m_comfyCatalog.heightDefault);
+    }
+    if (m_toolComfyBatchSizeSpin != nullptr && m_toolComfyBatchSizeSpin->value() == 1) {
+        m_toolComfyBatchSizeSpin->setValue(m_comfyCatalog.batchDefault);
+    }
+    if (m_toolComfyStepsSpin != nullptr && m_toolComfyStepsSpin->value() == 20) {
+        m_toolComfyStepsSpin->setValue(m_comfyCatalog.stepsDefault);
+    }
+    if (m_toolComfyCfgSpin != nullptr && qFuzzyCompare(m_toolComfyCfgSpin->value(), 8.0)) {
+        m_toolComfyCfgSpin->setValue(m_comfyCatalog.cfgDefault);
+    }
+    if (m_toolComfyDenoiseSpin != nullptr && qFuzzyCompare(m_toolComfyDenoiseSpin->value(), 1.0)) {
+        m_toolComfyDenoiseSpin->setValue(m_comfyCatalog.denoiseDefault);
+    }
+    if (m_toolComfyClipSkipSpin != nullptr) {
+        m_toolComfyClipSkipSpin->setRange(m_comfyCatalog.clipLayerMin, m_comfyCatalog.clipLayerMax);
+        if (m_toolComfyClipSkipSpin->value() < m_comfyCatalog.clipLayerMin
+            || m_toolComfyClipSkipSpin->value() > m_comfyCatalog.clipLayerMax) {
+            m_toolComfyClipSkipSpin->setValue(m_comfyCatalog.clipLayerDefault);
+        }
+    }
+    if (m_toolComfyFilenamePrefixEdit != nullptr && m_toolComfyFilenamePrefixEdit->text().trimmed().isEmpty()) {
+        m_toolComfyFilenamePrefixEdit->setText(m_comfyCatalog.filenamePrefixDefault);
+    }
+
+    if (m_toolComfyLoraTable != nullptr) {
+        for (int row = 0; row < m_toolComfyLoraTable->rowCount(); ++row) {
+            if (auto* combo = qobject_cast<QComboBox*>(m_toolComfyLoraTable->cellWidget(row, 1)); combo != nullptr) {
+                setComboItemsWithEditableText(combo, m_comfyCatalog.loras, combo->currentText());
+            }
+        }
+    }
+
+    if (m_toolComfyStatusLabel != nullptr) {
+        m_toolComfyStatusLabel->setStyleSheet("color: #2f6b3a;");
+        m_toolComfyStatusLabel->setText(
+            QString("ComfyUI-Daten geladen: %1 Checkpoints, %2 LoRAs, %3 Input-Bilder.")
+                .arg(m_comfyCatalog.checkpoints.size())
+                .arg(m_comfyCatalog.loras.size())
+                .arg(m_comfyCatalog.inputImages.size())
+        );
+    }
+}
+
+void WorkflowPanel::addComfyLoraRow(
+    const QString& loraName,
+    const double modelStrength,
+    const double clipStrength,
+    const bool enabled
+)
+{
+    if (m_toolComfyLoraTable == nullptr) {
+        return;
+    }
+
+    const int row = m_toolComfyLoraTable->rowCount();
+    m_toolComfyLoraTable->insertRow(row);
+
+    auto* enabledItem = new QTableWidgetItem();
+    enabledItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+    enabledItem->setCheckState(enabled ? Qt::Checked : Qt::Unchecked);
+    m_toolComfyLoraTable->setItem(row, 0, enabledItem);
+
+    auto* loraCombo = new QComboBox(m_toolComfyLoraTable);
+    loraCombo->setEditable(true);
+    setComboItemsWithEditableText(loraCombo, m_comfyCatalog.loras, loraName);
+    connect(loraCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    m_toolComfyLoraTable->setCellWidget(row, 1, loraCombo);
+
+    auto* modelSpin = new QDoubleSpinBox(m_toolComfyLoraTable);
+    modelSpin->setRange(-100.0, 100.0);
+    modelSpin->setDecimals(2);
+    modelSpin->setSingleStep(0.05);
+    modelSpin->setValue(modelStrength);
+    connect(modelSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) {
+        scheduleVisualStepApply();
+    });
+    m_toolComfyLoraTable->setCellWidget(row, 2, modelSpin);
+
+    auto* clipSpin = new QDoubleSpinBox(m_toolComfyLoraTable);
+    clipSpin->setRange(-100.0, 100.0);
+    clipSpin->setDecimals(2);
+    clipSpin->setSingleStep(0.05);
+    clipSpin->setValue(clipStrength);
+    connect(clipSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) {
+        scheduleVisualStepApply();
+    });
+    m_toolComfyLoraTable->setCellWidget(row, 3, clipSpin);
+
+    m_toolComfyLoraTable->setCurrentCell(row, 1);
+}
+
+void WorkflowPanel::removeSelectedComfyLoraRow()
+{
+    if (m_toolComfyLoraTable == nullptr) {
+        return;
+    }
+
+    const int row = m_toolComfyLoraTable->currentRow();
+    if (row < 0 || row >= m_toolComfyLoraTable->rowCount()) {
+        return;
+    }
+
+    m_toolComfyLoraTable->removeRow(row);
 }
 
 void WorkflowPanel::scheduleVisualStepApply()
@@ -1339,7 +2373,39 @@ void WorkflowPanel::applyVisualStepChanges()
                 "case_sensitive",
                 "rules",
                 "default_result",
-                "default_next"
+                "default_next",
+                "builder_mode",
+                "checkpoint",
+                "vae_name",
+                "positive_prompt",
+                "negative_prompt",
+                    "width",
+                    "height",
+                    "batch_size",
+                    "input_image",
+                    "mask_image",
+                    "mask_channel",
+                    "mask_grow_by",
+                    "steps",
+                    "seed",
+                "randomize_seed",
+                "cfg",
+                "denoise",
+                "sampler_name",
+                "scheduler",
+                "clip_skip",
+                "filename_prefix",
+                "loras",
+                "workflow",
+                "workflow_json",
+                "save_outputs_to",
+                "download_images",
+                "include_history_json",
+                "poll_interval_ms",
+                "timeout_ms",
+                "mode",
+                "modified_after_iso",
+                "within_minutes"
             }
         );
         setJsonTextValue(&config, "prompt", m_promptTextEdit->toPlainText());
@@ -1364,7 +2430,39 @@ void WorkflowPanel::applyVisualStepChanges()
                 "case_sensitive",
                 "rules",
                 "default_result",
-                "default_next"
+                "default_next",
+                "builder_mode",
+                "checkpoint",
+                "vae_name",
+                "positive_prompt",
+                "negative_prompt",
+                    "width",
+                    "height",
+                    "batch_size",
+                    "input_image",
+                    "mask_image",
+                    "mask_channel",
+                    "mask_grow_by",
+                    "steps",
+                    "seed",
+                "randomize_seed",
+                "cfg",
+                "denoise",
+                "sampler_name",
+                "scheduler",
+                "clip_skip",
+                "filename_prefix",
+                "loras",
+                "workflow",
+                "workflow_json",
+                "save_outputs_to",
+                "download_images",
+                "include_history_json",
+                "poll_interval_ms",
+                "timeout_ms",
+                "mode",
+                "modified_after_iso",
+                "within_minutes"
             }
         );
         setJsonTextValue(&config, "content", m_memoryContentEdit->toPlainText());
@@ -1373,6 +2471,386 @@ void WorkflowPanel::applyVisualStepChanges()
         setJsonTextValue(&config, "source", m_memorySourceEdit->text());
         setJsonTextValue(&config, "tags", m_memoryTagsEdit->text());
         config.insert("relevance", m_memoryRelevanceSpin->value());
+    } else if (stepType == "tool") {
+        removeConfigKeys(
+            &config,
+            {
+                "prompt",
+                "system_prompt",
+                "model",
+                "content",
+                "entry_type",
+                "memory_type",
+                "source",
+                "tags",
+                "relevance",
+                "input",
+                "operator",
+                "value",
+                "true_result",
+                "false_result",
+                "if_true",
+                "if_false",
+                "case_sensitive",
+                "rules",
+                "default_result",
+                "default_next",
+                "mode",
+                "builder_mode",
+                "checkpoint",
+                "vae_name",
+                "positive_prompt",
+                "negative_prompt",
+                    "width",
+                    "height",
+                    "batch_size",
+                    "input_image",
+                    "mask_image",
+                    "mask_channel",
+                    "mask_grow_by",
+                    "steps",
+                    "seed",
+                "randomize_seed",
+                "cfg",
+                "denoise",
+                "sampler_name",
+                "scheduler",
+                "clip_skip",
+                "filename_prefix",
+                "loras",
+                "workflow",
+                "workflow_json",
+                "save_outputs_to",
+                "download_images",
+                "include_history_json",
+                "poll_interval_ms",
+                "timeout_ms"
+            }
+        );
+        const QString toolName = m_toolNameCombo->currentText().trimmed();
+        setJsonTextValue(&config, "tool", toolName);
+        setJsonTextValue(&config, "output", m_toolOutputEdit->text());
+
+        if (toolName == "file.edit_diff") {
+            removeConfigKeys(
+                &config,
+                {
+                    "include_extensions",
+                    "exclude_paths",
+                    "mode",
+                    "modified_after_iso",
+                    "within_minutes",
+                    "max_files",
+                    "max_chars_per_file",
+                    "max_total_chars",
+                    "include_hidden",
+                    "skip_binary",
+                    "line_start",
+                    "line_end",
+                    "max_chars",
+                    "workflow",
+                    "workflow_json",
+                    "save_outputs_to",
+                    "download_images",
+                    "include_history_json",
+                    "poll_interval_ms",
+                    "timeout_ms"
+                }
+            );
+            setJsonTextValue(&config, "path", m_toolFileEditPathEdit->text());
+            setJsonTextValue(&config, "diff", m_toolFileEditDiffEdit->toPlainText());
+            config.remove("patch");
+            if (m_toolFileEditReturnContentCheckBox->isChecked()) {
+                config.insert("return_content", true);
+            } else {
+                config.remove("return_content");
+            }
+        } else if (toolName == "memory.ingest_directory") {
+            removeConfigKeys(
+                &config,
+                {
+                    "line_start",
+                    "line_end",
+                    "max_chars",
+                    "diff",
+                    "patch",
+                    "return_content",
+                    "workflow",
+                    "workflow_json",
+                    "save_outputs_to",
+                    "download_images",
+                    "include_history_json",
+                    "poll_interval_ms",
+                    "timeout_ms"
+                }
+            );
+            setJsonTextValue(&config, "path", m_toolDirectoryReadPathEdit->text());
+            setJsonTextValue(&config, "include_extensions", m_toolDirectoryReadExtensionsEdit->text());
+            setJsonTextValue(&config, "exclude_paths", m_toolDirectoryReadExcludeEdit->text());
+            setJsonTextValue(
+                &config,
+                "mode",
+                m_toolMemoryIngestModeCombo->currentData().toString().trimmed()
+            );
+            if (m_toolMemoryIngestModeCombo->currentData().toString().trimmed() == "changed") {
+                setJsonTextValue(&config, "modified_after_iso", m_toolDirectoryReadModifiedAfterEdit->text());
+                if (m_toolDirectoryReadWithinMinutesSpin->value() > 0) {
+                    config.insert("within_minutes", m_toolDirectoryReadWithinMinutesSpin->value());
+                } else {
+                    config.remove("within_minutes");
+                }
+            } else {
+                config.remove("modified_after_iso");
+                config.remove("within_minutes");
+            }
+            setJsonTextValue(&config, "entry_type", m_toolMemoryIngestTypeEdit->text());
+            setJsonTextValue(&config, "source", m_toolMemoryIngestSourceEdit->text());
+            setJsonTextValue(&config, "tags", m_toolMemoryIngestTagsEdit->text());
+            config.insert("relevance", m_toolMemoryIngestRelevanceSpin->value());
+            config.insert("max_files", m_toolDirectoryReadMaxFilesSpin->value());
+            if (m_toolDirectoryReadMaxCharsPerFileSpin->value() > 0) {
+                config.insert("max_chars_per_file", m_toolDirectoryReadMaxCharsPerFileSpin->value());
+            } else {
+                config.remove("max_chars_per_file");
+            }
+            if (m_toolDirectoryReadMaxTotalCharsSpin->value() > 0) {
+                config.insert("max_total_chars", m_toolDirectoryReadMaxTotalCharsSpin->value());
+            } else {
+                config.remove("max_total_chars");
+            }
+            if (m_toolDirectoryReadIncludeHiddenCheckBox->isChecked()) {
+                config.insert("include_hidden", true);
+            } else {
+                config.remove("include_hidden");
+            }
+            if (m_toolDirectoryReadSkipBinaryCheckBox->isChecked()) {
+                config.insert("skip_binary", true);
+            } else {
+                config.insert("skip_binary", false);
+            }
+        } else if (toolName == "directory.read_recursive" || toolName == "directory.read_changed") {
+            removeConfigKeys(
+                &config,
+                {
+                    "line_start",
+                    "line_end",
+                    "max_chars",
+                    "diff",
+                    "patch",
+                    "return_content",
+                    "workflow",
+                    "workflow_json",
+                    "save_outputs_to",
+                    "download_images",
+                    "include_history_json",
+                    "poll_interval_ms",
+                    "timeout_ms",
+                    "mode"
+                }
+            );
+            setJsonTextValue(&config, "path", m_toolDirectoryReadPathEdit->text());
+            setJsonTextValue(&config, "include_extensions", m_toolDirectoryReadExtensionsEdit->text());
+            setJsonTextValue(&config, "exclude_paths", m_toolDirectoryReadExcludeEdit->text());
+            if (toolName == "directory.read_changed") {
+                setJsonTextValue(&config, "modified_after_iso", m_toolDirectoryReadModifiedAfterEdit->text());
+                if (m_toolDirectoryReadWithinMinutesSpin->value() > 0) {
+                    config.insert("within_minutes", m_toolDirectoryReadWithinMinutesSpin->value());
+                } else {
+                    config.remove("within_minutes");
+                }
+            } else {
+                config.remove("modified_after_iso");
+                config.remove("within_minutes");
+            }
+            config.insert("max_files", m_toolDirectoryReadMaxFilesSpin->value());
+            if (m_toolDirectoryReadMaxCharsPerFileSpin->value() > 0) {
+                config.insert("max_chars_per_file", m_toolDirectoryReadMaxCharsPerFileSpin->value());
+            } else {
+                config.remove("max_chars_per_file");
+            }
+            if (m_toolDirectoryReadMaxTotalCharsSpin->value() > 0) {
+                config.insert("max_total_chars", m_toolDirectoryReadMaxTotalCharsSpin->value());
+            } else {
+                config.remove("max_total_chars");
+            }
+            if (m_toolDirectoryReadIncludeHiddenCheckBox->isChecked()) {
+                config.insert("include_hidden", true);
+            } else {
+                config.remove("include_hidden");
+            }
+            if (m_toolDirectoryReadSkipBinaryCheckBox->isChecked()) {
+                config.insert("skip_binary", true);
+            } else {
+                config.insert("skip_binary", false);
+            }
+        } else if (toolName == "comfyui.workflow") {
+            removeConfigKeys(
+                &config,
+                {
+                    "path",
+                    "include_extensions",
+                    "exclude_paths",
+                    "mode",
+                    "modified_after_iso",
+                    "within_minutes",
+                    "max_files",
+                    "max_chars_per_file",
+                    "max_total_chars",
+                    "include_hidden",
+                    "skip_binary",
+                    "line_start",
+                    "line_end",
+                    "max_chars",
+                    "diff",
+                    "patch",
+                    "return_content"
+                }
+            );
+            const QString comfyMode = m_toolComfyModeCombo->currentData().toString().trimmed();
+            setJsonTextValue(&config, "builder_mode", comfyMode);
+            if (comfyMode == "raw_json") {
+                removeConfigKeys(
+                    &config,
+                    {
+                        "checkpoint",
+                        "vae_name",
+                        "positive_prompt",
+                        "negative_prompt",
+                    "width",
+                    "height",
+                    "batch_size",
+                    "input_image",
+                    "mask_image",
+                    "mask_channel",
+                    "mask_grow_by",
+                    "steps",
+                    "seed",
+                        "randomize_seed",
+                        "cfg",
+                        "denoise",
+                        "sampler_name",
+                        "scheduler",
+                        "clip_skip",
+                        "filename_prefix",
+                        "loras"
+                    }
+                );
+                setJsonTextValue(&config, "workflow_json", m_toolComfyWorkflowEdit->toPlainText());
+                config.remove("workflow");
+            } else {
+                removeConfigKeys(&config, { "workflow", "workflow_json" });
+                setJsonTextValue(&config, "checkpoint", m_toolComfyCheckpointCombo->currentText());
+                const QString vaeName = m_toolComfyVaeCombo->currentText().trimmed() == "<Standard>"
+                    ? QString()
+                    : m_toolComfyVaeCombo->currentText();
+                setJsonTextValue(&config, "vae_name", vaeName);
+                setJsonTextValue(&config, "input_image", m_toolComfyImageCombo->currentText());
+                setJsonTextValue(&config, "mask_image", m_toolComfyMaskImageCombo->currentText());
+                setJsonTextValue(&config, "mask_channel", m_toolComfyMaskChannelCombo->currentText());
+                config.insert("mask_grow_by", m_toolComfyMaskGrowSpin->value());
+                setJsonTextValue(&config, "positive_prompt", m_toolComfyPositivePromptEdit->toPlainText());
+                setJsonTextValue(&config, "negative_prompt", m_toolComfyNegativePromptEdit->toPlainText());
+                config.insert("width", m_toolComfyWidthSpin->value());
+                config.insert("height", m_toolComfyHeightSpin->value());
+                config.insert("batch_size", m_toolComfyBatchSizeSpin->value());
+                config.insert("steps", m_toolComfyStepsSpin->value());
+                config.insert("seed", m_toolComfySeedSpin->value());
+                if (m_toolComfyRandomizeSeedCheckBox->isChecked()) {
+                    config.insert("randomize_seed", true);
+                } else {
+                    config.remove("randomize_seed");
+                }
+                config.insert("cfg", m_toolComfyCfgSpin->value());
+                config.insert("denoise", m_toolComfyDenoiseSpin->value());
+                setJsonTextValue(&config, "sampler_name", m_toolComfySamplerCombo->currentText());
+                setJsonTextValue(&config, "scheduler", m_toolComfySchedulerCombo->currentText());
+                config.insert("clip_skip", m_toolComfyClipSkipSpin->value());
+                setJsonTextValue(&config, "filename_prefix", m_toolComfyFilenamePrefixEdit->text());
+
+                QJsonArray loraArray;
+                for (int loraRow = 0; loraRow < m_toolComfyLoraTable->rowCount(); ++loraRow) {
+                    const auto* enabledItem = m_toolComfyLoraTable->item(loraRow, 0);
+                    auto* loraCombo = qobject_cast<QComboBox*>(m_toolComfyLoraTable->cellWidget(loraRow, 1));
+                    auto* modelSpin = qobject_cast<QDoubleSpinBox*>(m_toolComfyLoraTable->cellWidget(loraRow, 2));
+                    auto* clipSpin = qobject_cast<QDoubleSpinBox*>(m_toolComfyLoraTable->cellWidget(loraRow, 3));
+                    if (loraCombo == nullptr || modelSpin == nullptr || clipSpin == nullptr) {
+                        continue;
+                    }
+                    const QString loraName = loraCombo->currentText().trimmed();
+                    if (loraName.isEmpty()) {
+                        continue;
+                    }
+
+                    QJsonObject loraObject{
+                        { "name", loraName },
+                        { "strength_model", modelSpin->value() },
+                        { "strength_clip", clipSpin->value() },
+                        { "enabled", enabledItem == nullptr || enabledItem->checkState() == Qt::Checked }
+                    };
+                    loraArray.append(loraObject);
+                }
+                if (loraArray.isEmpty()) {
+                    config.remove("loras");
+                } else {
+                    config.insert("loras", loraArray);
+                }
+            }
+            setJsonTextValue(&config, "save_outputs_to", m_toolComfyOutputDirEdit->text());
+            if (m_toolComfyDownloadImagesCheckBox->isChecked()) {
+                config.insert("download_images", true);
+            } else {
+                config.remove("download_images");
+            }
+            if (m_toolComfyIncludeHistoryCheckBox->isChecked()) {
+                config.insert("include_history_json", true);
+            } else {
+                config.remove("include_history_json");
+            }
+            config.insert("poll_interval_ms", m_toolComfyPollIntervalSpin->value());
+            config.insert("timeout_ms", m_toolComfyTimeoutSpin->value());
+        } else {
+            removeConfigKeys(
+                &config,
+                {
+                    "diff",
+                    "patch",
+                    "return_content",
+                    "include_extensions",
+                    "exclude_paths",
+                    "mode",
+                    "modified_after_iso",
+                    "within_minutes",
+                    "max_files",
+                    "max_chars_per_file",
+                    "max_total_chars",
+                    "include_hidden",
+                    "skip_binary",
+                    "workflow",
+                    "workflow_json",
+                    "save_outputs_to",
+                    "download_images",
+                    "include_history_json",
+                    "poll_interval_ms",
+                    "timeout_ms"
+                }
+            );
+            setJsonTextValue(&config, "path", m_toolFileReadPathEdit->text());
+            if (m_toolFileReadLineStartSpin->value() > 1) {
+                config.insert("line_start", m_toolFileReadLineStartSpin->value());
+            } else {
+                config.remove("line_start");
+            }
+            if (m_toolFileReadLineEndSpin->value() > 0) {
+                config.insert("line_end", m_toolFileReadLineEndSpin->value());
+            } else {
+                config.remove("line_end");
+            }
+            if (m_toolFileReadMaxCharsSpin->value() > 0) {
+                config.insert("max_chars", m_toolFileReadMaxCharsSpin->value());
+            } else {
+                config.remove("max_chars");
+            }
+        }
     } else if (!decisionUsesRules) {
         removeConfigKeys(
             &config,
@@ -1388,7 +2866,32 @@ void WorkflowPanel::applyVisualStepChanges()
                 "relevance",
                 "rules",
                 "default_result",
-                "default_next"
+                "default_next",
+                "builder_mode",
+                "checkpoint",
+                "vae_name",
+                "positive_prompt",
+                "negative_prompt",
+                "width",
+                "height",
+                "batch_size",
+                "steps",
+                "seed",
+                "randomize_seed",
+                "cfg",
+                "denoise",
+                "sampler_name",
+                "scheduler",
+                "clip_skip",
+                "filename_prefix",
+                "loras",
+                "workflow",
+                "workflow_json",
+                "save_outputs_to",
+                "download_images",
+                "include_history_json",
+                "poll_interval_ms",
+                "timeout_ms"
             }
         );
         setJsonTextValue(&config, "input", m_decisionInputEdit->text());
@@ -1523,7 +3026,7 @@ QString WorkflowPanel::generateVisualStepId(const QString& stepType) const
 {
     const QString prefix = stepType == "save_memory"
         ? "save_memory"
-        : (stepType == "decision" ? "decision" : "prompt");
+        : (stepType == "decision" ? "decision" : (stepType == "tool" ? "tool" : "prompt"));
     const QJsonArray steps = m_visualDefinitionRoot.value("steps").toArray();
 
     int suffix = steps.size() + 1;

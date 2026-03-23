@@ -53,8 +53,14 @@ Die Anwendung soll kein "Black Box Agent" sein, sondern ein kontrollierbares Des
   - `PromptStep`
   - `DecisionStep`
   - `SaveMemoryStep`
-  - `DelayStep`
   - `ToolStep`
+- Erste reale Tools im MVP:
+  - `file.read`
+  - `directory.read_recursive`
+  - `directory.read_changed`
+  - `memory.ingest_directory`
+  - `file.edit_diff`
+  - `comfyui.workflow`
 - Variablenkontext pro Run
 - Projektbezogene Langzeit-Erinnerung
 - Zeitplanung fuer einmalige und wiederkehrende Workflows
@@ -207,6 +213,8 @@ Die Anwendung soll kein "Black Box Agent" sein, sondern ein kontrollierbares Des
 
 - `ToolExecutor`
   - Fuehrt erlaubte lokale Aktionen kontrolliert aus
+  - Verwaltet Tool-spezifische Konfiguration getrennt von der Workflow-Engine
+  - Erste Integrationen: Dateilesen, Diff-basiertes Editieren, ComfyUI-Workflow-API
 
 - `Persistence`
   - Repositories fuer Projekte, Workflows, Runs, Memory, Schedules

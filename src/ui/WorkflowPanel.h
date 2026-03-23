@@ -3,6 +3,7 @@
 #include "core/WorkflowEngine.h"
 #include "domain/Project.h"
 #include "domain/Workflow.h"
+#include "services/ComfyUiMetadataService.h"
 
 #include <QJsonObject>
 #include <QWidget>
@@ -11,14 +12,17 @@
 
 class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QFrame;
 class QFutureWatcherBase;
 class QLabel;
 class QListWidget;
 class QLineEdit;
 class QPlainTextEdit;
+class QPushButton;
 class QSpinBox;
 class QStackedWidget;
+class QTableWidget;
 class QTextEdit;
 class QTimer;
 
@@ -68,6 +72,16 @@ private:
     void loadVisualStepFromRow(int row);
     void clearVisualStepEditor();
     void updateVisualConfigPage();
+    void updateVisualToolConfigPage();
+    void refreshComfyMetadata(bool forceReload = false);
+    void applyComfyCatalogToUi();
+    void addComfyLoraRow(
+        const QString& loraName = QString(),
+        double modelStrength = 1.0,
+        double clipStrength = 1.0,
+        bool enabled = true
+    );
+    void removeSelectedComfyLoraRow();
     void scheduleVisualStepApply();
     void applyVisualStepChanges();
     void addVisualStep(const QString& stepType);
@@ -101,10 +115,14 @@ private:
     std::function<void(const QString&)> m_onExecutionLogChanged;
     bool m_isSyncingVisualEditor = false;
     bool m_visualEditorHasValidJson = false;
+    bool m_comfyMetadataLoaded = false;
+    bool m_comfyMetadataLoading = false;
     QJsonObject m_visualDefinitionRoot;
+    services::ComfyUiCatalog m_comfyCatalog;
 
     QListWidget* m_workflowList = nullptr;
     QLabel* m_workflowCountLabel = nullptr;
+    QLabel* m_jsonDefinitionLabel = nullptr;
     QComboBox* m_projectCombo = nullptr;
     QLineEdit* m_nameEdit = nullptr;
     QTextEdit* m_descriptionEdit = nullptr;
@@ -135,6 +153,64 @@ private:
     QLineEdit* m_decisionIfTrueEdit = nullptr;
     QLineEdit* m_decisionIfFalseEdit = nullptr;
     QCheckBox* m_decisionCaseSensitiveCheckBox = nullptr;
+    QComboBox* m_toolNameCombo = nullptr;
+    QLineEdit* m_toolOutputEdit = nullptr;
+    QStackedWidget* m_toolConfigStack = nullptr;
+    QLineEdit* m_toolFileReadPathEdit = nullptr;
+    QSpinBox* m_toolFileReadLineStartSpin = nullptr;
+    QSpinBox* m_toolFileReadLineEndSpin = nullptr;
+    QSpinBox* m_toolFileReadMaxCharsSpin = nullptr;
+    QLineEdit* m_toolDirectoryReadPathEdit = nullptr;
+    QLineEdit* m_toolDirectoryReadExtensionsEdit = nullptr;
+    QLineEdit* m_toolDirectoryReadExcludeEdit = nullptr;
+    QLineEdit* m_toolDirectoryReadModifiedAfterEdit = nullptr;
+    QSpinBox* m_toolDirectoryReadMaxFilesSpin = nullptr;
+    QSpinBox* m_toolDirectoryReadMaxCharsPerFileSpin = nullptr;
+    QSpinBox* m_toolDirectoryReadMaxTotalCharsSpin = nullptr;
+    QSpinBox* m_toolDirectoryReadWithinMinutesSpin = nullptr;
+    QCheckBox* m_toolDirectoryReadIncludeHiddenCheckBox = nullptr;
+    QCheckBox* m_toolDirectoryReadSkipBinaryCheckBox = nullptr;
+    QComboBox* m_toolMemoryIngestModeCombo = nullptr;
+    QLineEdit* m_toolMemoryIngestTypeEdit = nullptr;
+    QLineEdit* m_toolMemoryIngestSourceEdit = nullptr;
+    QLineEdit* m_toolMemoryIngestTagsEdit = nullptr;
+    QSpinBox* m_toolMemoryIngestRelevanceSpin = nullptr;
+    QLineEdit* m_toolFileEditPathEdit = nullptr;
+    QCheckBox* m_toolFileEditReturnContentCheckBox = nullptr;
+    QPlainTextEdit* m_toolFileEditDiffEdit = nullptr;
+    QPushButton* m_toolComfyRefreshButton = nullptr;
+    QLabel* m_toolComfyStatusLabel = nullptr;
+    QComboBox* m_toolComfyModeCombo = nullptr;
+    QStackedWidget* m_toolComfyModeStack = nullptr;
+    QComboBox* m_toolComfyCheckpointCombo = nullptr;
+    QComboBox* m_toolComfyVaeCombo = nullptr;
+    QComboBox* m_toolComfyImageCombo = nullptr;
+    QComboBox* m_toolComfyMaskImageCombo = nullptr;
+    QComboBox* m_toolComfyMaskChannelCombo = nullptr;
+    QSpinBox* m_toolComfyMaskGrowSpin = nullptr;
+    QTextEdit* m_toolComfyPositivePromptEdit = nullptr;
+    QTextEdit* m_toolComfyNegativePromptEdit = nullptr;
+    QSpinBox* m_toolComfyWidthSpin = nullptr;
+    QSpinBox* m_toolComfyHeightSpin = nullptr;
+    QSpinBox* m_toolComfyBatchSizeSpin = nullptr;
+    QSpinBox* m_toolComfyStepsSpin = nullptr;
+    QSpinBox* m_toolComfySeedSpin = nullptr;
+    QCheckBox* m_toolComfyRandomizeSeedCheckBox = nullptr;
+    QDoubleSpinBox* m_toolComfyCfgSpin = nullptr;
+    QDoubleSpinBox* m_toolComfyDenoiseSpin = nullptr;
+    QComboBox* m_toolComfySamplerCombo = nullptr;
+    QComboBox* m_toolComfySchedulerCombo = nullptr;
+    QSpinBox* m_toolComfyClipSkipSpin = nullptr;
+    QLineEdit* m_toolComfyFilenamePrefixEdit = nullptr;
+    QTableWidget* m_toolComfyLoraTable = nullptr;
+    QPushButton* m_toolComfyAddLoraButton = nullptr;
+    QPushButton* m_toolComfyRemoveLoraButton = nullptr;
+    QPlainTextEdit* m_toolComfyWorkflowEdit = nullptr;
+    QLineEdit* m_toolComfyOutputDirEdit = nullptr;
+    QCheckBox* m_toolComfyDownloadImagesCheckBox = nullptr;
+    QCheckBox* m_toolComfyIncludeHistoryCheckBox = nullptr;
+    QSpinBox* m_toolComfyPollIntervalSpin = nullptr;
+    QSpinBox* m_toolComfyTimeoutSpin = nullptr;
     QPlainTextEdit* m_definitionEdit = nullptr;
     QPlainTextEdit* m_executionOutputView = nullptr;
     QCheckBox* m_activeCheckBox = nullptr;

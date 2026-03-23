@@ -10,6 +10,13 @@ namespace privateclaw::core {
 
 namespace {
 
+struct SanitizedPromptResponse
+{
+    QString visibleText;
+    QString reasoningText;
+    bool hadReasoningTags = false;
+};
+
 QString configString(const QJsonObject& object, const QString& key)
 {
     return object.value(key).toString().trimmed();
@@ -40,6 +47,33 @@ QString renderTemplateWithVariables(const QString& templateText, const RunContex
 
     rendered += templateText.mid(lastIndex);
     return rendered;
+}
+
+QJsonValue renderJsonValue(const QJsonValue& value, const RunContext& runContext)
+{
+    if (value.isString()) {
+        return renderTemplateWithVariables(value.toString(), runContext);
+    }
+
+    if (value.isArray()) {
+        QJsonArray renderedArray;
+        const QJsonArray sourceArray = value.toArray();
+        for (const QJsonValue& item : sourceArray) {
+            renderedArray.append(renderJsonValue(item, runContext));
+        }
+        return renderedArray;
+    }
+
+    if (value.isObject()) {
+        QJsonObject renderedObject;
+        const QJsonObject sourceObject = value.toObject();
+        for (auto it = sourceObject.constBegin(); it != sourceObject.constEnd(); ++it) {
+            renderedObject.insert(it.key(), renderJsonValue(it.value(), runContext));
+        }
+        return renderedObject;
+    }
+
+    return value;
 }
 
 QStringList configTags(const QJsonObject& object, const QString& key, const RunContext& runContext)
@@ -156,6 +190,48 @@ QString memorySnippetFromEntry(const domain::MemoryEntry& entry)
     return QString("- %1").arg(parts.join(" | "));
 }
 
+QString cleanupVisiblePromptText(QString text)
+{
+    text.replace(QRegularExpression("\n{3,}"), "\n\n");
+    return text.trimmed();
+}
+
+SanitizedPromptResponse sanitizePromptResponse(const QString& rawText)
+{
+    SanitizedPromptResponse result;
+    result.visibleText = rawText.trimmed();
+
+    static const QRegularExpression reasoningBlockPattern(
+        R"(<\s*(think|thinking|reasoning|analysis|thought|reflection)\b[^>]*>(.*?)<\s*/\s*\1\s*>)",
+        QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption
+    );
+    static const QRegularExpression strayReasoningTagPattern(
+        R"(<\s*/?\s*(think|thinking|reasoning|analysis|thought|reflection)\b[^>]*>)",
+        QRegularExpression::CaseInsensitiveOption
+    );
+
+    QStringList reasoningParts;
+    const QRegularExpressionMatchIterator matches = reasoningBlockPattern.globalMatch(result.visibleText);
+    for (QRegularExpressionMatchIterator it = matches; it.hasNext();) {
+        const QRegularExpressionMatch match = it.next();
+        const QString reasoning = cleanupVisiblePromptText(match.captured(2));
+        if (!reasoning.isEmpty()) {
+            reasoningParts.append(reasoning);
+        }
+        result.hadReasoningTags = true;
+    }
+
+    result.visibleText.remove(reasoningBlockPattern);
+    if (result.visibleText.contains(strayReasoningTagPattern)) {
+        result.visibleText.remove(strayReasoningTagPattern);
+        result.hadReasoningTags = true;
+    }
+
+    result.visibleText = cleanupVisiblePromptText(result.visibleText);
+    result.reasoningText = reasoningParts.join("\n\n").trimmed();
+    return result;
+}
+
 bool validateTargetStepId(
     const QString& targetStepId,
     const QSet<QString>& knownStepIds,
@@ -270,6 +346,16 @@ int resolveNextStepIndex(
 
 } // namespace
 
+WorkflowEngine::WorkflowEngine(const tools::ToolExecutor* toolExecutor)
+    : m_toolExecutor(toolExecutor)
+{
+}
+
+void WorkflowEngine::setToolExecutor(const tools::ToolExecutor* toolExecutor)
+{
+    m_toolExecutor = toolExecutor;
+}
+
 QString WorkflowEngine::validateWorkflow(const domain::Workflow& workflow) const
 {
     if (workflow.name.trimmed().isEmpty()) {
@@ -296,14 +382,18 @@ QString WorkflowEngine::validateWorkflow(const domain::Workflow& workflow) const
     for (const domain::WorkflowStep& step : workflow.steps) {
         const QString stepType = normalizedStepType(step.type);
 
-        if (stepType != "prompt" && stepType != "save_memory" && stepType != "decision") {
+        if (stepType != "prompt" && stepType != "save_memory" && stepType != "decision" && stepType != "tool") {
             return QString(
-                "Schritt '%1' nutzt Typ '%2'. Aktuell werden nur 'prompt', 'save_memory' und 'decision' unterstuetzt."
+                "Schritt '%1' nutzt Typ '%2'. Aktuell werden nur 'prompt', 'save_memory', 'decision' und 'tool' unterstuetzt."
             ).arg(step.id, step.type);
         }
 
         if (stepType == "prompt" && configString(step.config, "prompt").isEmpty()) {
             return QString("Prompt-Schritt '%1' braucht ein config.prompt-Feld.").arg(step.id);
+        }
+
+        if (stepType == "tool" && configString(step.config, "tool").isEmpty()) {
+            return QString("Tool-Schritt '%1' braucht ein config.tool-Feld.").arg(step.id);
         }
 
         if (stepType == "decision") {
@@ -358,6 +448,10 @@ QString WorkflowEngine::validateWorkflow(const domain::Workflow& workflow) const
                 }
             }
         }
+
+        if (stepType == "tool" && !configString(step.config, "if_true").isEmpty()) {
+            return QString("Tool-Schritt '%1' unterstuetzt aktuell keine Decision-Sprungfelder.").arg(step.id);
+        }
     }
 
     return {};
@@ -395,6 +489,7 @@ ExecutionResult WorkflowEngine::executeWorkflow(
     }
 
     runContext.variables.insert("project_name", runContext.projectName);
+    runContext.variables.insert("project_id", QString::number(runContext.projectId));
     runContext.variables.insert("workflow_name", runContext.workflowName);
     runContext.variables.insert("selected_model", runContext.selectedModel);
     QHash<QString, int> stepIndexById;
@@ -601,6 +696,72 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             continue;
         }
 
+        if (stepType == "tool") {
+            if (m_toolExecutor == nullptr) {
+                result.errorMessage = QString("Schritt '%1' fehlgeschlagen: Kein ToolExecutor konfiguriert.").arg(step.id);
+                result.logs.append(QString("[step:%1] Fehler: %2").arg(step.id, result.errorMessage));
+                result.variables = runContext.variables;
+                return result;
+            }
+
+            const QJsonObject renderedConfig = renderJsonValue(step.config, runContext).toObject();
+            const QString toolName = configString(renderedConfig, "tool");
+            const QString outputKey = configString(renderedConfig, "output").isEmpty()
+                ? step.id
+                : configString(renderedConfig, "output");
+
+            result.logs.append(QString("[step:%1] Typ: tool").arg(step.id));
+            result.logs.append(QString("[step:%1] Tool: %2").arg(step.id, toolName));
+
+            tools::ToolExecutionRequest request;
+            request.toolName = toolName;
+            request.config = renderedConfig;
+            request.projectId = runContext.projectId;
+            request.projectName = runContext.projectName;
+            request.workflowName = runContext.workflowName;
+            request.stepId = step.id;
+
+            const tools::ToolExecutionResult toolResult = m_toolExecutor->execute(request);
+            for (const QString& logLine : toolResult.logs) {
+                result.logs.append(QString("[step:%1] %2").arg(step.id, logLine));
+            }
+
+            if (!toolResult.success) {
+                result.errorMessage = QString("Schritt '%1' fehlgeschlagen: %2").arg(step.id, toolResult.errorMessage);
+                result.logs.append(QString("[step:%1] Fehler: %2").arg(step.id, toolResult.errorMessage));
+                result.variables = runContext.variables;
+                return result;
+            }
+
+            runContext.variables.insert(outputKey, toolResult.outputText);
+            runContext.variables.insert("last_tool_output", toolResult.outputText);
+            runContext.variables.insert("last_tool_name", toolName);
+            result.finalOutput = toolResult.outputText;
+
+            if (!toolResult.memoryEntriesToPersist.isEmpty()) {
+                for (const domain::MemoryEntry& entry : toolResult.memoryEntriesToPersist) {
+                    result.memoryEntriesToPersist.append(entry);
+                    runContext.memorySnippets.append(memorySnippetFromEntry(entry));
+                    runContext.variables.insert("last_memory_content", entry.content);
+                    runContext.variables.insert("last_memory_type", entry.type);
+                }
+                runContext.variables.insert("project_memory", runContext.memorySnippets.join("\n"));
+                runContext.variables.insert("project_memory_count", QString::number(runContext.memorySnippets.size()));
+                result.logs.append(
+                    QString("[step:%1] Tool hat %2 Memory-Eintrag(e) vorgemerkt.")
+                        .arg(step.id)
+                        .arg(toolResult.memoryEntriesToPersist.size())
+                );
+            }
+
+            result.logs.append(
+                QString("[step:%1] Tool-Ausgabe gespeichert in Variable '%2'.").arg(step.id, outputKey)
+            );
+            result.logs.append(QString("[step:%1] Ausgabe: %2").arg(step.id, previewText(toolResult.outputText)));
+            currentStepIndex = sequentialNextIndex;
+            continue;
+        }
+
         const QString promptTemplate = configString(step.config, "prompt");
         const QString outputKey = configString(step.config, "output").isEmpty()
             ? step.id
@@ -652,14 +813,38 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             return result;
         }
 
-        runContext.variables.insert(outputKey, response.text);
-        runContext.variables.insert("last_response", response.text);
-        result.finalOutput = response.text;
+        const SanitizedPromptResponse sanitizedResponse = sanitizePromptResponse(response.text);
+
+        runContext.variables.insert(outputKey, sanitizedResponse.visibleText);
+        runContext.variables.insert("last_response", sanitizedResponse.visibleText);
+        runContext.variables.insert(outputKey + "_raw", response.text);
+        runContext.variables.insert("last_response_raw", response.text);
+        result.finalOutput = sanitizedResponse.visibleText;
+
+        if (sanitizedResponse.hadReasoningTags) {
+            runContext.variables.insert(outputKey + "_reasoning", sanitizedResponse.reasoningText);
+            runContext.variables.insert("last_reasoning", sanitizedResponse.reasoningText);
+            runContext.variables.insert("last_response_reasoning", sanitizedResponse.reasoningText);
+            result.logs.append(
+                QString("[step:%1] Reasoning-Tags erkannt und aus der sichtbaren Ausgabe entfernt.")
+                    .arg(step.id)
+            );
+            if (!sanitizedResponse.reasoningText.isEmpty()) {
+                result.logs.append(
+                    QString("[step:%1] Reasoning gespeichert in '%2_reasoning' und 'last_reasoning'.")
+                        .arg(step.id, outputKey)
+                );
+            }
+        } else {
+            runContext.variables.remove(outputKey + "_reasoning");
+            runContext.variables.remove("last_reasoning");
+            runContext.variables.remove("last_response_reasoning");
+        }
 
         result.logs.append(
             QString("[step:%1] Antwort gespeichert in Variable '%2'.").arg(step.id, outputKey)
         );
-        result.logs.append(QString("[step:%1] Ausgabe: %2").arg(step.id, previewText(response.text)));
+        result.logs.append(QString("[step:%1] Ausgabe: %2").arg(step.id, previewText(sanitizedResponse.visibleText)));
         currentStepIndex = sequentialNextIndex;
     }
 
