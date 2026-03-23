@@ -66,6 +66,7 @@ Die Anwendung soll kein "Black Box Agent" sein, sondern ein kontrollierbares Des
 - Template-System fuer wiederverwendbare Workflows
 - Tagging und Volltextsuche ueber Memory-Eintraege
 - Import und Export von Workflows als JSON
+- Optionaler visueller Workflow-Editor mit bidirektionaler Synchronisation zum JSON
 - Streaming-Anzeige fuer laufende LLM-Antworten
 - Freigabe-Dialog vor Tool-Schritten mit Schreibzugriff
 - Benutzerdefinierte Systemprompts pro Projekt
@@ -75,6 +76,7 @@ Die Anwendung soll kein "Black Box Agent" sein, sondern ein kontrollierbares Des
 - Embeddings und semantische Suche
 - Dateiindizierung pro Projekt
 - Visueller Workflow-Editor per Drag and Drop
+- Erweiterte grafische Decision- und Tool-Konfiguration mit Kanten, Verzweigungen und Validierung
 - Plugin-System fuer neue Provider oder Tools
 - Rechte- und Rollenkonzept
 - Multi-Agenten-Orchestrierung
