@@ -515,10 +515,20 @@ void WorkflowPanel::buildUi()
     m_toolNameCombo = new QComboBox(toolPage);
     m_toolNameCombo->addItems(QStringList{
         "file.read",
+        "json.extract",
+        "csv.read",
+        "csv.write",
         "directory.read_recursive",
         "directory.read_changed",
+        "directory.list",
+        "memory.search",
+        "memory.summarize",
+        "memory.delete_old",
         "memory.ingest_directory",
+        "file.write_text",
         "file.edit_diff",
+        "http.request",
+        "shell.run",
         "comfyui.workflow"
     });
     m_toolOutputEdit = new QLineEdit(toolPage);
@@ -545,6 +555,55 @@ void WorkflowPanel::buildUi()
     fileReadLayout->addRow("Endzeile", m_toolFileReadLineEndSpin);
     fileReadLayout->addRow("Max. Zeichen", m_toolFileReadMaxCharsSpin);
     m_toolConfigStack->addWidget(fileReadPage);
+
+    auto* jsonExtractPage = new QWidget(m_toolConfigStack);
+    auto* jsonExtractLayout = new QFormLayout(jsonExtractPage);
+    jsonExtractLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolJsonInputEdit = new QLineEdit(jsonExtractPage);
+    m_toolJsonInputEdit->setPlaceholderText("{{last_response}}");
+    m_toolJsonPathEdit = new QLineEdit(jsonExtractPage);
+    m_toolJsonPathEdit->setPlaceholderText("items[0].title");
+    m_toolJsonPrettyCheckBox = new QCheckBox("Objekte und Arrays formatiert ausgeben", jsonExtractPage);
+    m_toolJsonPrettyCheckBox->setChecked(true);
+    jsonExtractLayout->addRow("JSON-Quelle", m_toolJsonInputEdit);
+    jsonExtractLayout->addRow("Pfad", m_toolJsonPathEdit);
+    jsonExtractLayout->addRow("", m_toolJsonPrettyCheckBox);
+    m_toolConfigStack->addWidget(jsonExtractPage);
+
+    auto* csvPage = new QWidget(m_toolConfigStack);
+    auto* csvLayout = new QFormLayout(csvPage);
+    csvLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolCsvPathEdit = new QLineEdit(csvPage);
+    m_toolCsvDelimiterCombo = new QComboBox(csvPage);
+    m_toolCsvDelimiterCombo->setEditable(true);
+    m_toolCsvDelimiterCombo->addItems(QStringList{ ",", ";", "\\t" });
+    m_toolCsvHasHeaderCheckBox = new QCheckBox("Erste Zeile als Header behandeln / schreiben", csvPage);
+    m_toolCsvHasHeaderCheckBox->setChecked(true);
+    m_toolCsvMaxRowsSpin = new QSpinBox(csvPage);
+    m_toolCsvMaxRowsSpin->setRange(1, 500000);
+    m_toolCsvMaxRowsSpin->setValue(200);
+    m_toolCsvOutputFormatCombo = new QComboBox(csvPage);
+    m_toolCsvOutputFormatCombo->addItem("JSON", "json");
+    m_toolCsvOutputFormatCombo->addItem("Text", "text");
+    m_toolCsvSourceFormatCombo = new QComboBox(csvPage);
+    m_toolCsvSourceFormatCombo->addItem("JSON-Zeilenarray", "rows_json");
+    m_toolCsvSourceFormatCombo->addItem("Rohes CSV", "csv_text");
+    m_toolCsvCreateDirsCheckBox = new QCheckBox("Fehlende Zielordner automatisch anlegen", csvPage);
+    m_toolCsvCreateDirsCheckBox->setChecked(true);
+    m_toolCsvReturnContentCheckBox = new QCheckBox("Geschriebenen CSV-Inhalt zurueckgeben", csvPage);
+    m_toolCsvContentEdit = new QPlainTextEdit(csvPage);
+    m_toolCsvContentEdit->setMinimumHeight(140);
+    m_toolCsvContentEdit->setPlaceholderText("[\n  {\"name\": \"Alice\", \"score\": \"42\"}\n]");
+    csvLayout->addRow("Pfad", m_toolCsvPathEdit);
+    csvLayout->addRow("Delimiter", m_toolCsvDelimiterCombo);
+    csvLayout->addRow("", m_toolCsvHasHeaderCheckBox);
+    csvLayout->addRow("Max. Zeilen (read)", m_toolCsvMaxRowsSpin);
+    csvLayout->addRow("Ausgabeformat (read)", m_toolCsvOutputFormatCombo);
+    csvLayout->addRow("Quellformat (write)", m_toolCsvSourceFormatCombo);
+    csvLayout->addRow("Inhalt (write)", m_toolCsvContentEdit);
+    csvLayout->addRow("", m_toolCsvCreateDirsCheckBox);
+    csvLayout->addRow("", m_toolCsvReturnContentCheckBox);
+    m_toolConfigStack->addWidget(csvPage);
 
     auto* directoryReadPage = new QWidget(m_toolConfigStack);
     auto* directoryReadLayout = new QFormLayout(directoryReadPage);
@@ -603,6 +662,115 @@ void WorkflowPanel::buildUi()
     directoryReadLayout->addRow("", m_toolDirectoryReadSkipBinaryCheckBox);
     m_toolConfigStack->addWidget(directoryReadPage);
 
+    auto* directoryListPage = new QWidget(m_toolConfigStack);
+    auto* directoryListLayout = new QFormLayout(directoryListPage);
+    directoryListLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolDirectoryListPathEdit = new QLineEdit(directoryListPage);
+    m_toolDirectoryListExtensionsEdit = new QLineEdit(directoryListPage);
+    m_toolDirectoryListExtensionsEdit->setPlaceholderText(".cpp,.h,.md,.txt");
+    m_toolDirectoryListExcludeEdit = new QLineEdit(directoryListPage);
+    m_toolDirectoryListExcludeEdit->setPlaceholderText(".git,build,node_modules,__pycache__");
+    m_toolDirectoryListMaxEntriesSpin = new QSpinBox(directoryListPage);
+    m_toolDirectoryListMaxEntriesSpin->setRange(1, 20000);
+    m_toolDirectoryListMaxEntriesSpin->setValue(200);
+    m_toolDirectoryListRecursiveCheckBox = new QCheckBox("Unterverzeichnisse einbeziehen", directoryListPage);
+    m_toolDirectoryListRecursiveCheckBox->setChecked(true);
+    m_toolDirectoryListIncludeHiddenCheckBox = new QCheckBox("Versteckte Dateien einbeziehen", directoryListPage);
+    m_toolDirectoryListDirectoriesOnlyCheckBox = new QCheckBox("Nur Verzeichnisse ausgeben", directoryListPage);
+    directoryListLayout->addRow("Verzeichnis", m_toolDirectoryListPathEdit);
+    directoryListLayout->addRow("Extensions", m_toolDirectoryListExtensionsEdit);
+    directoryListLayout->addRow("Ausschliessen", m_toolDirectoryListExcludeEdit);
+    directoryListLayout->addRow("Max. Eintraege", m_toolDirectoryListMaxEntriesSpin);
+    directoryListLayout->addRow("", m_toolDirectoryListRecursiveCheckBox);
+    directoryListLayout->addRow("", m_toolDirectoryListIncludeHiddenCheckBox);
+    directoryListLayout->addRow("", m_toolDirectoryListDirectoriesOnlyCheckBox);
+    m_toolConfigStack->addWidget(directoryListPage);
+
+    auto* memoryPage = new QWidget(m_toolConfigStack);
+    auto* memoryLayout = new QFormLayout(memoryPage);
+    memoryLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolMemoryQueryEdit = new QLineEdit(memoryPage);
+    m_toolMemoryQueryEdit->setPlaceholderText("Fehlermeldung, Kapitel 3, Architektur...");
+    m_toolMemoryTypeFilterEdit = new QLineEdit(memoryPage);
+    m_toolMemoryTypeFilterEdit->setPlaceholderText("note, artifact, summary");
+    m_toolMemoryTagsFilterEdit = new QLineEdit(memoryPage);
+    m_toolMemoryTagsFilterEdit->setPlaceholderText("codebase, plot, design");
+    m_toolMemoryLimitSpin = new QSpinBox(memoryPage);
+    m_toolMemoryLimitSpin->setRange(1, 10000);
+    m_toolMemoryLimitSpin->setValue(10);
+    m_toolMemoryMaxCharsSpin = new QSpinBox(memoryPage);
+    m_toolMemoryMaxCharsSpin->setRange(0, 5000000);
+    m_toolMemoryMaxCharsSpin->setValue(16000);
+    m_toolMemoryMaxCharsSpin->setSpecialValueText("Unbegrenzt");
+    m_toolMemoryFormatCombo = new QComboBox(memoryPage);
+    m_toolMemoryFormatCombo->addItem("Snippets", "snippets");
+    m_toolMemoryFormatCombo->addItem("Volltext", "full");
+    m_toolMemorySummaryPromptEdit = new QPlainTextEdit(memoryPage);
+    m_toolMemorySummaryPromptEdit->setMinimumHeight(110);
+    m_toolMemorySummaryPromptEdit->setPlaceholderText("Optionale eigene Zusammenfassungsanweisung.");
+    m_toolMemorySummarySystemPromptEdit = new QLineEdit(memoryPage);
+    m_toolMemorySummarySystemPromptEdit->setPlaceholderText("Optionaler Systemprompt fuer die Zusammenfassung");
+    m_toolMemorySaveSummaryCheckBox = new QCheckBox("Zusammenfassung als neuen Memory-Eintrag speichern", memoryPage);
+    m_toolMemorySaveSummaryCheckBox->setChecked(true);
+    m_toolMemorySummaryTypeEdit = new QLineEdit(memoryPage);
+    m_toolMemorySummaryTypeEdit->setText("summary");
+    m_toolMemorySummarySourceEdit = new QLineEdit(memoryPage);
+    m_toolMemorySummarySourceEdit->setPlaceholderText("workflow:projekt/summary");
+    m_toolMemorySummaryTagsEdit = new QLineEdit(memoryPage);
+    m_toolMemorySummaryTagsEdit->setPlaceholderText("summary,context");
+    m_toolMemorySummaryRelevanceSpin = new QSpinBox(memoryPage);
+    m_toolMemorySummaryRelevanceSpin->setRange(0, 100);
+    m_toolMemorySummaryRelevanceSpin->setValue(75);
+    m_toolMemoryDeleteOlderThanDaysSpin = new QSpinBox(memoryPage);
+    m_toolMemoryDeleteOlderThanDaysSpin->setRange(1, 3650);
+    m_toolMemoryDeleteOlderThanDaysSpin->setValue(30);
+    m_toolMemoryDeleteKeepLatestSpin = new QSpinBox(memoryPage);
+    m_toolMemoryDeleteKeepLatestSpin->setRange(0, 10000);
+    m_toolMemoryDeleteKeepLatestSpin->setValue(0);
+    m_toolMemoryDeleteKeepRelevanceSpin = new QSpinBox(memoryPage);
+    m_toolMemoryDeleteKeepRelevanceSpin->setRange(0, 100);
+    m_toolMemoryDeleteKeepRelevanceSpin->setValue(90);
+    m_toolMemoryDeleteDryRunCheckBox = new QCheckBox("Nur simulieren, nichts wirklich loeschen", memoryPage);
+    m_toolMemoryDeleteDryRunCheckBox->setChecked(true);
+    memoryLayout->addRow("Suche", m_toolMemoryQueryEdit);
+    memoryLayout->addRow("Typfilter", m_toolMemoryTypeFilterEdit);
+    memoryLayout->addRow("Tagfilter", m_toolMemoryTagsFilterEdit);
+    memoryLayout->addRow("Limit", m_toolMemoryLimitSpin);
+    memoryLayout->addRow("Max. Zeichen", m_toolMemoryMaxCharsSpin);
+    memoryLayout->addRow("Format (search)", m_toolMemoryFormatCombo);
+    memoryLayout->addRow("Prompt (summarize)", m_toolMemorySummaryPromptEdit);
+    memoryLayout->addRow("Systemprompt (summarize)", m_toolMemorySummarySystemPromptEdit);
+    memoryLayout->addRow("", m_toolMemorySaveSummaryCheckBox);
+    memoryLayout->addRow("Summary-Typ", m_toolMemorySummaryTypeEdit);
+    memoryLayout->addRow("Summary-Quelle", m_toolMemorySummarySourceEdit);
+    memoryLayout->addRow("Summary-Tags", m_toolMemorySummaryTagsEdit);
+    memoryLayout->addRow("Summary-Relevanz", m_toolMemorySummaryRelevanceSpin);
+    memoryLayout->addRow("Aelter als Tage", m_toolMemoryDeleteOlderThanDaysSpin);
+    memoryLayout->addRow("Neueste behalten", m_toolMemoryDeleteKeepLatestSpin);
+    memoryLayout->addRow("Ab Relevanz behalten", m_toolMemoryDeleteKeepRelevanceSpin);
+    memoryLayout->addRow("", m_toolMemoryDeleteDryRunCheckBox);
+    m_toolConfigStack->addWidget(memoryPage);
+
+    auto* fileWritePage = new QWidget(m_toolConfigStack);
+    auto* fileWriteLayout = new QFormLayout(fileWritePage);
+    fileWriteLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolFileWritePathEdit = new QLineEdit(fileWritePage);
+    m_toolFileWriteModeCombo = new QComboBox(fileWritePage);
+    m_toolFileWriteModeCombo->addItem("Ueberschreiben", "overwrite");
+    m_toolFileWriteModeCombo->addItem("Anhaengen", "append");
+    m_toolFileWriteCreateDirsCheckBox = new QCheckBox("Fehlende Zielordner automatisch anlegen", fileWritePage);
+    m_toolFileWriteCreateDirsCheckBox->setChecked(true);
+    m_toolFileWriteReturnContentCheckBox = new QCheckBox("Aktualisierten Dateiinhalt zurueckgeben", fileWritePage);
+    m_toolFileWriteContentEdit = new QPlainTextEdit(fileWritePage);
+    m_toolFileWriteContentEdit->setMinimumHeight(140);
+    m_toolFileWriteContentEdit->setPlaceholderText("Inhalt, der in die Datei geschrieben werden soll.");
+    fileWriteLayout->addRow("Pfad", m_toolFileWritePathEdit);
+    fileWriteLayout->addRow("Modus", m_toolFileWriteModeCombo);
+    fileWriteLayout->addRow("Inhalt", m_toolFileWriteContentEdit);
+    fileWriteLayout->addRow("", m_toolFileWriteCreateDirsCheckBox);
+    fileWriteLayout->addRow("", m_toolFileWriteReturnContentCheckBox);
+    m_toolConfigStack->addWidget(fileWritePage);
+
     auto* fileEditPage = new QWidget(m_toolConfigStack);
     auto* fileEditLayout = new QFormLayout(fileEditPage);
     fileEditLayout->setLabelAlignment(Qt::AlignLeft);
@@ -617,6 +785,58 @@ void WorkflowPanel::buildUi()
     fileEditLayout->addRow("Diff/Patch", m_toolFileEditDiffEdit);
     fileEditLayout->addRow("", m_toolFileEditReturnContentCheckBox);
     m_toolConfigStack->addWidget(fileEditPage);
+
+    auto* httpPage = new QWidget(m_toolConfigStack);
+    auto* httpLayout = new QFormLayout(httpPage);
+    httpLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolHttpUrlEdit = new QLineEdit(httpPage);
+    m_toolHttpMethodCombo = new QComboBox(httpPage);
+    m_toolHttpMethodCombo->addItems(QStringList{ "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD" });
+    m_toolHttpTimeoutSpin = new QSpinBox(httpPage);
+    m_toolHttpTimeoutSpin->setRange(0, 3600000);
+    m_toolHttpTimeoutSpin->setSingleStep(1000);
+    m_toolHttpTimeoutSpin->setValue(30000);
+    m_toolHttpTimeoutSpin->setSpecialValueText("Ohne lokales Timeout");
+    m_toolHttpTimeoutSpin->setSuffix(" ms");
+    m_toolHttpBodyJsonCheckBox = new QCheckBox("Body als JSON interpretieren", httpPage);
+    m_toolHttpHeadersEdit = new QPlainTextEdit(httpPage);
+    m_toolHttpHeadersEdit->setMinimumHeight(100);
+    m_toolHttpHeadersEdit->setPlaceholderText("{\n  \"Authorization\": \"Bearer ...\",\n  \"Accept\": \"application/json\"\n}");
+    m_toolHttpBodyEdit = new QPlainTextEdit(httpPage);
+    m_toolHttpBodyEdit->setMinimumHeight(140);
+    m_toolHttpBodyEdit->setPlaceholderText("{\n  \"example\": true\n}");
+    httpLayout->addRow("URL", m_toolHttpUrlEdit);
+    httpLayout->addRow("Methode", m_toolHttpMethodCombo);
+    httpLayout->addRow("Timeout", m_toolHttpTimeoutSpin);
+    httpLayout->addRow("Header-JSON", m_toolHttpHeadersEdit);
+    httpLayout->addRow("Request-Body", m_toolHttpBodyEdit);
+    httpLayout->addRow("", m_toolHttpBodyJsonCheckBox);
+    m_toolConfigStack->addWidget(httpPage);
+
+    auto* shellPage = new QWidget(m_toolConfigStack);
+    auto* shellLayout = new QFormLayout(shellPage);
+    shellLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolShellCommandEdit = new QLineEdit(shellPage);
+    m_toolShellCommandEdit->setPlaceholderText("git status --short");
+    m_toolShellWorkingDirEdit = new QLineEdit(shellPage);
+    m_toolShellWorkingDirEdit->setPlaceholderText(".");
+    m_toolShellTimeoutSpin = new QSpinBox(shellPage);
+    m_toolShellTimeoutSpin->setRange(0, 3600000);
+    m_toolShellTimeoutSpin->setValue(60000);
+    m_toolShellTimeoutSpin->setSpecialValueText("Ohne lokales Timeout");
+    m_toolShellTimeoutSpin->setSuffix(" ms");
+    m_toolShellMaxOutputCharsSpin = new QSpinBox(shellPage);
+    m_toolShellMaxOutputCharsSpin->setRange(0, 5000000);
+    m_toolShellMaxOutputCharsSpin->setValue(20000);
+    m_toolShellMaxOutputCharsSpin->setSpecialValueText("Unbegrenzt");
+    m_toolShellIncludeStderrCheckBox = new QCheckBox("stderr an die Ausgabe anhaengen", shellPage);
+    m_toolShellIncludeStderrCheckBox->setChecked(true);
+    shellLayout->addRow("Befehl", m_toolShellCommandEdit);
+    shellLayout->addRow("Arbeitsverzeichnis", m_toolShellWorkingDirEdit);
+    shellLayout->addRow("Timeout", m_toolShellTimeoutSpin);
+    shellLayout->addRow("Max. Ausgabe", m_toolShellMaxOutputCharsSpin);
+    shellLayout->addRow("", m_toolShellIncludeStderrCheckBox);
+    m_toolConfigStack->addWidget(shellPage);
 
     auto* comfyPage = new QWidget(m_toolConfigStack);
     auto* comfyLayout = new QVBoxLayout(comfyPage);
@@ -1001,6 +1221,42 @@ void WorkflowPanel::buildUi()
     connect(m_toolFileReadMaxCharsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
         scheduleVisualStepApply();
     });
+    connect(m_toolJsonInputEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolJsonPathEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolJsonPrettyCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolCsvPathEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolCsvDelimiterCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolCsvHasHeaderCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolCsvMaxRowsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolCsvOutputFormatCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolCsvSourceFormatCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolCsvCreateDirsCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolCsvReturnContentCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolCsvContentEdit, &QPlainTextEdit::textChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
     connect(m_toolDirectoryReadPathEdit, &QLineEdit::textEdited, this, [this]() {
         scheduleVisualStepApply();
     });
@@ -1047,6 +1303,93 @@ void WorkflowPanel::buildUi()
     connect(m_toolDirectoryReadSkipBinaryCheckBox, &QCheckBox::toggled, this, [this]() {
         scheduleVisualStepApply();
     });
+    connect(m_toolDirectoryListPathEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryListExtensionsEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryListExcludeEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryListMaxEntriesSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryListRecursiveCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryListIncludeHiddenCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolDirectoryListDirectoriesOnlyCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryQueryEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryTypeFilterEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryTagsFilterEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryLimitSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryMaxCharsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryFormatCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemorySummaryPromptEdit, &QPlainTextEdit::textChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemorySummarySystemPromptEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemorySaveSummaryCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemorySummaryTypeEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemorySummarySourceEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemorySummaryTagsEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemorySummaryRelevanceSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryDeleteOlderThanDaysSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryDeleteKeepLatestSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryDeleteKeepRelevanceSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolMemoryDeleteDryRunCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolFileWritePathEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolFileWriteModeCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolFileWriteCreateDirsCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolFileWriteReturnContentCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolFileWriteContentEdit, &QPlainTextEdit::textChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
     connect(m_toolFileEditPathEdit, &QLineEdit::textEdited, this, [this]() {
         scheduleVisualStepApply();
     });
@@ -1054,6 +1397,39 @@ void WorkflowPanel::buildUi()
         scheduleVisualStepApply();
     });
     connect(m_toolFileEditDiffEdit, &QPlainTextEdit::textChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolHttpUrlEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolHttpMethodCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolHttpTimeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolHttpBodyJsonCheckBox, &QCheckBox::toggled, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolHttpHeadersEdit, &QPlainTextEdit::textChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolHttpBodyEdit, &QPlainTextEdit::textChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolShellCommandEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolShellWorkingDirEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolShellTimeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolShellMaxOutputCharsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolShellIncludeStderrCheckBox, &QCheckBox::toggled, this, [this]() {
         scheduleVisualStepApply();
     });
     connect(m_toolComfyRefreshButton, &QPushButton::clicked, this, [this]() {
@@ -1665,6 +2041,18 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
         const QSignalBlocker toolFileReadLineStartBlocker(m_toolFileReadLineStartSpin);
         const QSignalBlocker toolFileReadLineEndBlocker(m_toolFileReadLineEndSpin);
         const QSignalBlocker toolFileReadMaxCharsBlocker(m_toolFileReadMaxCharsSpin);
+        const QSignalBlocker toolJsonInputBlocker(m_toolJsonInputEdit);
+        const QSignalBlocker toolJsonPathBlocker(m_toolJsonPathEdit);
+        const QSignalBlocker toolJsonPrettyBlocker(m_toolJsonPrettyCheckBox);
+        const QSignalBlocker toolCsvPathBlocker(m_toolCsvPathEdit);
+        const QSignalBlocker toolCsvDelimiterBlocker(m_toolCsvDelimiterCombo);
+        const QSignalBlocker toolCsvHeaderBlocker(m_toolCsvHasHeaderCheckBox);
+        const QSignalBlocker toolCsvMaxRowsBlocker(m_toolCsvMaxRowsSpin);
+        const QSignalBlocker toolCsvOutputFormatBlocker(m_toolCsvOutputFormatCombo);
+        const QSignalBlocker toolCsvSourceFormatBlocker(m_toolCsvSourceFormatCombo);
+        const QSignalBlocker toolCsvCreateDirsBlocker(m_toolCsvCreateDirsCheckBox);
+        const QSignalBlocker toolCsvReturnContentBlocker(m_toolCsvReturnContentCheckBox);
+        const QSignalBlocker toolCsvContentBlocker(m_toolCsvContentEdit);
         const QSignalBlocker toolDirectoryReadPathBlocker(m_toolDirectoryReadPathEdit);
         const QSignalBlocker toolDirectoryReadExtensionsBlocker(m_toolDirectoryReadExtensionsEdit);
         const QSignalBlocker toolDirectoryReadExcludeBlocker(m_toolDirectoryReadExcludeEdit);
@@ -1680,9 +2068,49 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
         const QSignalBlocker toolDirectoryReadMaxTotalCharsBlocker(m_toolDirectoryReadMaxTotalCharsSpin);
         const QSignalBlocker toolDirectoryReadIncludeHiddenBlocker(m_toolDirectoryReadIncludeHiddenCheckBox);
         const QSignalBlocker toolDirectoryReadSkipBinaryBlocker(m_toolDirectoryReadSkipBinaryCheckBox);
+        const QSignalBlocker toolDirectoryListPathBlocker(m_toolDirectoryListPathEdit);
+        const QSignalBlocker toolDirectoryListExtensionsBlocker(m_toolDirectoryListExtensionsEdit);
+        const QSignalBlocker toolDirectoryListExcludeBlocker(m_toolDirectoryListExcludeEdit);
+        const QSignalBlocker toolDirectoryListMaxEntriesBlocker(m_toolDirectoryListMaxEntriesSpin);
+        const QSignalBlocker toolDirectoryListRecursiveBlocker(m_toolDirectoryListRecursiveCheckBox);
+        const QSignalBlocker toolDirectoryListIncludeHiddenBlocker(m_toolDirectoryListIncludeHiddenCheckBox);
+        const QSignalBlocker toolDirectoryListDirectoriesOnlyBlocker(m_toolDirectoryListDirectoriesOnlyCheckBox);
+        const QSignalBlocker toolMemoryQueryBlocker(m_toolMemoryQueryEdit);
+        const QSignalBlocker toolMemoryTypeFilterBlocker(m_toolMemoryTypeFilterEdit);
+        const QSignalBlocker toolMemoryTagsFilterBlocker(m_toolMemoryTagsFilterEdit);
+        const QSignalBlocker toolMemoryLimitBlocker(m_toolMemoryLimitSpin);
+        const QSignalBlocker toolMemoryMaxCharsBlocker(m_toolMemoryMaxCharsSpin);
+        const QSignalBlocker toolMemoryFormatBlocker(m_toolMemoryFormatCombo);
+        const QSignalBlocker toolMemorySummaryPromptBlocker(m_toolMemorySummaryPromptEdit);
+        const QSignalBlocker toolMemorySummarySystemPromptBlocker(m_toolMemorySummarySystemPromptEdit);
+        const QSignalBlocker toolMemorySaveSummaryBlocker(m_toolMemorySaveSummaryCheckBox);
+        const QSignalBlocker toolMemorySummaryTypeBlocker(m_toolMemorySummaryTypeEdit);
+        const QSignalBlocker toolMemorySummarySourceBlocker(m_toolMemorySummarySourceEdit);
+        const QSignalBlocker toolMemorySummaryTagsBlocker(m_toolMemorySummaryTagsEdit);
+        const QSignalBlocker toolMemorySummaryRelevanceBlocker(m_toolMemorySummaryRelevanceSpin);
+        const QSignalBlocker toolMemoryDeleteOlderThanDaysBlocker(m_toolMemoryDeleteOlderThanDaysSpin);
+        const QSignalBlocker toolMemoryDeleteKeepLatestBlocker(m_toolMemoryDeleteKeepLatestSpin);
+        const QSignalBlocker toolMemoryDeleteKeepRelevanceBlocker(m_toolMemoryDeleteKeepRelevanceSpin);
+        const QSignalBlocker toolMemoryDeleteDryRunBlocker(m_toolMemoryDeleteDryRunCheckBox);
+        const QSignalBlocker toolFileWritePathBlocker(m_toolFileWritePathEdit);
+        const QSignalBlocker toolFileWriteModeBlocker(m_toolFileWriteModeCombo);
+        const QSignalBlocker toolFileWriteCreateDirsBlocker(m_toolFileWriteCreateDirsCheckBox);
+        const QSignalBlocker toolFileWriteReturnContentBlocker(m_toolFileWriteReturnContentCheckBox);
+        const QSignalBlocker toolFileWriteContentBlocker(m_toolFileWriteContentEdit);
         const QSignalBlocker toolFileEditPathBlocker(m_toolFileEditPathEdit);
         const QSignalBlocker toolFileEditReturnContentBlocker(m_toolFileEditReturnContentCheckBox);
         const QSignalBlocker toolFileEditDiffBlocker(m_toolFileEditDiffEdit);
+        const QSignalBlocker toolHttpUrlBlocker(m_toolHttpUrlEdit);
+        const QSignalBlocker toolHttpMethodBlocker(m_toolHttpMethodCombo);
+        const QSignalBlocker toolHttpTimeoutBlocker(m_toolHttpTimeoutSpin);
+        const QSignalBlocker toolHttpBodyJsonBlocker(m_toolHttpBodyJsonCheckBox);
+        const QSignalBlocker toolHttpHeadersBlocker(m_toolHttpHeadersEdit);
+        const QSignalBlocker toolHttpBodyBlocker(m_toolHttpBodyEdit);
+        const QSignalBlocker toolShellCommandBlocker(m_toolShellCommandEdit);
+        const QSignalBlocker toolShellWorkingDirBlocker(m_toolShellWorkingDirEdit);
+        const QSignalBlocker toolShellTimeoutBlocker(m_toolShellTimeoutSpin);
+        const QSignalBlocker toolShellMaxOutputCharsBlocker(m_toolShellMaxOutputCharsSpin);
+        const QSignalBlocker toolShellIncludeStderrBlocker(m_toolShellIncludeStderrCheckBox);
         const QSignalBlocker toolComfyModeBlocker(m_toolComfyModeCombo);
         const QSignalBlocker toolComfyCheckpointBlocker(m_toolComfyCheckpointCombo);
         const QSignalBlocker toolComfyVaeBlocker(m_toolComfyVaeCombo);
@@ -1764,6 +2192,28 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
         m_toolFileReadLineStartSpin->setValue(qMax(1, config.value("line_start").toInt(1)));
         m_toolFileReadLineEndSpin->setValue(qMax(0, config.value("line_end").toInt(0)));
         m_toolFileReadMaxCharsSpin->setValue(qMax(0, config.value("max_chars").toInt(20000)));
+        m_toolJsonInputEdit->setText(config.value("input").toString());
+        m_toolJsonPathEdit->setText(config.value("path").toString());
+        m_toolJsonPrettyCheckBox->setChecked(config.contains("pretty") ? config.value("pretty").toBool(true) : true);
+        m_toolCsvPathEdit->setText(config.value("path").toString());
+        m_toolCsvDelimiterCombo->setCurrentText(config.value("delimiter").toString().trimmed().isEmpty()
+            ? ","
+            : config.value("delimiter").toString());
+        m_toolCsvHasHeaderCheckBox->setChecked(config.contains("has_header") ? config.value("has_header").toBool(true) : true);
+        m_toolCsvMaxRowsSpin->setValue(qMax(1, config.value("max_rows").toInt(200)));
+        {
+            const QString outputFormat = config.value("output_format").toString().trimmed().toLower();
+            const int index = m_toolCsvOutputFormatCombo->findData(outputFormat.isEmpty() ? "json" : outputFormat);
+            m_toolCsvOutputFormatCombo->setCurrentIndex(index >= 0 ? index : 0);
+        }
+        {
+            const QString sourceFormat = config.value("source_format").toString().trimmed().toLower();
+            const int index = m_toolCsvSourceFormatCombo->findData(sourceFormat.isEmpty() ? "rows_json" : sourceFormat);
+            m_toolCsvSourceFormatCombo->setCurrentIndex(index >= 0 ? index : 0);
+        }
+        m_toolCsvCreateDirsCheckBox->setChecked(config.contains("create_dirs") ? config.value("create_dirs").toBool(true) : true);
+        m_toolCsvReturnContentCheckBox->setChecked(config.value("return_content").toBool(false));
+        m_toolCsvContentEdit->setPlainText(config.value("content").toString());
         m_toolDirectoryReadPathEdit->setText(config.value("path").toString());
         if (config.value("include_extensions").isArray()) {
             QStringList extensions;
@@ -1826,12 +2276,145 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
         m_toolDirectoryReadSkipBinaryCheckBox->setChecked(
             config.contains("skip_binary") ? config.value("skip_binary").toBool(true) : true
         );
+        m_toolDirectoryListPathEdit->setText(config.value("path").toString());
+        if (config.value("include_extensions").isArray()) {
+            QStringList extensions;
+            const QJsonArray extensionArray = config.value("include_extensions").toArray();
+            for (const QJsonValue& value : extensionArray) {
+                const QString extension = value.toString().trimmed();
+                if (!extension.isEmpty()) {
+                    extensions.append(extension);
+                }
+            }
+            m_toolDirectoryListExtensionsEdit->setText(extensions.join(", "));
+        } else {
+            m_toolDirectoryListExtensionsEdit->setText(config.value("include_extensions").toString());
+        }
+        if (config.value("exclude_paths").isArray()) {
+            QStringList exclusions;
+            const QJsonArray excludeArray = config.value("exclude_paths").toArray();
+            for (const QJsonValue& value : excludeArray) {
+                const QString exclusion = value.toString().trimmed();
+                if (!exclusion.isEmpty()) {
+                    exclusions.append(exclusion);
+                }
+            }
+            m_toolDirectoryListExcludeEdit->setText(exclusions.join(", "));
+        } else {
+            m_toolDirectoryListExcludeEdit->setText(config.value("exclude_paths").toString());
+        }
+        m_toolDirectoryListMaxEntriesSpin->setValue(qMax(1, config.value("max_entries").toInt(200)));
+        m_toolDirectoryListRecursiveCheckBox->setChecked(
+            config.contains("recursive") ? config.value("recursive").toBool(true) : true
+        );
+        m_toolDirectoryListIncludeHiddenCheckBox->setChecked(config.value("include_hidden").toBool(false));
+        m_toolDirectoryListDirectoriesOnlyCheckBox->setChecked(config.value("directories_only").toBool(false));
+        m_toolMemoryQueryEdit->setText(config.value("query").toString());
+        m_toolMemoryTypeFilterEdit->setText(config.value("entry_type").toString());
+        if (config.value("tags").isArray()) {
+            QStringList tags;
+            const QJsonArray tagArray = config.value("tags").toArray();
+            for (const QJsonValue& value : tagArray) {
+                const QString tag = value.toString().trimmed();
+                if (!tag.isEmpty()) {
+                    tags.append(tag);
+                }
+            }
+            m_toolMemoryTagsFilterEdit->setText(tags.join(", "));
+        } else {
+            m_toolMemoryTagsFilterEdit->setText(config.value("tags").toString());
+        }
+        m_toolMemoryLimitSpin->setValue(qMax(1, config.value("limit").toInt(10)));
+        m_toolMemoryMaxCharsSpin->setValue(qMax(0, config.value("max_chars").toInt(16000)));
+        {
+            const QString format = config.value("format").toString().trimmed().toLower();
+            const int index = m_toolMemoryFormatCombo->findData(format.isEmpty() ? "snippets" : format);
+            m_toolMemoryFormatCombo->setCurrentIndex(index >= 0 ? index : 0);
+        }
+        m_toolMemorySummaryPromptEdit->setPlainText(config.value("prompt").toString());
+        m_toolMemorySummarySystemPromptEdit->setText(config.value("system_prompt").toString());
+        m_toolMemorySaveSummaryCheckBox->setChecked(
+            config.contains("save_as_memory") ? config.value("save_as_memory").toBool(true) : true
+        );
+        m_toolMemorySummaryTypeEdit->setText(
+            config.value("summary_entry_type").toString().trimmed().isEmpty()
+                ? "summary"
+                : config.value("summary_entry_type").toString()
+        );
+        m_toolMemorySummarySourceEdit->setText(config.value("summary_source").toString());
+        if (config.value("summary_tags").isArray()) {
+            QStringList summaryTags;
+            const QJsonArray tagArray = config.value("summary_tags").toArray();
+            for (const QJsonValue& value : tagArray) {
+                const QString tag = value.toString().trimmed();
+                if (!tag.isEmpty()) {
+                    summaryTags.append(tag);
+                }
+            }
+            m_toolMemorySummaryTagsEdit->setText(summaryTags.join(", "));
+        } else {
+            m_toolMemorySummaryTagsEdit->setText(config.value("summary_tags").toString());
+        }
+        m_toolMemorySummaryRelevanceSpin->setValue(qBound(0, config.value("summary_relevance").toInt(75), 100));
+        m_toolMemoryDeleteOlderThanDaysSpin->setValue(qMax(1, config.value("older_than_days").toInt(30)));
+        m_toolMemoryDeleteKeepLatestSpin->setValue(qMax(0, config.value("keep_latest").toInt(0)));
+        m_toolMemoryDeleteKeepRelevanceSpin->setValue(
+            qBound(0, config.value("keep_relevance_at_or_above").toInt(90), 100)
+        );
+        m_toolMemoryDeleteDryRunCheckBox->setChecked(
+            config.contains("dry_run") ? config.value("dry_run").toBool(true) : true
+        );
+        m_toolFileWritePathEdit->setText(config.value("path").toString());
+        const QString writeMode = config.value("mode").toString().trimmed().toLower();
+        const int writeModeIndex = m_toolFileWriteModeCombo->findData(writeMode.isEmpty() ? "overwrite" : writeMode);
+        m_toolFileWriteModeCombo->setCurrentIndex(writeModeIndex >= 0 ? writeModeIndex : 0);
+        m_toolFileWriteCreateDirsCheckBox->setChecked(
+            config.contains("create_dirs") ? config.value("create_dirs").toBool(true) : true
+        );
+        m_toolFileWriteReturnContentCheckBox->setChecked(config.value("return_content").toBool(false));
+        m_toolFileWriteContentEdit->setPlainText(config.value("content").toString());
         m_toolFileEditPathEdit->setText(config.value("path").toString());
         m_toolFileEditReturnContentCheckBox->setChecked(config.value("return_content").toBool(false));
         const QString diffText = config.value("diff").toString().trimmed().isEmpty()
             ? config.value("patch").toString()
             : config.value("diff").toString();
         m_toolFileEditDiffEdit->setPlainText(diffText);
+        m_toolHttpUrlEdit->setText(config.value("url").toString());
+        const QString httpMethod = config.value("method").toString().trimmed().toUpper();
+        const int httpMethodIndex = m_toolHttpMethodCombo->findText(httpMethod.isEmpty() ? "GET" : httpMethod);
+        m_toolHttpMethodCombo->setCurrentIndex(httpMethodIndex >= 0 ? httpMethodIndex : 0);
+        m_toolHttpTimeoutSpin->setValue(qMax(0, config.value("timeout_ms").toInt(30000)));
+        if (config.value("headers").isObject()) {
+            m_toolHttpHeadersEdit->setPlainText(
+                QString::fromUtf8(QJsonDocument(config.value("headers").toObject()).toJson(QJsonDocument::Indented))
+            );
+        } else {
+            m_toolHttpHeadersEdit->setPlainText(config.value("headers_json").toString());
+        }
+        if (config.value("body_json").isObject()) {
+            m_toolHttpBodyJsonCheckBox->setChecked(true);
+            m_toolHttpBodyEdit->setPlainText(
+                QString::fromUtf8(QJsonDocument(config.value("body_json").toObject()).toJson(QJsonDocument::Indented))
+            );
+        } else if (config.value("body_json").isArray()) {
+            m_toolHttpBodyJsonCheckBox->setChecked(true);
+            m_toolHttpBodyEdit->setPlainText(
+                QString::fromUtf8(QJsonDocument(config.value("body_json").toArray()).toJson(QJsonDocument::Indented))
+            );
+        } else if (!config.value("body_json").toString().trimmed().isEmpty()) {
+            m_toolHttpBodyJsonCheckBox->setChecked(true);
+            m_toolHttpBodyEdit->setPlainText(config.value("body_json").toString());
+        } else {
+            m_toolHttpBodyJsonCheckBox->setChecked(false);
+            m_toolHttpBodyEdit->setPlainText(config.value("body").toString());
+        }
+        m_toolShellCommandEdit->setText(config.value("command").toString());
+        m_toolShellWorkingDirEdit->setText(config.value("working_directory").toString());
+        m_toolShellTimeoutSpin->setValue(qMax(0, config.value("timeout_ms").toInt(60000)));
+        m_toolShellMaxOutputCharsSpin->setValue(qMax(0, config.value("max_output_chars").toInt(20000)));
+        m_toolShellIncludeStderrCheckBox->setChecked(
+            config.contains("include_stderr") ? config.value("include_stderr").toBool(true) : true
+        );
         if (config.value("workflow").isObject()) {
             m_toolComfyWorkflowEdit->setPlainText(
                 QString::fromUtf8(QJsonDocument(config.value("workflow").toObject()).toJson(QJsonDocument::Indented))
@@ -1977,6 +2560,18 @@ void WorkflowPanel::clearVisualStepEditor()
         m_toolFileReadLineStartSpin->setValue(1);
         m_toolFileReadLineEndSpin->setValue(0);
         m_toolFileReadMaxCharsSpin->setValue(20000);
+        m_toolJsonInputEdit->clear();
+        m_toolJsonPathEdit->clear();
+        m_toolJsonPrettyCheckBox->setChecked(true);
+        m_toolCsvPathEdit->clear();
+        m_toolCsvDelimiterCombo->setCurrentText(",");
+        m_toolCsvHasHeaderCheckBox->setChecked(true);
+        m_toolCsvMaxRowsSpin->setValue(200);
+        m_toolCsvOutputFormatCombo->setCurrentIndex(0);
+        m_toolCsvSourceFormatCombo->setCurrentIndex(0);
+        m_toolCsvCreateDirsCheckBox->setChecked(true);
+        m_toolCsvReturnContentCheckBox->setChecked(false);
+        m_toolCsvContentEdit->clear();
         m_toolDirectoryReadPathEdit->clear();
         m_toolDirectoryReadExtensionsEdit->clear();
         m_toolDirectoryReadExcludeEdit->clear();
@@ -1992,9 +2587,49 @@ void WorkflowPanel::clearVisualStepEditor()
         m_toolDirectoryReadMaxTotalCharsSpin->setValue(120000);
         m_toolDirectoryReadIncludeHiddenCheckBox->setChecked(false);
         m_toolDirectoryReadSkipBinaryCheckBox->setChecked(true);
+        m_toolDirectoryListPathEdit->clear();
+        m_toolDirectoryListExtensionsEdit->clear();
+        m_toolDirectoryListExcludeEdit->clear();
+        m_toolDirectoryListMaxEntriesSpin->setValue(200);
+        m_toolDirectoryListRecursiveCheckBox->setChecked(true);
+        m_toolDirectoryListIncludeHiddenCheckBox->setChecked(false);
+        m_toolDirectoryListDirectoriesOnlyCheckBox->setChecked(false);
+        m_toolMemoryQueryEdit->clear();
+        m_toolMemoryTypeFilterEdit->clear();
+        m_toolMemoryTagsFilterEdit->clear();
+        m_toolMemoryLimitSpin->setValue(10);
+        m_toolMemoryMaxCharsSpin->setValue(16000);
+        m_toolMemoryFormatCombo->setCurrentIndex(0);
+        m_toolMemorySummaryPromptEdit->clear();
+        m_toolMemorySummarySystemPromptEdit->clear();
+        m_toolMemorySaveSummaryCheckBox->setChecked(true);
+        m_toolMemorySummaryTypeEdit->setText("summary");
+        m_toolMemorySummarySourceEdit->clear();
+        m_toolMemorySummaryTagsEdit->clear();
+        m_toolMemorySummaryRelevanceSpin->setValue(75);
+        m_toolMemoryDeleteOlderThanDaysSpin->setValue(30);
+        m_toolMemoryDeleteKeepLatestSpin->setValue(0);
+        m_toolMemoryDeleteKeepRelevanceSpin->setValue(90);
+        m_toolMemoryDeleteDryRunCheckBox->setChecked(true);
+        m_toolFileWritePathEdit->clear();
+        m_toolFileWriteModeCombo->setCurrentIndex(0);
+        m_toolFileWriteCreateDirsCheckBox->setChecked(true);
+        m_toolFileWriteReturnContentCheckBox->setChecked(false);
+        m_toolFileWriteContentEdit->clear();
         m_toolFileEditPathEdit->clear();
         m_toolFileEditReturnContentCheckBox->setChecked(false);
         m_toolFileEditDiffEdit->clear();
+        m_toolHttpUrlEdit->clear();
+        m_toolHttpMethodCombo->setCurrentIndex(0);
+        m_toolHttpTimeoutSpin->setValue(30000);
+        m_toolHttpBodyJsonCheckBox->setChecked(false);
+        m_toolHttpHeadersEdit->clear();
+        m_toolHttpBodyEdit->clear();
+        m_toolShellCommandEdit->clear();
+        m_toolShellWorkingDirEdit->clear();
+        m_toolShellTimeoutSpin->setValue(60000);
+        m_toolShellMaxOutputCharsSpin->setValue(20000);
+        m_toolShellIncludeStderrCheckBox->setChecked(true);
         m_toolComfyModeCombo->setCurrentIndex(0);
         m_toolComfyCheckpointCombo->clearEditText();
         m_toolComfyVaeCombo->clearEditText();
@@ -2069,7 +2704,12 @@ void WorkflowPanel::updateVisualToolConfigPage()
 
     const QString toolName = m_toolNameCombo->currentText().trimmed().toLower();
     const bool isMemoryIngest = toolName == "memory.ingest_directory";
+    const bool isMemorySearchTool = toolName == "memory.search";
+    const bool isMemorySummarizeTool = toolName == "memory.summarize";
+    const bool isMemoryDeleteTool = toolName == "memory.delete_old";
     const bool isComfyTool = toolName == "comfyui.workflow";
+    const bool isCsvReadTool = toolName == "csv.read";
+    const bool isCsvWriteTool = toolName == "csv.write";
     const bool usesChangedWindow = toolName == "directory.read_changed"
         || (isMemoryIngest && m_toolMemoryIngestModeCombo != nullptr
             && m_toolMemoryIngestModeCombo->currentData().toString().trimmed() == "changed");
@@ -2093,6 +2733,79 @@ void WorkflowPanel::updateVisualToolConfigPage()
     }
     if (m_toolDirectoryReadWithinMinutesSpin != nullptr) {
         m_toolDirectoryReadWithinMinutesSpin->setEnabled(usesChangedWindow);
+    }
+    if (m_toolCsvMaxRowsSpin != nullptr) {
+        m_toolCsvMaxRowsSpin->setEnabled(isCsvReadTool);
+    }
+    if (m_toolCsvOutputFormatCombo != nullptr) {
+        m_toolCsvOutputFormatCombo->setEnabled(isCsvReadTool);
+    }
+    if (m_toolCsvSourceFormatCombo != nullptr) {
+        m_toolCsvSourceFormatCombo->setEnabled(isCsvWriteTool);
+    }
+    if (m_toolCsvContentEdit != nullptr) {
+        m_toolCsvContentEdit->setEnabled(isCsvWriteTool);
+    }
+    if (m_toolCsvCreateDirsCheckBox != nullptr) {
+        m_toolCsvCreateDirsCheckBox->setEnabled(isCsvWriteTool);
+    }
+    if (m_toolCsvReturnContentCheckBox != nullptr) {
+        m_toolCsvReturnContentCheckBox->setEnabled(isCsvWriteTool);
+    }
+    const bool usesMemorySearchFields = isMemorySearchTool || isMemorySummarizeTool || isMemoryDeleteTool;
+    if (m_toolMemoryQueryEdit != nullptr) {
+        m_toolMemoryQueryEdit->setEnabled(usesMemorySearchFields);
+    }
+    if (m_toolMemoryTypeFilterEdit != nullptr) {
+        m_toolMemoryTypeFilterEdit->setEnabled(usesMemorySearchFields);
+    }
+    if (m_toolMemoryTagsFilterEdit != nullptr) {
+        m_toolMemoryTagsFilterEdit->setEnabled(usesMemorySearchFields);
+    }
+    if (m_toolMemoryLimitSpin != nullptr) {
+        m_toolMemoryLimitSpin->setEnabled(isMemorySearchTool || isMemorySummarizeTool);
+    }
+    if (m_toolMemoryMaxCharsSpin != nullptr) {
+        m_toolMemoryMaxCharsSpin->setEnabled(isMemorySearchTool || isMemorySummarizeTool);
+    }
+    if (m_toolMemoryFormatCombo != nullptr) {
+        m_toolMemoryFormatCombo->setEnabled(isMemorySearchTool);
+    }
+    if (m_toolMemorySummaryPromptEdit != nullptr) {
+        m_toolMemorySummaryPromptEdit->setEnabled(isMemorySummarizeTool);
+    }
+    if (m_toolMemorySummarySystemPromptEdit != nullptr) {
+        m_toolMemorySummarySystemPromptEdit->setEnabled(isMemorySummarizeTool);
+    }
+    if (m_toolMemorySaveSummaryCheckBox != nullptr) {
+        m_toolMemorySaveSummaryCheckBox->setEnabled(isMemorySummarizeTool);
+    }
+    const bool canEditSummaryTarget = isMemorySummarizeTool
+        && m_toolMemorySaveSummaryCheckBox != nullptr
+        && m_toolMemorySaveSummaryCheckBox->isChecked();
+    if (m_toolMemorySummaryTypeEdit != nullptr) {
+        m_toolMemorySummaryTypeEdit->setEnabled(canEditSummaryTarget);
+    }
+    if (m_toolMemorySummarySourceEdit != nullptr) {
+        m_toolMemorySummarySourceEdit->setEnabled(canEditSummaryTarget);
+    }
+    if (m_toolMemorySummaryTagsEdit != nullptr) {
+        m_toolMemorySummaryTagsEdit->setEnabled(canEditSummaryTarget);
+    }
+    if (m_toolMemorySummaryRelevanceSpin != nullptr) {
+        m_toolMemorySummaryRelevanceSpin->setEnabled(canEditSummaryTarget);
+    }
+    if (m_toolMemoryDeleteOlderThanDaysSpin != nullptr) {
+        m_toolMemoryDeleteOlderThanDaysSpin->setEnabled(isMemoryDeleteTool);
+    }
+    if (m_toolMemoryDeleteKeepLatestSpin != nullptr) {
+        m_toolMemoryDeleteKeepLatestSpin->setEnabled(isMemoryDeleteTool);
+    }
+    if (m_toolMemoryDeleteKeepRelevanceSpin != nullptr) {
+        m_toolMemoryDeleteKeepRelevanceSpin->setEnabled(isMemoryDeleteTool);
+    }
+    if (m_toolMemoryDeleteDryRunCheckBox != nullptr) {
+        m_toolMemoryDeleteDryRunCheckBox->setEnabled(isMemoryDeleteTool);
     }
     if (m_toolComfyModeStack != nullptr && m_toolComfyModeCombo != nullptr) {
         const QString comfyMode = m_toolComfyModeCombo->currentData().toString().trimmed();
@@ -2118,20 +2831,55 @@ void WorkflowPanel::updateVisualToolConfigPage()
     if (isComfyTool && !m_comfyMetadataLoaded && !m_comfyMetadataLoading) {
         refreshComfyMetadata(false);
     }
-    if (toolName == "directory.read_recursive"
-        || toolName == "directory.read_changed"
-        || toolName == "memory.ingest_directory") {
+    if (toolName == "json.extract") {
         m_toolConfigStack->setCurrentIndex(1);
         return;
     }
 
-    if (toolName == "file.edit_diff") {
+    if (toolName == "csv.read" || toolName == "csv.write") {
         m_toolConfigStack->setCurrentIndex(2);
         return;
     }
 
-    if (toolName == "comfyui.workflow") {
+    if (toolName == "directory.read_recursive"
+        || toolName == "directory.read_changed"
+        || toolName == "memory.ingest_directory") {
         m_toolConfigStack->setCurrentIndex(3);
+        return;
+    }
+
+    if (toolName == "directory.list") {
+        m_toolConfigStack->setCurrentIndex(4);
+        return;
+    }
+
+    if (toolName == "memory.search" || toolName == "memory.summarize" || toolName == "memory.delete_old") {
+        m_toolConfigStack->setCurrentIndex(5);
+        return;
+    }
+
+    if (toolName == "file.write_text") {
+        m_toolConfigStack->setCurrentIndex(6);
+        return;
+    }
+
+    if (toolName == "file.edit_diff") {
+        m_toolConfigStack->setCurrentIndex(7);
+        return;
+    }
+
+    if (toolName == "http.request") {
+        m_toolConfigStack->setCurrentIndex(8);
+        return;
+    }
+
+    if (toolName == "shell.run") {
+        m_toolConfigStack->setCurrentIndex(9);
+        return;
+    }
+
+    if (toolName == "comfyui.workflow") {
+        m_toolConfigStack->setCurrentIndex(10);
         return;
     }
 
@@ -2524,14 +3272,253 @@ void WorkflowPanel::applyVisualStepChanges()
                 "download_images",
                 "include_history_json",
                 "poll_interval_ms",
-                "timeout_ms"
+                "timeout_ms",
+                "path",
+                "line_start",
+                "line_end",
+                "max_chars",
+                "input",
+                "pretty",
+                "delimiter",
+                "has_header",
+                "max_rows",
+                "output_format",
+                "source_format",
+                "include_extensions",
+                "exclude_paths",
+                "modified_after_iso",
+                "within_minutes",
+                "max_files",
+                "max_chars_per_file",
+                "max_total_chars",
+                "include_hidden",
+                "skip_binary",
+                "recursive",
+                "directories_only",
+                "max_entries",
+                "query",
+                "limit",
+                "format",
+                "save_as_memory",
+                "summary_entry_type",
+                "summary_source",
+                "summary_tags",
+                "summary_relevance",
+                "older_than_days",
+                "keep_latest",
+                "keep_relevance_at_or_above",
+                "dry_run",
+                "create_dirs",
+                "return_content",
+                "diff",
+                "patch",
+                "url",
+                "method",
+                "body",
+                "body_json",
+                "headers",
+                "headers_json",
+                "command",
+                "working_directory",
+                "include_stderr",
+                "max_output_chars"
             }
         );
         const QString toolName = m_toolNameCombo->currentText().trimmed();
         setJsonTextValue(&config, "tool", toolName);
         setJsonTextValue(&config, "output", m_toolOutputEdit->text());
 
-        if (toolName == "file.edit_diff") {
+        if (toolName == "json.extract") {
+            setJsonTextValue(&config, "input", m_toolJsonInputEdit->text());
+            setJsonTextValue(&config, "path", m_toolJsonPathEdit->text());
+            if (m_toolJsonPrettyCheckBox->isChecked()) {
+                config.insert("pretty", true);
+            } else {
+                config.insert("pretty", false);
+            }
+        } else if (toolName == "csv.read") {
+            setJsonTextValue(&config, "path", m_toolCsvPathEdit->text());
+            setJsonTextValue(&config, "delimiter", m_toolCsvDelimiterCombo->currentText());
+            if (m_toolCsvHasHeaderCheckBox->isChecked()) {
+                config.insert("has_header", true);
+            } else {
+                config.insert("has_header", false);
+            }
+            config.insert("max_rows", m_toolCsvMaxRowsSpin->value());
+            setJsonTextValue(&config, "output_format", m_toolCsvOutputFormatCombo->currentData().toString());
+        } else if (toolName == "csv.write") {
+            setJsonTextValue(&config, "path", m_toolCsvPathEdit->text());
+            setJsonTextValue(&config, "delimiter", m_toolCsvDelimiterCombo->currentText());
+            if (m_toolCsvHasHeaderCheckBox->isChecked()) {
+                config.insert("has_header", true);
+            } else {
+                config.insert("has_header", false);
+            }
+            setJsonTextValue(&config, "source_format", m_toolCsvSourceFormatCombo->currentData().toString());
+            setJsonTextValue(&config, "content", m_toolCsvContentEdit->toPlainText());
+            if (m_toolCsvCreateDirsCheckBox->isChecked()) {
+                config.insert("create_dirs", true);
+            } else {
+                config.insert("create_dirs", false);
+            }
+            if (m_toolCsvReturnContentCheckBox->isChecked()) {
+                config.insert("return_content", true);
+            } else {
+                config.remove("return_content");
+            }
+        } else if (toolName == "directory.list") {
+            removeConfigKeys(
+                &config,
+                {
+                    "line_start",
+                    "line_end",
+                    "max_chars",
+                    "modified_after_iso",
+                    "within_minutes",
+                    "max_files",
+                    "max_chars_per_file",
+                    "max_total_chars",
+                    "skip_binary",
+                    "mode",
+                    "entry_type",
+                    "source",
+                    "relevance",
+                    "diff",
+                    "patch",
+                    "return_content",
+                    "workflow",
+                    "workflow_json",
+                    "save_outputs_to",
+                    "download_images",
+                    "include_history_json",
+                    "poll_interval_ms",
+                    "timeout_ms",
+                    "create_dirs",
+                    "url",
+                    "method",
+                    "body",
+                    "body_json",
+                    "headers",
+                    "headers_json"
+                }
+            );
+            setJsonTextValue(&config, "path", m_toolDirectoryListPathEdit->text());
+            setJsonTextValue(&config, "include_extensions", m_toolDirectoryListExtensionsEdit->text());
+            setJsonTextValue(&config, "exclude_paths", m_toolDirectoryListExcludeEdit->text());
+            config.insert("max_entries", m_toolDirectoryListMaxEntriesSpin->value());
+            if (m_toolDirectoryListRecursiveCheckBox->isChecked()) {
+                config.insert("recursive", true);
+            } else {
+                config.insert("recursive", false);
+            }
+            if (m_toolDirectoryListIncludeHiddenCheckBox->isChecked()) {
+                config.insert("include_hidden", true);
+            } else {
+                config.remove("include_hidden");
+            }
+            if (m_toolDirectoryListDirectoriesOnlyCheckBox->isChecked()) {
+                config.insert("directories_only", true);
+            } else {
+                config.remove("directories_only");
+            }
+        } else if (toolName == "memory.search") {
+            setJsonTextValue(&config, "query", m_toolMemoryQueryEdit->text());
+            setJsonTextValue(&config, "entry_type", m_toolMemoryTypeFilterEdit->text());
+            setJsonTextValue(&config, "tags", m_toolMemoryTagsFilterEdit->text());
+            config.insert("limit", m_toolMemoryLimitSpin->value());
+            if (m_toolMemoryMaxCharsSpin->value() > 0) {
+                config.insert("max_chars", m_toolMemoryMaxCharsSpin->value());
+            } else {
+                config.remove("max_chars");
+            }
+            setJsonTextValue(&config, "format", m_toolMemoryFormatCombo->currentData().toString());
+        } else if (toolName == "memory.summarize") {
+            setJsonTextValue(&config, "query", m_toolMemoryQueryEdit->text());
+            setJsonTextValue(&config, "entry_type", m_toolMemoryTypeFilterEdit->text());
+            setJsonTextValue(&config, "tags", m_toolMemoryTagsFilterEdit->text());
+            config.insert("limit", m_toolMemoryLimitSpin->value());
+            if (m_toolMemoryMaxCharsSpin->value() > 0) {
+                config.insert("max_chars", m_toolMemoryMaxCharsSpin->value());
+            } else {
+                config.remove("max_chars");
+            }
+            setJsonTextValue(&config, "prompt", m_toolMemorySummaryPromptEdit->toPlainText());
+            setJsonTextValue(&config, "system_prompt", m_toolMemorySummarySystemPromptEdit->text());
+            if (m_toolMemorySaveSummaryCheckBox->isChecked()) {
+                config.insert("save_as_memory", true);
+                setJsonTextValue(&config, "summary_entry_type", m_toolMemorySummaryTypeEdit->text());
+                setJsonTextValue(&config, "summary_source", m_toolMemorySummarySourceEdit->text());
+                setJsonTextValue(&config, "summary_tags", m_toolMemorySummaryTagsEdit->text());
+                config.insert("summary_relevance", m_toolMemorySummaryRelevanceSpin->value());
+            } else {
+                config.insert("save_as_memory", false);
+                removeConfigKeys(
+                    &config,
+                    { "summary_entry_type", "summary_source", "summary_tags", "summary_relevance" }
+                );
+            }
+        } else if (toolName == "memory.delete_old") {
+            setJsonTextValue(&config, "query", m_toolMemoryQueryEdit->text());
+            setJsonTextValue(&config, "entry_type", m_toolMemoryTypeFilterEdit->text());
+            setJsonTextValue(&config, "tags", m_toolMemoryTagsFilterEdit->text());
+            config.insert("older_than_days", m_toolMemoryDeleteOlderThanDaysSpin->value());
+            config.insert("keep_latest", m_toolMemoryDeleteKeepLatestSpin->value());
+            config.insert("keep_relevance_at_or_above", m_toolMemoryDeleteKeepRelevanceSpin->value());
+            if (m_toolMemoryDeleteDryRunCheckBox->isChecked()) {
+                config.insert("dry_run", true);
+            } else {
+                config.insert("dry_run", false);
+            }
+        } else if (toolName == "file.write_text") {
+            removeConfigKeys(
+                &config,
+                {
+                    "include_extensions",
+                    "exclude_paths",
+                    "modified_after_iso",
+                    "within_minutes",
+                    "max_files",
+                    "max_chars_per_file",
+                    "max_total_chars",
+                    "include_hidden",
+                    "skip_binary",
+                    "recursive",
+                    "directories_only",
+                    "max_entries",
+                    "line_start",
+                    "line_end",
+                    "max_chars",
+                    "diff",
+                    "patch",
+                    "workflow",
+                    "workflow_json",
+                    "save_outputs_to",
+                    "download_images",
+                    "include_history_json",
+                    "poll_interval_ms",
+                    "timeout_ms",
+                    "url",
+                    "method",
+                    "body",
+                    "body_json",
+                    "headers",
+                    "headers_json"
+                }
+            );
+            setJsonTextValue(&config, "path", m_toolFileWritePathEdit->text());
+            setJsonTextValue(&config, "content", m_toolFileWriteContentEdit->toPlainText());
+            setJsonTextValue(&config, "mode", m_toolFileWriteModeCombo->currentData().toString());
+            if (m_toolFileWriteCreateDirsCheckBox->isChecked()) {
+                config.insert("create_dirs", true);
+            } else {
+                config.insert("create_dirs", false);
+            }
+            if (m_toolFileWriteReturnContentCheckBox->isChecked()) {
+                config.insert("return_content", true);
+            } else {
+                config.remove("return_content");
+            }
+        } else if (toolName == "file.edit_diff") {
             removeConfigKeys(
                 &config,
                 {
@@ -2554,7 +3541,17 @@ void WorkflowPanel::applyVisualStepChanges()
                     "download_images",
                     "include_history_json",
                     "poll_interval_ms",
-                    "timeout_ms"
+                    "timeout_ms",
+                    "recursive",
+                    "directories_only",
+                    "max_entries",
+                    "create_dirs",
+                    "url",
+                    "method",
+                    "body",
+                    "body_json",
+                    "headers",
+                    "headers_json"
                 }
             );
             setJsonTextValue(&config, "path", m_toolFileEditPathEdit->text());
@@ -2581,7 +3578,17 @@ void WorkflowPanel::applyVisualStepChanges()
                     "download_images",
                     "include_history_json",
                     "poll_interval_ms",
-                    "timeout_ms"
+                    "timeout_ms",
+                    "recursive",
+                    "directories_only",
+                    "max_entries",
+                    "create_dirs",
+                    "url",
+                    "method",
+                    "body",
+                    "body_json",
+                    "headers",
+                    "headers_json"
                 }
             );
             setJsonTextValue(&config, "path", m_toolDirectoryReadPathEdit->text());
@@ -2645,7 +3652,17 @@ void WorkflowPanel::applyVisualStepChanges()
                     "include_history_json",
                     "poll_interval_ms",
                     "timeout_ms",
-                    "mode"
+                    "mode",
+                    "recursive",
+                    "directories_only",
+                    "max_entries",
+                    "create_dirs",
+                    "url",
+                    "method",
+                    "body",
+                    "body_json",
+                    "headers",
+                    "headers_json"
                 }
             );
             setJsonTextValue(&config, "path", m_toolDirectoryReadPathEdit->text());
@@ -2683,6 +3700,72 @@ void WorkflowPanel::applyVisualStepChanges()
             } else {
                 config.insert("skip_binary", false);
             }
+        } else if (toolName == "http.request") {
+            removeConfigKeys(
+                &config,
+                {
+                    "path",
+                    "include_extensions",
+                    "exclude_paths",
+                    "mode",
+                    "modified_after_iso",
+                    "within_minutes",
+                    "max_files",
+                    "max_chars_per_file",
+                    "max_total_chars",
+                    "include_hidden",
+                    "skip_binary",
+                    "recursive",
+                    "directories_only",
+                    "max_entries",
+                    "line_start",
+                    "line_end",
+                    "max_chars",
+                    "diff",
+                    "patch",
+                    "create_dirs",
+                    "return_content",
+                    "workflow",
+                    "workflow_json",
+                    "save_outputs_to",
+                    "download_images",
+                    "include_history_json",
+                    "poll_interval_ms"
+                }
+            );
+            setJsonTextValue(&config, "url", m_toolHttpUrlEdit->text());
+            setJsonTextValue(&config, "method", m_toolHttpMethodCombo->currentText());
+            const QString headersText = m_toolHttpHeadersEdit->toPlainText().trimmed();
+            if (headersText.isEmpty()) {
+                config.remove("headers_json");
+                config.remove("headers");
+            } else {
+                setJsonTextValue(&config, "headers_json", headersText);
+                config.remove("headers");
+            }
+            const QString bodyText = m_toolHttpBodyEdit->toPlainText();
+            if (m_toolHttpBodyJsonCheckBox->isChecked()) {
+                config.remove("body");
+                setJsonTextValue(&config, "body_json", bodyText);
+            } else {
+                config.remove("body_json");
+                setJsonTextValue(&config, "body", bodyText);
+            }
+            config.insert("timeout_ms", m_toolHttpTimeoutSpin->value());
+        } else if (toolName == "shell.run") {
+            setJsonTextValue(&config, "command", m_toolShellCommandEdit->text());
+            setJsonTextValue(&config, "working_directory", m_toolShellWorkingDirEdit->text());
+            config.insert("timeout_ms", m_toolShellTimeoutSpin->value());
+            if (m_toolShellMaxOutputCharsSpin->value() > 0) {
+                config.insert("max_output_chars", m_toolShellMaxOutputCharsSpin->value());
+            } else {
+                config.remove("max_output_chars");
+            }
+            if (m_toolShellIncludeStderrCheckBox->isChecked()) {
+                config.insert("include_stderr", true);
+            } else {
+                config.insert("include_stderr", false);
+            }
         } else if (toolName == "comfyui.workflow") {
             removeConfigKeys(
                 &config,
@@ -2698,12 +3781,22 @@ void WorkflowPanel::applyVisualStepChanges()
                     "max_total_chars",
                     "include_hidden",
                     "skip_binary",
+                    "recursive",
+                    "directories_only",
+                    "max_entries",
                     "line_start",
                     "line_end",
                     "max_chars",
                     "diff",
                     "patch",
-                    "return_content"
+                    "return_content",
+                    "create_dirs",
+                    "url",
+                    "method",
+                    "body",
+                    "body_json",
+                    "headers",
+                    "headers_json"
                 }
             );
             const QString comfyMode = m_toolComfyModeCombo->currentData().toString().trimmed();
@@ -2831,7 +3924,17 @@ void WorkflowPanel::applyVisualStepChanges()
                     "download_images",
                     "include_history_json",
                     "poll_interval_ms",
-                    "timeout_ms"
+                    "timeout_ms",
+                    "recursive",
+                    "directories_only",
+                    "max_entries",
+                    "create_dirs",
+                    "url",
+                    "method",
+                    "body",
+                    "body_json",
+                    "headers",
+                    "headers_json"
                 }
             );
             setJsonTextValue(&config, "path", m_toolFileReadPathEdit->text());

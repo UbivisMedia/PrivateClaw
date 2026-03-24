@@ -720,6 +720,9 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             request.projectName = runContext.projectName;
             request.workflowName = runContext.workflowName;
             request.stepId = step.id;
+            request.selectedModel = runContext.selectedModel;
+            request.systemPrompt = runContext.systemPrompt;
+            request.llmProvider = &provider;
 
             const tools::ToolExecutionResult toolResult = m_toolExecutor->execute(request);
             for (const QString& logLine : toolResult.logs) {
