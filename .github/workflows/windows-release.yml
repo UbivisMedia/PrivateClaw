@@ -1,6 +1,12 @@
 name: Windows Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release-Tag, z. B. v0.1.0"
+        required: true
+        type: string
   push:
     tags:
       - "v*"
@@ -12,8 +18,8 @@ env:
   BUILD_DIR: build-qt
   QT_VERSION: 6.10.3
   QT_ARCH: win64_msvc2022_64
-  RELEASE_TAG: ${{ github.ref_name }}
-  PACKAGE_NAME: PrivateClaw-win64-${{ github.ref_name }}
+  RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+  PACKAGE_NAME: PrivateClaw-win64-${{ github.event.inputs.release_tag || github.ref_name }}
 
 jobs:
   build-and-release:
@@ -23,6 +29,19 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release metadata
+        shell: pwsh
+        run: |
+          $resolvedTag = "${{ github.event.inputs.release_tag || github.ref_name }}"
+          if ([string]::IsNullOrWhiteSpace($resolvedTag)) {
+            throw "No release tag resolved."
+          }
+
+          "RELEASE_TAG=$resolvedTag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PACKAGE_NAME=PrivateClaw-win64-$resolvedTag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Set up MSVC developer environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -79,6 +98,39 @@ jobs:
 
           Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -Force
 
+      - name: Resolve release notes
+        shell: pwsh
+        run: |
+          $notesFile = Join-Path $env:BUILD_DIR "package/release-notes.md"
+          $tag = $env:RELEASE_TAG
+          $normalizedTag = $tag.Trim()
+          $versionTag = if ($normalizedTag.StartsWith("v")) { $normalizedTag.Substring(1) } else { $normalizedTag }
+          $escapedNormalizedTag = [regex]::Escape($normalizedTag)
+          $escapedVersionTag = [regex]::Escape($versionTag)
+          $useGeneratedNotes = $true
+
+          if (Test-Path "CHANGELOG.md") {
+            $content = Get-Content "CHANGELOG.md" -Raw
+            $pattern = "(?ms)^##\s+\[?(?:$escapedNormalizedTag|$escapedVersionTag)\]?(?:\s+-\s+[^\r\n]+)?\s*$\r?\n(.*?)(?=^##\s+\[?.*?\]?(?:\s+-\s+[^\r\n]+)?\s*$|\z)"
+            $match = [regex]::Match($content, $pattern)
+
+            if ($match.Success) {
+              $notes = $match.Groups[1].Value.Trim()
+              if (![string]::IsNullOrWhiteSpace($notes)) {
+                New-Item -ItemType Directory -Force -Path (Split-Path $notesFile -Parent) | Out-Null
+                Set-Content -Path $notesFile -Value $notes -Encoding utf8
+                $useGeneratedNotes = $false
+              }
+            }
+          }
+
+          "RELEASE_NOTES_FILE=$notesFile" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ($useGeneratedNotes) {
+            "USE_GENERATED_RELEASE_NOTES=true" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            "USE_GENERATED_RELEASE_NOTES=false" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
       - name: Create or update GitHub release
         shell: pwsh
         env:
@@ -92,11 +144,25 @@ jobs:
 
           gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $env:RELEASE_TAG $zipPath `
-              --repo $env:GITHUB_REPOSITORY `
-              --title $env:RELEASE_TAG `
-              --generate-notes
+            if ($env:USE_GENERATED_RELEASE_NOTES -eq "true") {
+              gh release create $env:RELEASE_TAG $zipPath `
+                --repo $env:GITHUB_REPOSITORY `
+                --title $env:RELEASE_TAG `
+                --generate-notes
+            } else {
+              gh release create $env:RELEASE_TAG $zipPath `
+                --repo $env:GITHUB_REPOSITORY `
+                --title $env:RELEASE_TAG `
+                --notes-file $env:RELEASE_NOTES_FILE
+            }
           } else {
+            if ($env:USE_GENERATED_RELEASE_NOTES -eq "false" -and (Test-Path $env:RELEASE_NOTES_FILE)) {
+              gh release edit $env:RELEASE_TAG `
+                --repo $env:GITHUB_REPOSITORY `
+                --title $env:RELEASE_TAG `
+                --notes-file $env:RELEASE_NOTES_FILE
+            }
+
             gh release upload $env:RELEASE_TAG $zipPath `
               --repo $env:GITHUB_REPOSITORY `
               --clobber
