@@ -1,0 +1,112 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  BUILD_DIR: build-qt
+  QT_VERSION: 6.10.3
+  QT_ARCH: win64_msvc2022_64
+  RELEASE_TAG: ${{ github.ref_name }}
+  PACKAGE_NAME: PrivateClaw-win64-${{ github.ref_name }}
+
+jobs:
+  build-and-release:
+    name: Build and publish Windows release
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: ${{ env.QT_ARCH }}
+
+      - name: Configure CMake
+        shell: pwsh
+        run: >
+          cmake -S . -B $env:BUILD_DIR
+          -G "Visual Studio 17 2022"
+          -A x64
+          -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+          -DPRIVATECLAW_BUILD_TESTS=OFF
+          -DPRIVATECLAW_DEPLOY_QT_RUNTIME=ON
+
+      - name: Build Release
+        shell: pwsh
+        run: cmake --build $env:BUILD_DIR --config Release --parallel
+
+      - name: Prepare release package
+        shell: pwsh
+        run: |
+          $packageRoot = Join-Path $env:BUILD_DIR "package/$env:PACKAGE_NAME"
+          $releaseDir = Join-Path $env:BUILD_DIR "Release"
+          $zipPath = Join-Path $env:BUILD_DIR "package/$env:PACKAGE_NAME.zip"
+
+          if (!(Test-Path $releaseDir)) {
+            throw "Release directory not found: $releaseDir"
+          }
+
+          New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
+          Copy-Item -Path (Join-Path $releaseDir "*") -Destination $packageRoot -Recurse -Force
+
+          if (Test-Path "README.md") {
+            Copy-Item -Path "README.md" -Destination $packageRoot -Force
+          }
+
+          if (Test-Path "docs") {
+            Copy-Item -Path "docs" -Destination (Join-Path $packageRoot "docs") -Recurse -Force
+          }
+
+          if (Test-Path $zipPath) {
+            Remove-Item -Path $zipPath -Force
+          }
+
+          Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -Force
+
+      - name: Create or update GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $zipPath = Join-Path $env:BUILD_DIR "package/$env:PACKAGE_NAME.zip"
+
+          if (!(Test-Path $zipPath)) {
+            throw "Release archive not found: $zipPath"
+          }
+
+          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG $zipPath `
+              --repo $env:GITHUB_REPOSITORY `
+              --title $env:RELEASE_TAG `
+              --generate-notes
+          } else {
+            gh release upload $env:RELEASE_TAG $zipPath `
+              --repo $env:GITHUB_REPOSITORY `
+              --clobber
+          }
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          if-no-files-found: error
+          path: |
+            ${{ env.BUILD_DIR }}/package/${{ env.PACKAGE_NAME }}.zip
+            ${{ env.BUILD_DIR }}/package/${{ env.PACKAGE_NAME }}
