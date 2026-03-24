@@ -8,6 +8,7 @@ Sie ist auf den derzeit implementierten Funktionsumfang abgestimmt und richtet s
 - [Schnellstart](./Schnellstart.md)
 - [Workflows](./Workflows.md)
 - [Tools](./Tools.md)
+- [Runs](./Runs.md)
 - [Zeitplaene](./Zeitplaene.md)
 
 ## Was PrivateClaw aktuell kann
@@ -61,4 +62,5 @@ Beispiel-Workflows liegen unter:
 1. [Schnellstart](./Schnellstart.md)
 2. [Workflows](./Workflows.md)
 3. [Tools](./Tools.md)
-4. [Zeitplaene](./Zeitplaene.md)
+4. [Runs](./Runs.md)
+5. [Zeitplaene](./Zeitplaene.md)

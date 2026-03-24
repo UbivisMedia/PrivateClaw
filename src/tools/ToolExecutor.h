@@ -41,7 +41,8 @@ public:
     ToolExecutor(
         QString workspaceRoot = QString(),
         QString comfyUiBaseUrl = QString(),
-        QString databasePath = QString()
+        QString databasePath = QString(),
+        QStringList allowedToolPaths = {}
     );
 
     QStringList availableTools() const;
@@ -70,11 +71,12 @@ private:
     ToolExecutionResult executeComfyUiWorkflow(const QJsonObject& config) const;
 
     QString resolveWorkspacePath(const QString& path, bool allowNonExisting, QString* errorMessage) const;
-    bool isPathWithinWorkspace(const QString& absolutePath) const;
+    bool isPathWithinAllowedRoots(const QString& absolutePath) const;
 
     QString m_workspaceRoot;
     QString m_comfyUiBaseUrl;
     QString m_databasePath;
+    QStringList m_allowedToolPaths;
 };
 
 } // namespace privateclaw::tools

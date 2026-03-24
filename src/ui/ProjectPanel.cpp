@@ -5,6 +5,7 @@
 #include "providers/OllamaProvider.h"
 #include "providers/ProviderManager.h"
 #include "services/ProjectService.h"
+#include "services/SettingsService.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -28,20 +29,29 @@ namespace privateclaw::ui {
 
 ProjectPanel::ProjectPanel(
     services::ProjectService& projectService,
+    services::SettingsService& settingsService,
     providers::ProviderManager& providerManager,
     QWidget* parent
 )
     : QWidget(parent)
     , m_projectService(projectService)
+    , m_settingsService(settingsService)
     , m_providerManager(providerManager)
 {
     buildUi();
     refreshProjects();
+    refreshAllowedToolPaths();
 }
 
 int ProjectPanel::projectCount() const
 {
     return m_projectList != nullptr ? m_projectList->count() : 0;
+}
+
+void ProjectPanel::reloadData()
+{
+    refreshProjects(m_currentProjectId);
+    refreshAllowedToolPaths();
 }
 
 void ProjectPanel::setOnProjectDataChanged(std::function<void()> callback)
@@ -88,6 +98,45 @@ void ProjectPanel::buildUi()
     providerLayout->addWidget(m_providerEndpointLabel);
     providerLayout->addWidget(m_providerStatusLabel);
     providerLayout->addLayout(providerButtonLayout);
+
+    auto* allowedPathsCard = new QFrame(this);
+    allowedPathsCard->setProperty("panelCard", true);
+
+    auto* allowedPathsLayout = new QVBoxLayout(allowedPathsCard);
+    auto* allowedPathsTitle = new QLabel("Erlaubte Dateipfade", allowedPathsCard);
+    allowedPathsTitle->setProperty("sectionTitle", true);
+
+    auto* allowedPathsBody = new QLabel(
+        "Datei-Tools duerfen ausserhalb des Workspace nur auf hier freigegebene Pfade zugreifen. "
+        "Der Workspace selbst bleibt immer erlaubt.",
+        allowedPathsCard
+    );
+    allowedPathsBody->setProperty("sectionBody", true);
+    allowedPathsBody->setWordWrap(true);
+
+    m_allowedPathInfoLabel = new QLabel(allowedPathsCard);
+    m_allowedPathInfoLabel->setProperty("sectionBody", true);
+    m_allowedPathInfoLabel->setWordWrap(true);
+
+    m_allowedPathList = new QListWidget(allowedPathsCard);
+    m_allowedPathList->setAlternatingRowColors(true);
+
+    auto* allowedPathInputLayout = new QHBoxLayout();
+    m_allowedPathEdit = new QLineEdit(allowedPathsCard);
+    m_allowedPathEdit->setPlaceholderText("z. B. D:/ComfyUI/output");
+    auto* addAllowedPathButton = new QPushButton("Pfad hinzufuegen", allowedPathsCard);
+    auto* removeAllowedPathButton = new QPushButton("Auswahl entfernen", allowedPathsCard);
+    auto* refreshAllowedPathsButton = new QPushButton("Liste aktualisieren", allowedPathsCard);
+    allowedPathInputLayout->addWidget(m_allowedPathEdit, 1);
+    allowedPathInputLayout->addWidget(addAllowedPathButton);
+    allowedPathInputLayout->addWidget(removeAllowedPathButton);
+    allowedPathInputLayout->addWidget(refreshAllowedPathsButton);
+
+    allowedPathsLayout->addWidget(allowedPathsTitle);
+    allowedPathsLayout->addWidget(allowedPathsBody);
+    allowedPathsLayout->addWidget(m_allowedPathInfoLabel);
+    allowedPathsLayout->addWidget(m_allowedPathList);
+    allowedPathsLayout->addLayout(allowedPathInputLayout);
 
     auto* contentSplitter = new QSplitter(Qt::Horizontal, this);
 
@@ -186,6 +235,7 @@ void ProjectPanel::buildUi()
     contentSplitter->setStretchFactor(1, 4);
 
     layout->addWidget(providerCard);
+    layout->addWidget(allowedPathsCard);
     layout->addWidget(contentSplitter, 1);
 
     connect(refreshButton, &QPushButton::clicked, this, [this]() {
@@ -198,6 +248,22 @@ void ProjectPanel::buildUi()
 
     connect(deleteButton, &QPushButton::clicked, this, [this]() {
         deleteProject();
+    });
+
+    connect(addAllowedPathButton, &QPushButton::clicked, this, [this]() {
+        addAllowedToolPath();
+    });
+
+    connect(removeAllowedPathButton, &QPushButton::clicked, this, [this]() {
+        removeSelectedAllowedToolPath();
+    });
+
+    connect(m_allowedPathEdit, &QLineEdit::returnPressed, this, [this]() {
+        addAllowedToolPath();
+    });
+
+    connect(refreshAllowedPathsButton, &QPushButton::clicked, this, [this]() {
+        refreshAllowedToolPaths();
     });
 
     connect(clearButton, &QPushButton::clicked, this, [this]() {
@@ -450,6 +516,108 @@ void ProjectPanel::deleteProject()
 
     clearForm();
     refreshProjects();
+
+    if (m_onProjectDataChanged) {
+        m_onProjectDataChanged();
+    }
+}
+
+void ProjectPanel::refreshAllowedToolPaths(const QString& pathToSelect)
+{
+    if (m_allowedPathList == nullptr || m_allowedPathInfoLabel == nullptr) {
+        return;
+    }
+
+    const QString workspaceRoot = m_settingsService.workspaceRoot().trimmed();
+    const QStringList allowedPaths = m_settingsService.customAllowedToolPaths();
+    m_allowedPathInfoLabel->setText(
+        QString("Workspace (immer erlaubt): %1 | Zusaetzliche Freigaben: %2")
+            .arg(workspaceRoot.isEmpty() ? "-" : workspaceRoot)
+            .arg(allowedPaths.size())
+    );
+
+    int rowToSelect = -1;
+    {
+        const QSignalBlocker blocker(m_allowedPathList);
+        m_allowedPathList->clear();
+        for (int index = 0; index < allowedPaths.size(); ++index) {
+            auto* item = new QListWidgetItem(allowedPaths.at(index), m_allowedPathList);
+            item->setData(Qt::UserRole, allowedPaths.at(index));
+            if (!pathToSelect.trimmed().isEmpty()
+                && allowedPaths.at(index).compare(pathToSelect.trimmed(), Qt::CaseInsensitive) == 0) {
+                rowToSelect = index;
+            }
+        }
+    }
+
+    m_allowedPathList->setCurrentRow(rowToSelect);
+}
+
+void ProjectPanel::addAllowedToolPath()
+{
+    if (m_allowedPathEdit == nullptr) {
+        return;
+    }
+
+    const QString requestedPath = m_allowedPathEdit->text().trimmed();
+    if (requestedPath.isEmpty()) {
+        m_feedbackLabel->setStyleSheet("color: #8b5e2f;");
+        m_feedbackLabel->setText("Bitte zuerst einen Pfad fuer die Allowlist eintragen.");
+        return;
+    }
+
+    const QString suggestedPath = m_settingsService.suggestedAllowedToolPath(requestedPath, false);
+    QString errorMessage;
+    if (!m_settingsService.addAllowedToolPath(suggestedPath, &errorMessage)) {
+        m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
+        m_feedbackLabel->setText(QString("Allowlist konnte nicht erweitert werden: %1").arg(errorMessage));
+        return;
+    }
+
+    m_feedbackLabel->setStyleSheet("color: #2f6b3a;");
+    m_feedbackLabel->setText(QString("Pfad freigegeben: %1").arg(suggestedPath));
+    m_allowedPathEdit->clear();
+    refreshAllowedToolPaths(suggestedPath);
+
+    if (m_onProjectDataChanged) {
+        m_onProjectDataChanged();
+    }
+}
+
+void ProjectPanel::removeSelectedAllowedToolPath()
+{
+    if (m_allowedPathList == nullptr || m_allowedPathList->currentItem() == nullptr) {
+        m_feedbackLabel->setStyleSheet("color: #8b5e2f;");
+        m_feedbackLabel->setText("Zum Entfernen bitte zuerst einen freigegebenen Pfad auswaehlen.");
+        return;
+    }
+
+    const QString selectedPath = m_allowedPathList->currentItem()->data(Qt::UserRole).toString();
+    const QMessageBox::StandardButton answer = QMessageBox::question(
+        this,
+        "Dateipfad entfernen",
+        QString(
+            "Den freigegebenen Pfad '%1' wirklich aus der Allowlist entfernen? "
+            "Datei-Tools koennen ihn danach nur noch nutzen, wenn er erneut freigegeben wird."
+        ).arg(selectedPath),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No
+    );
+
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    QString errorMessage;
+    if (!m_settingsService.removeAllowedToolPath(selectedPath, &errorMessage)) {
+        m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
+        m_feedbackLabel->setText(QString("Allowlist konnte nicht aktualisiert werden: %1").arg(errorMessage));
+        return;
+    }
+
+    m_feedbackLabel->setStyleSheet("color: #2f6b3a;");
+    m_feedbackLabel->setText(QString("Pfad aus der Allowlist entfernt: %1").arg(selectedPath));
+    refreshAllowedToolPaths();
 
     if (m_onProjectDataChanged) {
         m_onProjectDataChanged();

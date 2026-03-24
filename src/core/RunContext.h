@@ -16,7 +16,9 @@ struct RunContext
     QString systemPrompt;
     QHash<QString, QString> variables;
     QStringList memorySnippets;
+    int memoryEntryCount = 0;
+    int directMemoryEntryCount = 0;
+    int compressedMemoryEntryCount = 0;
 };
 
 } // namespace privateclaw::core
-

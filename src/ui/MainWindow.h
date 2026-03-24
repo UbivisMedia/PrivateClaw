@@ -17,6 +17,7 @@ class ProviderManager;
 namespace privateclaw::services {
 class MemoryService;
 class ProjectService;
+class RunService;
 class ScheduleService;
 class SettingsService;
 class WorkflowService;
@@ -31,6 +32,7 @@ namespace privateclaw::ui {
 class ProjectPanel;
 class WorkflowPanel;
 class MemoryPanel;
+class RunPanel;
 class SchedulePanel;
 class RunLogPanel;
 
@@ -43,6 +45,7 @@ public:
         services::ProjectService& projectService,
         services::MemoryService& memoryService,
         services::WorkflowService& workflowService,
+        services::RunService& runService,
         services::ScheduleService& scheduleService,
         providers::ProviderManager& providerManager,
         QWidget* parent = nullptr
@@ -52,6 +55,7 @@ public:
 
 private:
     void buildUi();
+    void recoverInterruptedRuns();
     void updateStatusBar();
     void startSchedulePolling();
     void pollDueSchedules();
@@ -66,6 +70,7 @@ private:
     services::ProjectService& m_projectService;
     services::MemoryService& m_memoryService;
     services::WorkflowService& m_workflowService;
+    services::RunService& m_runService;
     services::ScheduleService& m_scheduleService;
     providers::ProviderManager& m_providerManager;
     scheduler::SchedulerService m_schedulerService;
@@ -75,6 +80,7 @@ private:
     ProjectPanel* m_projectPanel = nullptr;
     WorkflowPanel* m_workflowPanel = nullptr;
     MemoryPanel* m_memoryPanel = nullptr;
+    RunPanel* m_runPanel = nullptr;
     SchedulePanel* m_schedulePanel = nullptr;
     RunLogPanel* m_runLogPanel = nullptr;
     QTimer* m_schedulePollTimer = nullptr;

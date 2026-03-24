@@ -20,6 +20,7 @@ class ProviderManager;
 
 namespace privateclaw::services {
 class ProjectService;
+class SettingsService;
 }
 
 namespace privateclaw::ui {
@@ -29,11 +30,13 @@ class ProjectPanel : public QWidget
 public:
     ProjectPanel(
         services::ProjectService& projectService,
+        services::SettingsService& settingsService,
         providers::ProviderManager& providerManager,
         QWidget* parent = nullptr
     );
 
     int projectCount() const;
+    void reloadData();
     void setOnProjectDataChanged(std::function<void()> callback);
 
 private:
@@ -44,6 +47,9 @@ private:
     void loadProjectFromRow(int row);
     void saveProject();
     void deleteProject();
+    void refreshAllowedToolPaths(const QString& pathToSelect = QString());
+    void addAllowedToolPath();
+    void removeSelectedAllowedToolPath();
     void testSelectedProviderConnection();
     void updateSelectedProviderUi(bool resetStatusMessage = true);
     QString currentProviderName() const;
@@ -58,16 +64,20 @@ private:
     QString formatProjectLabel(const domain::Project& project) const;
 
     services::ProjectService& m_projectService;
+    services::SettingsService& m_settingsService;
     providers::ProviderManager& m_providerManager;
 
     QList<domain::Project> m_projects;
     qint64 m_currentProjectId = -1;
 
     QListWidget* m_projectList = nullptr;
+    QListWidget* m_allowedPathList = nullptr;
     QLabel* m_projectCountLabel = nullptr;
+    QLabel* m_allowedPathInfoLabel = nullptr;
     QLabel* m_providerEndpointLabel = nullptr;
     QLabel* m_providerStatusLabel = nullptr;
     QLabel* m_formTitleLabel = nullptr;
+    QLineEdit* m_allowedPathEdit = nullptr;
     QLineEdit* m_nameEdit = nullptr;
     QComboBox* m_providerCombo = nullptr;
     QLineEdit* m_providerBaseUrlEdit = nullptr;

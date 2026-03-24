@@ -15,6 +15,7 @@ ApplicationBootstrap::ApplicationBootstrap()
     , m_projectService(m_databaseManager)
     , m_workflowService(m_databaseManager)
     , m_memoryService(m_databaseManager)
+    , m_runService(m_databaseManager)
     , m_scheduleService(m_databaseManager)
 {
 }
@@ -45,6 +46,7 @@ bool ApplicationBootstrap::initialize(QString* errorMessage)
         m_projectService,
         m_memoryService,
         m_workflowService,
+        m_runService,
         m_scheduleService,
         m_providerManager
     );

@@ -1541,16 +1541,49 @@ bool isSafeShellProgram(const QString& programName, const QStringList& arguments
 
 } // namespace
 
-ToolExecutor::ToolExecutor(QString workspaceRoot, QString comfyUiBaseUrl, QString databasePath)
+ToolExecutor::ToolExecutor(
+    QString workspaceRoot,
+    QString comfyUiBaseUrl,
+    QString databasePath,
+    QStringList allowedToolPaths
+)
     : m_workspaceRoot(std::move(workspaceRoot))
     , m_comfyUiBaseUrl(std::move(comfyUiBaseUrl))
     , m_databasePath(std::move(databasePath))
+    , m_allowedToolPaths(std::move(allowedToolPaths))
 {
     if (m_workspaceRoot.trimmed().isEmpty()) {
         m_workspaceRoot = QDir::currentPath();
     }
 
     m_workspaceRoot = QDir(m_workspaceRoot).absolutePath();
+    QStringList normalizedAllowedPaths;
+    QStringList seenPaths;
+    const auto appendAllowedPath = [this, &normalizedAllowedPaths, &seenPaths](const QString& configuredPath) {
+        if (configuredPath.trimmed().isEmpty()) {
+            return;
+        }
+
+        const QFileInfo fileInfo(configuredPath);
+        const QString absolutePath = fileInfo.isAbsolute()
+            ? fileInfo.absoluteFilePath()
+            : QDir(m_workspaceRoot).absoluteFilePath(configuredPath);
+        const QString normalizedPath = QDir::cleanPath(absolutePath);
+        const QString foldedPath = normalizedPath.toCaseFolded();
+        if (seenPaths.contains(foldedPath)) {
+            return;
+        }
+
+        seenPaths.append(foldedPath);
+        normalizedAllowedPaths.append(normalizedPath);
+    };
+
+    appendAllowedPath(m_workspaceRoot);
+    for (const QString& configuredPath : std::as_const(m_allowedToolPaths)) {
+        appendAllowedPath(configuredPath);
+    }
+    m_allowedToolPaths = normalizedAllowedPaths;
+
     if (m_databasePath.trimmed().isEmpty()) {
         const QString dataDirectory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
         if (!dataDirectory.trimmed().isEmpty()) {
@@ -3368,15 +3401,14 @@ QString ToolExecutor::resolveWorkspacePath(
         return {};
     }
 
-    if (!isPathWithinWorkspace(absolutePath)) {
+    if (!isPathWithinAllowedRoots(absolutePath)) {
         if (errorMessage != nullptr) {
-            *errorMessage = QString("Pfad liegt ausserhalb des erlaubten Workspace: %1").arg(absolutePath);
+            *errorMessage = QString("Pfad liegt ausserhalb der erlaubten Dateipfade: %1").arg(absolutePath);
         }
         return {};
     }
 
-    const QString relativePath = QDir(m_workspaceRoot).relativeFilePath(absolutePath);
-    const QStringList pathSegments = relativePath.split('/', Qt::SkipEmptyParts);
+    const QStringList pathSegments = QDir::cleanPath(absolutePath).split(QRegularExpression(R"([\\/]+)"), Qt::SkipEmptyParts);
     if (pathSegments.contains(".git")) {
         if (errorMessage != nullptr) {
             *errorMessage = "Zugriffe auf .git-Verzeichnisse sind nicht erlaubt.";
@@ -3387,15 +3419,20 @@ QString ToolExecutor::resolveWorkspacePath(
     return absolutePath;
 }
 
-bool ToolExecutor::isPathWithinWorkspace(const QString& absolutePath) const
+bool ToolExecutor::isPathWithinAllowedRoots(const QString& absolutePath) const
 {
-    const QString workspacePath = QDir(m_workspaceRoot).absolutePath();
-    const QString normalizedWorkspace = QDir::cleanPath(workspacePath).toCaseFolded();
     const QString normalizedCandidate = QDir::cleanPath(QFileInfo(absolutePath).absoluteFilePath()).toCaseFolded();
 
-    return normalizedCandidate == normalizedWorkspace
-        || normalizedCandidate.startsWith(normalizedWorkspace + "/")
-        || normalizedCandidate.startsWith(normalizedWorkspace + "\\");
+    for (const QString& allowedRoot : m_allowedToolPaths) {
+        const QString normalizedAllowedRoot = QDir::cleanPath(allowedRoot).toCaseFolded();
+        if (normalizedCandidate == normalizedAllowedRoot
+            || normalizedCandidate.startsWith(normalizedAllowedRoot + "/")
+            || normalizedCandidate.startsWith(normalizedAllowedRoot + "\\")) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 } // namespace privateclaw::tools

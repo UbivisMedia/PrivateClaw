@@ -6,6 +6,7 @@
 #include "providers/ProviderManager.h"
 #include "services/MemoryService.h"
 #include "services/ProjectService.h"
+#include "services/RunService.h"
 #include "services/SettingsService.h"
 #include "services/WorkflowService.h"
 #include "tools/ToolExecutor.h"
@@ -14,6 +15,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QFutureWatcher>
 #include <QFrame>
@@ -27,6 +29,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
@@ -47,6 +50,21 @@
 namespace privateclaw::ui {
 
 namespace {
+
+struct WorkflowPathReference
+{
+    QString path;
+    bool preferParentDirectory = false;
+    QString contextLabel;
+};
+
+struct PreparedMemoryContext
+{
+    QStringList snippets;
+    int totalEntries = 0;
+    int directEntries = 0;
+    int compressedEntries = 0;
+};
 
 QString defaultWorkflowJson()
 {
@@ -102,6 +120,78 @@ QString formatMemorySnippet(const domain::MemoryEntry& entry)
     return QString("- %1").arg(parts.join(" | "));
 }
 
+QString formatCompressedMemorySnippet(const QList<domain::MemoryEntry>& entries)
+{
+    if (entries.isEmpty()) {
+        return {};
+    }
+
+    QStringList lines;
+    lines.append(QString("- Komprimierte Erinnerung aus %1 weiteren Eintraegen:").arg(entries.size()));
+
+    const int includedEntries = qMin(entries.size(), 8);
+    for (int index = 0; index < includedEntries; ++index) {
+        const domain::MemoryEntry& entry = entries.at(index);
+        QStringList parts;
+        parts.append(QString("Typ: %1").arg(entry.type.trimmed().isEmpty() ? "note" : entry.type.trimmed()));
+        if (!entry.source.trimmed().isEmpty()) {
+            parts.append(QString("Quelle: %1").arg(entry.source.trimmed()));
+        }
+        if (!entry.tags.isEmpty()) {
+            parts.append(QString("Tags: %1").arg(entry.tags.join(", ")));
+        }
+
+        QString content = entry.content.simplified();
+        if (content.size() > 120) {
+            content = content.left(117) + "...";
+        }
+        parts.append(QString("Inhalt: %1").arg(content));
+        lines.append("  " + parts.join(" | "));
+    }
+
+    if (entries.size() > includedEntries) {
+        lines.append(QString("  ... %1 weitere Eintraege komprimiert.").arg(entries.size() - includedEntries));
+    }
+
+    return lines.join("\n");
+}
+
+PreparedMemoryContext prepareMemoryContext(services::MemoryService& memoryService, const qint64 projectId)
+{
+    PreparedMemoryContext context;
+    const QList<domain::MemoryEntry> memoryEntries = memoryService.listEntries(projectId, QString(), 24);
+    context.totalEntries = memoryEntries.size();
+    if (memoryEntries.isEmpty()) {
+        return context;
+    }
+
+    const int directEntryLimit = qMin(memoryEntries.size(), 6);
+    context.directEntries = directEntryLimit;
+    for (int index = 0; index < directEntryLimit; ++index) {
+        context.snippets.append(formatMemorySnippet(memoryEntries.at(index)));
+    }
+
+    if (memoryEntries.size() > directEntryLimit) {
+        const QList<domain::MemoryEntry> compressedEntries = memoryEntries.mid(directEntryLimit);
+        const QString compressedSnippet = formatCompressedMemorySnippet(compressedEntries);
+        if (!compressedSnippet.trimmed().isEmpty()) {
+            context.snippets.append(compressedSnippet);
+            context.compressedEntries = compressedEntries.size();
+        }
+    }
+
+    return context;
+}
+
+QString summarizeRunText(QString text)
+{
+    text = text.simplified();
+    if (text.size() > 220) {
+        text = text.left(217) + "...";
+    }
+    return text;
+}
+
 QString normalizedStepType(QString type)
 {
     return type.trimmed().toLower();
@@ -126,6 +216,128 @@ QString effectiveProviderBaseUrl(
     }
 
     return QString();
+}
+
+bool containsTemplatePlaceholder(const QString& text)
+{
+    return text.contains("{{") || text.contains("}}");
+}
+
+bool looksLikeUrl(const QString& text)
+{
+    const QString normalized = text.trimmed().toLower();
+    return normalized.startsWith("http://")
+        || normalized.startsWith("https://")
+        || normalized.startsWith("ftp://");
+}
+
+bool looksLikeLocalFilePath(const QString& text)
+{
+    const QString normalized = text.trimmed();
+    if (normalized.isEmpty() || containsTemplatePlaceholder(normalized) || looksLikeUrl(normalized)) {
+        return false;
+    }
+
+    return QFileInfo(normalized).isAbsolute()
+        || normalized.startsWith('.')
+        || normalized.contains('/')
+        || normalized.contains('\\');
+}
+
+void appendWorkflowPathReference(
+    QList<WorkflowPathReference>* references,
+    const QString& path,
+    const bool preferParentDirectory,
+    const QString& contextLabel
+)
+{
+    if (references == nullptr) {
+        return;
+    }
+
+    const QString normalizedPath = path.trimmed();
+    if (normalizedPath.isEmpty() || containsTemplatePlaceholder(normalizedPath) || looksLikeUrl(normalizedPath)) {
+        return;
+    }
+
+    for (const WorkflowPathReference& reference : std::as_const(*references)) {
+        if (reference.path.compare(normalizedPath, Qt::CaseInsensitive) == 0
+            && reference.preferParentDirectory == preferParentDirectory) {
+            return;
+        }
+    }
+
+    references->append(WorkflowPathReference{ normalizedPath, preferParentDirectory, contextLabel });
+}
+
+QList<WorkflowPathReference> collectWorkflowPathReferences(const QJsonObject& workflowRoot)
+{
+    QList<WorkflowPathReference> references;
+    const QJsonArray steps = workflowRoot.value("steps").toArray();
+    for (const QJsonValue& stepValue : steps) {
+        if (!stepValue.isObject()) {
+            continue;
+        }
+
+        const QJsonObject stepObject = stepValue.toObject();
+        const QString stepId = stepObject.value("id").toString().trimmed();
+        const QString stepLabel = stepId.isEmpty() ? "Unbekannter Schritt" : stepId;
+        const QString stepType = normalizedStepType(stepObject.value("type").toString());
+        if (stepType != "tool") {
+            continue;
+        }
+
+        const QJsonObject config = stepObject.value("config").toObject();
+        const QString toolName = config.value("tool").toString().trimmed().toLower();
+        if (toolName == "file.read") {
+            appendWorkflowPathReference(&references, config.value("path").toString(), true, stepLabel + " / file.read");
+        } else if (toolName == "csv.read" || toolName == "csv.write") {
+            appendWorkflowPathReference(&references, config.value("path").toString(), true, stepLabel + " / " + toolName);
+        } else if (toolName == "directory.read_recursive"
+                   || toolName == "directory.read_changed"
+                   || toolName == "directory.list"
+                   || toolName == "memory.ingest_directory") {
+            appendWorkflowPathReference(&references, config.value("path").toString(), false, stepLabel + " / " + toolName);
+        } else if (toolName == "file.write_text" || toolName == "file.edit_diff") {
+            appendWorkflowPathReference(&references, config.value("path").toString(), true, stepLabel + " / " + toolName);
+        } else if (toolName == "shell.run") {
+            appendWorkflowPathReference(
+                &references,
+                config.value("working_directory").toString(),
+                false,
+                stepLabel + " / shell.run"
+            );
+        } else if (toolName == "comfyui.workflow") {
+            appendWorkflowPathReference(
+                &references,
+                config.value("save_outputs_to").toString(),
+                false,
+                stepLabel + " / comfyui.workflow (Ausgabe)"
+            );
+
+            const QString inputImage = config.value("input_image").toString();
+            if (looksLikeLocalFilePath(inputImage)) {
+                appendWorkflowPathReference(
+                    &references,
+                    inputImage,
+                    true,
+                    stepLabel + " / comfyui.workflow (Startbild)"
+                );
+            }
+
+            const QString maskImage = config.value("mask_image").toString();
+            if (looksLikeLocalFilePath(maskImage)) {
+                appendWorkflowPathReference(
+                    &references,
+                    maskImage,
+                    true,
+                    stepLabel + " / comfyui.workflow (Maskenbild)"
+                );
+            }
+        }
+    }
+
+    return references;
 }
 
 void setJsonTextValue(QJsonObject* object, const QString& key, const QString& value)
@@ -224,11 +436,12 @@ core::ExecutionResult executeWorkflowWithProvider(
     const QString& providerBaseUrl,
     const QString& workspaceRoot,
     const QString& comfyUiBaseUrl,
+    const QStringList& allowedToolPaths,
     const domain::Workflow& workflow,
     const core::RunContext& runContext
 )
 {
-    const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl);
+    const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl, QString(), allowedToolPaths);
     core::WorkflowEngine workflowEngine(&toolExecutor);
 
     if (providerName.compare("Ollama", Qt::CaseInsensitive) == 0) {
@@ -253,6 +466,7 @@ WorkflowPanel::WorkflowPanel(
     services::ProjectService& projectService,
     services::SettingsService& settingsService,
     services::MemoryService& memoryService,
+    services::RunService& runService,
     services::WorkflowService& workflowService,
     providers::ProviderManager& providerManager,
     QWidget* parent
@@ -261,6 +475,7 @@ WorkflowPanel::WorkflowPanel(
     , m_projectService(projectService)
     , m_settingsService(settingsService)
     , m_memoryService(memoryService)
+    , m_runService(runService)
     , m_workflowService(workflowService)
     , m_providerManager(providerManager)
 {
@@ -281,6 +496,16 @@ void WorkflowPanel::reloadData()
 void WorkflowPanel::setOnWorkflowDataChanged(std::function<void()> callback)
 {
     m_onWorkflowDataChanged = std::move(callback);
+}
+
+void WorkflowPanel::setOnRunDataChanged(std::function<void()> callback)
+{
+    m_onRunDataChanged = std::move(callback);
+}
+
+void WorkflowPanel::setOnSettingsDataChanged(std::function<void()> callback)
+{
+    m_onSettingsDataChanged = std::move(callback);
 }
 
 void WorkflowPanel::setOnExecutionLogChanged(std::function<void(const QString&)> callback)
@@ -1564,6 +1789,17 @@ void WorkflowPanel::buildUi()
         scheduleVisualStepApply();
     });
 
+    registerAllowlistPrompt(m_toolFileReadPathEdit, true, "file.read");
+    registerAllowlistPrompt(m_toolCsvPathEdit, true, "csv.read/csv.write");
+    registerAllowlistPrompt(m_toolDirectoryReadPathEdit, false, "directory.read / memory.ingest_directory");
+    registerAllowlistPrompt(m_toolDirectoryListPathEdit, false, "directory.list");
+    registerAllowlistPrompt(m_toolFileWritePathEdit, true, "file.write_text");
+    registerAllowlistPrompt(m_toolFileEditPathEdit, true, "file.edit_diff");
+    registerAllowlistPrompt(m_toolShellWorkingDirEdit, false, "shell.run");
+    registerAllowlistPrompt(m_toolComfyOutputDirEdit, false, "comfyui.workflow Ausgabe");
+    registerAllowlistPrompt(m_toolComfyImageCombo, true, "comfyui.workflow Startbild");
+    registerAllowlistPrompt(m_toolComfyMaskImageCombo, true, "comfyui.workflow Maskenbild");
+
     m_executionStatusTimer = new QTimer(this);
     m_executionStatusTimer->setInterval(450);
     connect(m_executionStatusTimer, &QTimer::timeout, this, [this]() {
@@ -1687,6 +1923,10 @@ void WorkflowPanel::saveWorkflow()
     workflow.definitionJson = m_definitionEdit->toPlainText();
     workflow.active = m_activeCheckBox->isChecked();
 
+    if (!ensureWorkflowDefinitionPathsAllowed(workflow.definitionJson, "Speichern")) {
+        return;
+    }
+
     QString errorMessage;
     if (!m_workflowService.saveWorkflow(&workflow, &errorMessage)) {
         m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
@@ -1756,6 +1996,11 @@ void WorkflowPanel::executeWorkflow()
         return;
     }
 
+    if (!ensureWorkflowDefinitionPathsAllowed(workflow.definitionJson, "Ausfuehrung")) {
+        publishExecutionLog("[ui] Workflow-Ausfuehrung abgebrochen, weil ein externer Dateipfad nicht freigegeben wurde.");
+        return;
+    }
+
     core::RunContext runContext;
     runContext.projectId = project->id;
     runContext.workflowId = workflow.id;
@@ -1772,12 +2017,44 @@ void WorkflowPanel::executeWorkflow()
     runContext.variables.insert("comfyui_base_url", m_settingsService.comfyUiBaseUrl());
     runContext.variables.insert("provider_base_url", providerBaseUrl);
 
-    const QList<domain::MemoryEntry> memoryEntries = m_memoryService.recentEntries(project->id, 6);
-    for (const domain::MemoryEntry& entry : memoryEntries) {
-        runContext.memorySnippets.append(formatMemorySnippet(entry));
-    }
+    const PreparedMemoryContext memoryContext = prepareMemoryContext(m_memoryService, project->id);
+    runContext.memorySnippets = memoryContext.snippets;
+    runContext.memoryEntryCount = memoryContext.totalEntries;
+    runContext.directMemoryEntryCount = memoryContext.directEntries;
+    runContext.compressedMemoryEntryCount = memoryContext.compressedEntries;
     runContext.variables.insert("project_memory", runContext.memorySnippets.join("\n"));
-    runContext.variables.insert("project_memory_count", QString::number(runContext.memorySnippets.size()));
+    runContext.variables.insert("project_memory_count", QString::number(runContext.memoryEntryCount));
+    runContext.variables.insert("project_memory_snippet_count", QString::number(runContext.memorySnippets.size()));
+    runContext.variables.insert("project_memory_direct_count", QString::number(runContext.directMemoryEntryCount));
+    runContext.variables.insert("project_memory_compressed_count", QString::number(runContext.compressedMemoryEntryCount));
+
+    domain::Run persistedRun;
+    persistedRun.projectId = project->id;
+    persistedRun.workflowId = workflow.id;
+    persistedRun.status = "running";
+    persistedRun.origin = "manual";
+    persistedRun.providerName = providerName;
+    persistedRun.modelName = runContext.selectedModel;
+    persistedRun.summary = "Workflow wurde im Editor gestartet.";
+    persistedRun.logText = QString(
+        "[run] Workflow '%1' wurde ueber Provider '%2' gestartet.\n"
+        "[run] Modell: %3 | Projekt-Memory: %4"
+    )
+        .arg(workflow.name)
+        .arg(providerName)
+        .arg(runContext.selectedModel)
+        .arg(
+            runContext.compressedMemoryEntryCount > 0
+                ? QString("%1 (%2 direkt, %3 komprimiert)")
+                      .arg(runContext.memoryEntryCount)
+                      .arg(runContext.directMemoryEntryCount)
+                      .arg(runContext.compressedMemoryEntryCount)
+                : QString::number(runContext.memoryEntryCount)
+        );
+    QString runPersistenceError;
+    if (!m_runService.startRun(&persistedRun, &runPersistenceError)) {
+        publishExecutionLog(QString("[run-persist] Start fehlgeschlagen: %1").arg(runPersistenceError));
+    }
 
     const int runId = m_nextExecutionId++;
     ++m_activeRunCount;
@@ -1803,14 +2080,22 @@ void WorkflowPanel::executeWorkflow()
     publishExecutionLog(
         QString("[run:%1] %2 Memory-Eintraege als Projektkontext geladen.")
             .arg(runId)
-            .arg(runContext.memorySnippets.size())
+            .arg(
+                runContext.compressedMemoryEntryCount > 0
+                    ? QString("%1 (%2 direkt, %3 komprimiert)")
+                          .arg(runContext.memoryEntryCount)
+                          .arg(runContext.directMemoryEntryCount)
+                          .arg(runContext.compressedMemoryEntryCount)
+                    : QString::number(runContext.memoryEntryCount)
+            )
     );
 
     const QString workspaceRoot = m_settingsService.workspaceRoot();
     const QString comfyUiBaseUrl = m_settingsService.comfyUiBaseUrl();
+    const QStringList allowedToolPaths = m_settingsService.effectiveAllowedToolPaths();
 
     auto* watcher = new QFutureWatcher<core::ExecutionResult>(this);
-    connect(watcher, &QFutureWatcher<core::ExecutionResult>::finished, this, [this, watcher, runId]() {
+    connect(watcher, &QFutureWatcher<core::ExecutionResult>::finished, this, [this, watcher, runId, persistedRun]() mutable {
         const core::ExecutionResult result = watcher->result();
         watcher->deleteLater();
 
@@ -1853,8 +2138,32 @@ void WorkflowPanel::executeWorkflow()
             );
         }
 
-        if (savedMemoryCount > 0 && m_onWorkflowDataChanged) {
-            m_onWorkflowDataChanged();
+        persistedRun.status = result.success ? "completed" : "failed";
+        persistedRun.summary = summarizeRunText(
+            result.success
+                ? (!result.finalOutput.trimmed().isEmpty()
+                    ? result.finalOutput
+                    : QString("Workflow erfolgreich abgeschlossen."))
+                : result.errorMessage
+        );
+        persistedRun.outputText = result.finalOutput;
+        persistedRun.logText = result.logs.join('\n');
+        persistedRun.errorMessage = result.success ? QString() : result.errorMessage;
+        persistedRun.savedMemoryCount = savedMemoryCount;
+        persistedRun.finishedAt = QDateTime::currentDateTimeUtc();
+        if (persistedRun.id > 0) {
+            QString finishRunError;
+            if (!m_runService.finishRun(&persistedRun, &finishRunError)) {
+                publishExecutionLog(
+                    QString("[run:%1] Run-Historie konnte nicht abgeschlossen werden: %2")
+                        .arg(runId)
+                        .arg(finishRunError)
+                );
+            }
+        }
+
+        if (m_onRunDataChanged) {
+            m_onRunDataChanged();
         }
 
         if (memoryPersistenceFailed && result.success) {
@@ -1884,12 +2193,13 @@ void WorkflowPanel::executeWorkflow()
         );
     });
 
-    watcher->setFuture(QtConcurrent::run([workflow, runContext, providerBaseUrl, providerName, workspaceRoot, comfyUiBaseUrl]() {
+    watcher->setFuture(QtConcurrent::run([workflow, runContext, providerBaseUrl, providerName, workspaceRoot, comfyUiBaseUrl, allowedToolPaths]() {
         return executeWorkflowWithProvider(
             providerName,
             providerBaseUrl,
             workspaceRoot,
             comfyUiBaseUrl,
+            allowedToolPaths,
             workflow,
             runContext
         );
@@ -1936,6 +2246,122 @@ void WorkflowPanel::updateVisualEditorVisibility()
     if (m_definitionEdit != nullptr) {
         m_definitionEdit->setVisible(!visualEditorEnabled);
     }
+}
+
+void WorkflowPanel::registerAllowlistPrompt(
+    QLineEdit* lineEdit,
+    const bool preferParentDirectory,
+    const QString& contextLabel
+)
+{
+    if (lineEdit == nullptr) {
+        return;
+    }
+
+    connect(lineEdit, &QLineEdit::editingFinished, this, [this, lineEdit, preferParentDirectory, contextLabel]() {
+        ensurePathAllowedForUi(lineEdit->text(), preferParentDirectory, contextLabel);
+    });
+}
+
+void WorkflowPanel::registerAllowlistPrompt(
+    QComboBox* comboBox,
+    const bool preferParentDirectory,
+    const QString& contextLabel
+)
+{
+    if (comboBox == nullptr || comboBox->lineEdit() == nullptr) {
+        return;
+    }
+
+    connect(comboBox->lineEdit(), &QLineEdit::editingFinished, this, [this, comboBox, preferParentDirectory, contextLabel]() {
+        ensurePathAllowedForUi(comboBox->currentText(), preferParentDirectory, contextLabel);
+    });
+}
+
+bool WorkflowPanel::ensurePathAllowedForUi(
+    const QString& path,
+    const bool preferParentDirectory,
+    const QString& contextLabel
+)
+{
+    const QString normalizedPath = path.trimmed();
+    if (normalizedPath.isEmpty() || containsTemplatePlaceholder(normalizedPath) || looksLikeUrl(normalizedPath)) {
+        return true;
+    }
+
+    if (contextLabel.startsWith("comfyui.workflow") && !looksLikeLocalFilePath(normalizedPath) && preferParentDirectory) {
+        return true;
+    }
+
+    if (m_settingsService.isPathAllowed(normalizedPath)) {
+        return true;
+    }
+
+    const QString suggestedPath = m_settingsService.suggestedAllowedToolPath(normalizedPath, preferParentDirectory);
+    if (suggestedPath.isEmpty() || m_settingsService.isPathAllowed(suggestedPath)) {
+        return true;
+    }
+
+    const QMessageBox::StandardButton answer = QMessageBox::question(
+        this,
+        "Dateipfad freigeben",
+        QString(
+            "Der Pfad fuer '%1' liegt ausserhalb der aktuellen Allowlist:\n\n%2\n\n"
+            "Soll '%3' dauerhaft zur Allowlist hinzugefuegt werden?"
+        ).arg(contextLabel, normalizedPath, suggestedPath),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::Yes
+    );
+
+    if (answer != QMessageBox::Yes) {
+        return false;
+    }
+
+    QString errorMessage;
+    if (!m_settingsService.addAllowedToolPath(suggestedPath, &errorMessage)) {
+        QMessageBox::warning(
+            this,
+            "Allowlist konnte nicht aktualisiert werden",
+            QString("Der Pfad konnte nicht freigegeben werden: %1").arg(errorMessage)
+        );
+        return false;
+    }
+
+    if (m_feedbackLabel != nullptr) {
+        m_feedbackLabel->setStyleSheet("color: #2f6b3a;");
+        m_feedbackLabel->setText(QString("Pfad freigegeben: %1").arg(suggestedPath));
+    }
+
+    if (m_onSettingsDataChanged) {
+        m_onSettingsDataChanged();
+    }
+
+    return true;
+}
+
+bool WorkflowPanel::ensureWorkflowDefinitionPathsAllowed(const QString& definitionJson, const QString& actionLabel)
+{
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(definitionJson.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        return true;
+    }
+
+    const QList<WorkflowPathReference> references = collectWorkflowPathReferences(document.object());
+    for (const WorkflowPathReference& reference : references) {
+        if (!ensurePathAllowedForUi(reference.path, reference.preferParentDirectory, reference.contextLabel)) {
+            if (m_feedbackLabel != nullptr) {
+                m_feedbackLabel->setStyleSheet("color: #8b5e2f;");
+                m_feedbackLabel->setText(
+                    QString("%1 abgebrochen: Externer Pfad wurde nicht zur Allowlist hinzugefuegt.")
+                        .arg(actionLabel)
+                );
+            }
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void WorkflowPanel::scheduleVisualSyncFromJson()

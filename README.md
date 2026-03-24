@@ -20,6 +20,7 @@ Zwischenergebnisse, Zusammenfassungen, Artefakte und Projektwissen lassen sich a
   - `save_memory`
   - `tool`
 - Persistente Projekterinnerung auf Basis von `SQLite`
+- Persistente Run-Historie fuer manuelle und geplante Workflow-Laeufe
 - Zeitplaene fuer einmalige, intervallbasierte und taegliche Workflow-Starts
 - Hintergrundausfuehrung von Workflows, damit die UI benutzbar bleibt
 - ComfyUI-Integration fuer `txt2img`, `img2img` und `inpainting`
@@ -118,6 +119,7 @@ Weiterfuehrende Dokumentation liegt im Repository:
 - [Schnellstart](./docs/wiki/Schnellstart.md)
 - [Workflows](./docs/wiki/Workflows.md)
 - [Tools](./docs/wiki/Tools.md)
+- [Runs](./docs/wiki/Runs.md)
 - [Zeitplaene](./docs/wiki/Zeitplaene.md)
 - [Beispiel-Workflows](./docs/examples/README.md)
 
@@ -148,3 +150,7 @@ Das Token braucht Schreibrechte fuer das Wiki-Repository von `UbivisMedia/Privat
 
 `PrivateClaw` ist bereits funktional und fuer erste reale Workflows nutzbar, befindet sich aber weiterhin in aktiver Entwicklung.
 Der Schwerpunkt liegt aktuell auf dem Ausbau des Tool-Layers, der Workflow-Usability und der Projekt-Memory-Verwaltung.
+
+## DISCLAIMER !!!
+
+Dieses ist ein reines Hobbyprojekt, verwendung auf eigene Gefahr!

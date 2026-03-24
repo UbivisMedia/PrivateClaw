@@ -33,6 +33,7 @@ class ProviderManager;
 namespace privateclaw::services {
 class MemoryService;
 class ProjectService;
+class RunService;
 class SettingsService;
 class WorkflowService;
 }
@@ -46,6 +47,7 @@ public:
         services::ProjectService& projectService,
         services::SettingsService& settingsService,
         services::MemoryService& memoryService,
+        services::RunService& runService,
         services::WorkflowService& workflowService,
         providers::ProviderManager& providerManager,
         QWidget* parent = nullptr
@@ -54,6 +56,8 @@ public:
     int workflowCount() const;
     void reloadData();
     void setOnWorkflowDataChanged(std::function<void()> callback);
+    void setOnRunDataChanged(std::function<void()> callback);
+    void setOnSettingsDataChanged(std::function<void()> callback);
     void setOnExecutionLogChanged(std::function<void(const QString&)> callback);
 
 private:
@@ -66,6 +70,10 @@ private:
     void executeWorkflow();
     void updateExecutionStatus();
     void updateVisualEditorVisibility();
+    void registerAllowlistPrompt(QLineEdit* lineEdit, bool preferParentDirectory, const QString& contextLabel);
+    void registerAllowlistPrompt(QComboBox* comboBox, bool preferParentDirectory, const QString& contextLabel);
+    bool ensurePathAllowedForUi(const QString& path, bool preferParentDirectory, const QString& contextLabel);
+    bool ensureWorkflowDefinitionPathsAllowed(const QString& definitionJson, const QString& actionLabel);
     void scheduleVisualSyncFromJson();
     void syncVisualEditorFromJson();
     void rebuildVisualStepList(const QString& stepIdToSelect = QString());
@@ -102,6 +110,7 @@ private:
     services::ProjectService& m_projectService;
     services::SettingsService& m_settingsService;
     services::MemoryService& m_memoryService;
+    services::RunService& m_runService;
     services::WorkflowService& m_workflowService;
     providers::ProviderManager& m_providerManager;
     core::WorkflowEngine m_workflowEngine;
@@ -113,6 +122,8 @@ private:
     int m_nextExecutionId = 1;
     int m_executionStatusFrame = 0;
     std::function<void()> m_onWorkflowDataChanged;
+    std::function<void()> m_onRunDataChanged;
+    std::function<void()> m_onSettingsDataChanged;
     std::function<void(const QString&)> m_onExecutionLogChanged;
     bool m_isSyncingVisualEditor = false;
     bool m_visualEditorHasValidJson = false;

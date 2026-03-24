@@ -549,10 +549,15 @@ ExecutionResult WorkflowEngine::executeWorkflow(
 
             result.memoryEntriesToPersist.append(entry);
             runContext.memorySnippets.append(memorySnippetFromEntry(entry));
+            ++runContext.memoryEntryCount;
+            ++runContext.directMemoryEntryCount;
             runContext.variables.insert("last_memory_content", entry.content);
             runContext.variables.insert("last_memory_type", entry.type);
             runContext.variables.insert("project_memory", runContext.memorySnippets.join("\n"));
-            runContext.variables.insert("project_memory_count", QString::number(runContext.memorySnippets.size()));
+            runContext.variables.insert("project_memory_count", QString::number(runContext.memoryEntryCount));
+            runContext.variables.insert("project_memory_snippet_count", QString::number(runContext.memorySnippets.size()));
+            runContext.variables.insert("project_memory_direct_count", QString::number(runContext.directMemoryEntryCount));
+            runContext.variables.insert("project_memory_compressed_count", QString::number(runContext.compressedMemoryEntryCount));
 
             result.logs.append(QString("[step:%1] Typ: save_memory").arg(step.id));
             result.logs.append(QString("[step:%1] Memory-Typ: %2").arg(step.id, entry.type));
@@ -745,11 +750,16 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                 for (const domain::MemoryEntry& entry : toolResult.memoryEntriesToPersist) {
                     result.memoryEntriesToPersist.append(entry);
                     runContext.memorySnippets.append(memorySnippetFromEntry(entry));
+                    ++runContext.memoryEntryCount;
+                    ++runContext.directMemoryEntryCount;
                     runContext.variables.insert("last_memory_content", entry.content);
                     runContext.variables.insert("last_memory_type", entry.type);
                 }
                 runContext.variables.insert("project_memory", runContext.memorySnippets.join("\n"));
-                runContext.variables.insert("project_memory_count", QString::number(runContext.memorySnippets.size()));
+                runContext.variables.insert("project_memory_count", QString::number(runContext.memoryEntryCount));
+                runContext.variables.insert("project_memory_snippet_count", QString::number(runContext.memorySnippets.size()));
+                runContext.variables.insert("project_memory_direct_count", QString::number(runContext.directMemoryEntryCount));
+                runContext.variables.insert("project_memory_compressed_count", QString::number(runContext.compressedMemoryEntryCount));
                 result.logs.append(
                     QString("[step:%1] Tool hat %2 Memory-Eintrag(e) vorgemerkt.")
                         .arg(step.id)
@@ -796,9 +806,11 @@ ExecutionResult WorkflowEngine::executeWorkflow(
         result.logs.append(QString("[step:%1] Modell: %2").arg(step.id, model));
         if (!runContext.memorySnippets.isEmpty()) {
             result.logs.append(
-                QString("[step:%1] Memory-Kontext: %2 Eintraege verfuegbar.")
+                QString("[step:%1] Memory-Kontext: %2 Eintraege verfuegbar (%3 direkte Snippets, %4 komprimiert).")
                     .arg(step.id)
-                    .arg(runContext.memorySnippets.size())
+                    .arg(runContext.memoryEntryCount)
+                    .arg(runContext.directMemoryEntryCount)
+                    .arg(runContext.compressedMemoryEntryCount)
             );
         }
         result.logs.append(QString("[step:%1] Prompt: %2").arg(step.id, previewText(renderedPrompt)));

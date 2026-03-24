@@ -33,6 +33,8 @@ set(PRIVATECLAW_SOURCES
     src/ui/WorkflowPanel.h
     src/ui/MemoryPanel.cpp
     src/ui/MemoryPanel.h
+    src/ui/RunPanel.cpp
+    src/ui/RunPanel.h
     src/ui/SchedulePanel.cpp
     src/ui/SchedulePanel.h
     src/ui/RunLogPanel.cpp
@@ -66,6 +68,8 @@ set(PRIVATECLAW_SOURCES
     src/services/WorkflowService.h
     src/services/MemoryService.cpp
     src/services/MemoryService.h
+    src/services/RunService.cpp
+    src/services/RunService.h
     src/services/ScheduleService.cpp
     src/services/ScheduleService.h
     src/tools/ToolExecutor.cpp

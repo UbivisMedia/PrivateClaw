@@ -143,7 +143,14 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
         "project_id INTEGER NOT NULL,"
         "workflow_id INTEGER NOT NULL,"
         "status TEXT NOT NULL,"
+        "origin TEXT NOT NULL DEFAULT '',"
+        "provider_name TEXT NOT NULL DEFAULT '',"
+        "model_name TEXT NOT NULL DEFAULT '',"
         "summary TEXT NOT NULL DEFAULT '',"
+        "output_text TEXT NOT NULL DEFAULT '',"
+        "log_text TEXT NOT NULL DEFAULT '',"
+        "error_message TEXT NOT NULL DEFAULT '',"
+        "saved_memory_count INTEGER NOT NULL DEFAULT 0,"
         "started_at TEXT NOT NULL,"
         "finished_at TEXT"
         ")",
@@ -177,6 +184,76 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
             }
             return false;
         }
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "runs",
+            "origin",
+            "ALTER TABLE runs ADD COLUMN origin TEXT NOT NULL DEFAULT ''",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "runs",
+            "provider_name",
+            "ALTER TABLE runs ADD COLUMN provider_name TEXT NOT NULL DEFAULT ''",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "runs",
+            "model_name",
+            "ALTER TABLE runs ADD COLUMN model_name TEXT NOT NULL DEFAULT ''",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "runs",
+            "output_text",
+            "ALTER TABLE runs ADD COLUMN output_text TEXT NOT NULL DEFAULT ''",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "runs",
+            "log_text",
+            "ALTER TABLE runs ADD COLUMN log_text TEXT NOT NULL DEFAULT ''",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "runs",
+            "error_message",
+            "ALTER TABLE runs ADD COLUMN error_message TEXT NOT NULL DEFAULT ''",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "runs",
+            "saved_memory_count",
+            "ALTER TABLE runs ADD COLUMN saved_memory_count INTEGER NOT NULL DEFAULT 0",
+            errorMessage
+        )) {
+        return false;
     }
 
     if (!ensureColumnExists(

@@ -7,6 +7,7 @@
 #include "providers/ProviderManager.h"
 #include "services/MemoryService.h"
 #include "services/ProjectService.h"
+#include "services/RunService.h"
 #include "services/ScheduleService.h"
 #include "services/SettingsService.h"
 #include "services/WorkflowService.h"
@@ -14,6 +15,7 @@
 #include "tools/ToolExecutor.h"
 #include "ui/MemoryPanel.h"
 #include "ui/ProjectPanel.h"
+#include "ui/RunPanel.h"
 #include "ui/RunLogPanel.h"
 #include "ui/SchedulePanel.h"
 #include "ui/WorkflowPanel.h"
@@ -31,6 +33,14 @@
 namespace privateclaw::ui {
 
 namespace {
+
+struct PreparedMemoryContext
+{
+    QStringList snippets;
+    int totalEntries = 0;
+    int directEntries = 0;
+    int compressedEntries = 0;
+};
 
 QString formatMemorySnippet(const domain::MemoryEntry& entry)
 {
@@ -54,6 +64,69 @@ QString formatMemorySnippet(const domain::MemoryEntry& entry)
     return QString("- %1").arg(parts.join(" | "));
 }
 
+QString formatCompressedMemorySnippet(const QList<domain::MemoryEntry>& entries)
+{
+    if (entries.isEmpty()) {
+        return {};
+    }
+
+    QStringList lines;
+    lines.append(QString("- Komprimierte Erinnerung aus %1 weiteren Eintraegen:").arg(entries.size()));
+
+    const int includedEntries = qMin(entries.size(), 8);
+    for (int index = 0; index < includedEntries; ++index) {
+        const domain::MemoryEntry& entry = entries.at(index);
+        QStringList parts;
+        parts.append(QString("Typ: %1").arg(entry.type.trimmed().isEmpty() ? "note" : entry.type.trimmed()));
+        if (!entry.source.trimmed().isEmpty()) {
+            parts.append(QString("Quelle: %1").arg(entry.source.trimmed()));
+        }
+        if (!entry.tags.isEmpty()) {
+            parts.append(QString("Tags: %1").arg(entry.tags.join(", ")));
+        }
+
+        QString content = entry.content.simplified();
+        if (content.size() > 120) {
+            content = content.left(117) + "...";
+        }
+        parts.append(QString("Inhalt: %1").arg(content));
+        lines.append("  " + parts.join(" | "));
+    }
+
+    if (entries.size() > includedEntries) {
+        lines.append(QString("  ... %1 weitere Eintraege komprimiert.").arg(entries.size() - includedEntries));
+    }
+
+    return lines.join("\n");
+}
+
+PreparedMemoryContext prepareMemoryContext(services::MemoryService& memoryService, const qint64 projectId)
+{
+    PreparedMemoryContext context;
+    const QList<domain::MemoryEntry> memoryEntries = memoryService.listEntries(projectId, QString(), 24);
+    context.totalEntries = memoryEntries.size();
+    if (memoryEntries.isEmpty()) {
+        return context;
+    }
+
+    const int directEntryLimit = qMin(memoryEntries.size(), 6);
+    context.directEntries = directEntryLimit;
+    for (int index = 0; index < directEntryLimit; ++index) {
+        context.snippets.append(formatMemorySnippet(memoryEntries.at(index)));
+    }
+
+    if (memoryEntries.size() > directEntryLimit) {
+        const QList<domain::MemoryEntry> compressedEntries = memoryEntries.mid(directEntryLimit);
+        const QString compressedSnippet = formatCompressedMemorySnippet(compressedEntries);
+        if (!compressedSnippet.trimmed().isEmpty()) {
+            context.snippets.append(compressedSnippet);
+            context.compressedEntries = compressedEntries.size();
+        }
+    }
+
+    return context;
+}
+
 QString prefixRunLog(const QString& prefix, const QStringList& lines)
 {
     QStringList prefixed;
@@ -67,16 +140,26 @@ QString prefixRunLog(const QString& prefix, const QStringList& lines)
     return prefixed.join('\n');
 }
 
+QString summarizeRunText(QString text)
+{
+    text = text.simplified();
+    if (text.size() > 220) {
+        text = text.left(217) + "...";
+    }
+    return text;
+}
+
 core::ExecutionResult executeWorkflowWithProvider(
     const QString& providerName,
     const QString& providerBaseUrl,
     const QString& workspaceRoot,
     const QString& comfyUiBaseUrl,
+    const QStringList& allowedToolPaths,
     const domain::Workflow& workflow,
     const core::RunContext& runContext
 )
 {
-    const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl);
+    const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl, QString(), allowedToolPaths);
     core::WorkflowEngine workflowEngine(&toolExecutor);
 
     if (providerName.compare("Ollama", Qt::CaseInsensitive) == 0) {
@@ -103,6 +186,7 @@ MainWindow::MainWindow(
     services::ProjectService& projectService,
     services::MemoryService& memoryService,
     services::WorkflowService& workflowService,
+    services::RunService& runService,
     services::ScheduleService& scheduleService,
     providers::ProviderManager& providerManager,
     QWidget* parent
@@ -113,12 +197,14 @@ MainWindow::MainWindow(
     , m_projectService(projectService)
     , m_memoryService(memoryService)
     , m_workflowService(workflowService)
+    , m_runService(runService)
     , m_scheduleService(scheduleService)
     , m_providerManager(providerManager)
 {
     setWindowTitle("PrivateClaw");
     resize(1360, 840);
     buildUi();
+    recoverInterruptedRuns();
     updateStatusBar();
     startSchedulePolling();
 }
@@ -133,12 +219,13 @@ void MainWindow::buildUi()
         "Projekte",
         "Workflows",
         "Erinnerung",
+        "Runs",
         "Zeitplaene"
     });
     m_navigation->setFixedWidth(220);
 
     m_pages = new QStackedWidget(topSplitter);
-    m_projectPanel = new ProjectPanel(m_projectService, m_providerManager, m_pages);
+    m_projectPanel = new ProjectPanel(m_projectService, m_settingsService, m_providerManager, m_pages);
     m_projectPanel->setOnProjectDataChanged([this]() {
         refreshProjectDependentViews();
     });
@@ -146,6 +233,7 @@ void MainWindow::buildUi()
     m_memoryPanel->setOnMemoryDataChanged([this]() {
         updateStatusBar();
     });
+    m_runPanel = new RunPanel(m_projectService, m_workflowService, m_runService, m_pages);
     m_schedulePanel = new SchedulePanel(
         m_projectService,
         m_workflowService,
@@ -166,12 +254,28 @@ void MainWindow::buildUi()
         m_projectService,
         m_settingsService,
         m_memoryService,
+        m_runService,
         m_workflowService,
         m_providerManager,
         m_pages
     );
     m_workflowPanel->setOnWorkflowDataChanged([this]() {
         refreshProjectDependentViews();
+    });
+    m_workflowPanel->setOnRunDataChanged([this]() {
+        updateStatusBar();
+        if (m_memoryPanel != nullptr) {
+            m_memoryPanel->reloadData();
+        }
+        if (m_runPanel != nullptr) {
+            m_runPanel->reloadData();
+        }
+    });
+    m_workflowPanel->setOnSettingsDataChanged([this]() {
+        updateStatusBar();
+        if (m_projectPanel != nullptr) {
+            m_projectPanel->reloadData();
+        }
     });
     m_workflowPanel->setOnExecutionLogChanged([this](const QString& text) {
         m_runLogPanel->appendLogLine(text);
@@ -180,6 +284,7 @@ void MainWindow::buildUi()
     m_pages->addWidget(m_projectPanel);
     m_pages->addWidget(m_workflowPanel);
     m_pages->addWidget(m_memoryPanel);
+    m_pages->addWidget(m_runPanel);
     m_pages->addWidget(m_schedulePanel);
 
     topSplitter->setStretchFactor(0, 0);
@@ -192,6 +297,9 @@ void MainWindow::buildUi()
     connect(m_navigation, &QListWidget::currentRowChanged, this, [this](const int row) {
         if (row >= 0 && row < m_pages->count()) {
             m_pages->setCurrentIndex(row);
+            if (row == 0 && m_projectPanel != nullptr) {
+                m_projectPanel->reloadData();
+            }
         }
     });
 
@@ -207,23 +315,55 @@ void MainWindow::refreshProjectDependentViews()
     if (m_memoryPanel != nullptr) {
         m_memoryPanel->reloadData();
     }
+    if (m_runPanel != nullptr) {
+        m_runPanel->reloadData();
+    }
     if (m_schedulePanel != nullptr) {
         m_schedulePanel->reloadData();
+    }
+}
+
+void MainWindow::recoverInterruptedRuns()
+{
+    QString recoveryError;
+    const int recoveredRunCount = m_runService.recoverInterruptedRuns(&recoveryError);
+    if (recoveredRunCount < 0) {
+        if (m_runLogPanel != nullptr) {
+            m_runLogPanel->appendLogLine(
+                QString("[runs] Vorherige offene Laeufe konnten nicht wiederhergestellt werden: %1")
+                    .arg(recoveryError)
+            );
+        }
+        return;
+    }
+
+    if (recoveredRunCount > 0) {
+        if (m_runLogPanel != nullptr) {
+            m_runLogPanel->appendLogLine(
+                QString("[runs] %1 zuvor offene Lauf/Läufe wurden beim Start als 'interrupted' markiert.")
+                    .arg(recoveredRunCount)
+            );
+        }
+        if (m_runPanel != nullptr) {
+            m_runPanel->reloadData();
+        }
     }
 }
 
 void MainWindow::updateStatusBar()
 {
     statusBar()->showMessage(
-        QString("Datenbank: %1 | Provider: %2 | Projekte: %3 | Workflows: %4 | Memory: %5 | Zeitplaene: %6 | Laufende Schedules: %7")
+        QString("Datenbank: %1 | Provider: %2 | Projekte: %3 | Workflows: %4 | Memory: %5 | Runs: %6 | Zeitplaene: %7 | Laufende Schedules: %8 | Externe Pfade: %9")
             .arg(
                 m_databaseManager.databasePath(),
                 QString::number(m_providerManager.providers().size()),
                 QString::number(m_projectService.projectCount()),
                 QString::number(m_workflowService.workflowCount()),
                 QString::number(m_memoryService.memoryCount()),
+                QString::number(m_runService.runCount()),
                 QString::number(m_scheduleService.scheduleCount()),
-                QString::number(m_runningScheduleIds.size())
+                QString::number(m_runningScheduleIds.size()),
+                QString::number(m_settingsService.customAllowedToolPaths().size())
             )
     );
 }
@@ -380,12 +520,53 @@ void MainWindow::executeSchedule(
     runContext.variables.insert("schedule_trigger_expression", schedule.triggerExpression);
     runContext.variables.insert("schedule_origin", originLabel);
 
-    const QList<domain::MemoryEntry> memoryEntries = m_memoryService.recentEntries(project->id, 6);
-    for (const domain::MemoryEntry& entry : memoryEntries) {
-        runContext.memorySnippets.append(formatMemorySnippet(entry));
-    }
+    const PreparedMemoryContext memoryContext = prepareMemoryContext(m_memoryService, project->id);
+    runContext.memorySnippets = memoryContext.snippets;
+    runContext.memoryEntryCount = memoryContext.totalEntries;
+    runContext.directMemoryEntryCount = memoryContext.directEntries;
+    runContext.compressedMemoryEntryCount = memoryContext.compressedEntries;
     runContext.variables.insert("project_memory", runContext.memorySnippets.join("\n"));
-    runContext.variables.insert("project_memory_count", QString::number(runContext.memorySnippets.size()));
+    runContext.variables.insert("project_memory_count", QString::number(runContext.memoryEntryCount));
+    runContext.variables.insert("project_memory_snippet_count", QString::number(runContext.memorySnippets.size()));
+    runContext.variables.insert("project_memory_direct_count", QString::number(runContext.directMemoryEntryCount));
+    runContext.variables.insert("project_memory_compressed_count", QString::number(runContext.compressedMemoryEntryCount));
+
+    domain::Run persistedRun;
+    persistedRun.projectId = project->id;
+    persistedRun.workflowId = workflow.id;
+    persistedRun.status = "running";
+    persistedRun.origin = advanceScheduleAfterRun ? "schedule:auto" : "schedule:manual";
+    persistedRun.providerName = providerName;
+    persistedRun.modelName = runContext.selectedModel;
+    persistedRun.summary = QString("Zeitplan %1 hat den Workflow gestartet.").arg(originLabel);
+    persistedRun.logText = QString(
+        "[schedule:%1] Starte %2 Zeitplan fuer Workflow '%3' in Projekt '%4'.\n"
+        "[schedule:%1] Provider: %5 | Modell: %6 | Projekt-Memory: %7"
+    )
+        .arg(schedule.id)
+        .arg(originLabel)
+        .arg(workflow.name)
+        .arg(project->name)
+        .arg(providerName)
+        .arg(runContext.selectedModel)
+        .arg(
+            runContext.compressedMemoryEntryCount > 0
+                ? QString("%1 (%2 direkt, %3 komprimiert)")
+                      .arg(runContext.memoryEntryCount)
+                      .arg(runContext.directMemoryEntryCount)
+                      .arg(runContext.compressedMemoryEntryCount)
+                : QString::number(runContext.memoryEntryCount)
+        );
+    QString runPersistenceError;
+    if (!m_runService.startRun(&persistedRun, &runPersistenceError) && m_runLogPanel != nullptr) {
+        m_runLogPanel->appendLogLine(
+            QString("[schedule:%1] Run-Historie konnte nicht gestartet werden: %2")
+                .arg(schedule.id)
+                .arg(runPersistenceError)
+        );
+    } else if (persistedRun.id > 0 && m_runPanel != nullptr) {
+        m_runPanel->reloadData();
+    }
 
     m_runningScheduleIds.insert(schedule.id);
     updateStatusBar();
@@ -402,8 +583,9 @@ void MainWindow::executeSchedule(
 
     const QString workspaceRoot = m_settingsService.workspaceRoot();
     const QString comfyUiBaseUrl = m_settingsService.comfyUiBaseUrl();
+    const QStringList allowedToolPaths = m_settingsService.effectiveAllowedToolPaths();
     auto* watcher = new QFutureWatcher<core::ExecutionResult>(this);
-    connect(watcher, &QFutureWatcher<core::ExecutionResult>::finished, this, [this, watcher, schedule, advanceScheduleAfterRun]() {
+    connect(watcher, &QFutureWatcher<core::ExecutionResult>::finished, this, [this, watcher, schedule, advanceScheduleAfterRun, persistedRun]() mutable {
         const core::ExecutionResult result = watcher->result();
         watcher->deleteLater();
 
@@ -431,6 +613,30 @@ void MainWindow::executeSchedule(
             }
 
             ++savedMemoryCount;
+        }
+
+        persistedRun.status = result.success ? "completed" : "failed";
+        persistedRun.summary = summarizeRunText(
+            result.success
+                ? (!result.finalOutput.trimmed().isEmpty()
+                    ? result.finalOutput
+                    : QString("Workflow erfolgreich abgeschlossen."))
+                : result.errorMessage
+        );
+        persistedRun.outputText = result.finalOutput;
+        persistedRun.logText = result.logs.join('\n');
+        persistedRun.errorMessage = result.success ? QString() : result.errorMessage;
+        persistedRun.savedMemoryCount = savedMemoryCount;
+        persistedRun.finishedAt = QDateTime::currentDateTimeUtc();
+        if (persistedRun.id > 0) {
+            QString finishRunError;
+            if (!m_runService.finishRun(&persistedRun, &finishRunError) && m_runLogPanel != nullptr) {
+                m_runLogPanel->appendLogLine(
+                    QString("[schedule:%1] Run-Historie konnte nicht abgeschlossen werden: %2")
+                        .arg(schedule.id)
+                        .arg(finishRunError)
+                );
+            }
         }
 
         if (advanceScheduleAfterRun) {
@@ -463,7 +669,15 @@ void MainWindow::executeSchedule(
                         .arg(result.errorMessage)
                 );
             }
-            refreshProjectDependentViews();
+            if (m_memoryPanel != nullptr) {
+                m_memoryPanel->reloadData();
+            }
+            if (m_runPanel != nullptr) {
+                m_runPanel->reloadData();
+            }
+            if (m_schedulePanel != nullptr) {
+                m_schedulePanel->reloadData();
+            }
             updateStatusBar();
             return;
         }
@@ -477,16 +691,25 @@ void MainWindow::executeSchedule(
             );
         }
 
-        refreshProjectDependentViews();
+        if (m_memoryPanel != nullptr) {
+            m_memoryPanel->reloadData();
+        }
+        if (m_runPanel != nullptr) {
+            m_runPanel->reloadData();
+        }
+        if (m_schedulePanel != nullptr) {
+            m_schedulePanel->reloadData();
+        }
         updateStatusBar();
     });
 
-    watcher->setFuture(QtConcurrent::run([workflow, runContext, providerBaseUrl, providerName, workspaceRoot, comfyUiBaseUrl]() {
+    watcher->setFuture(QtConcurrent::run([workflow, runContext, providerBaseUrl, providerName, workspaceRoot, comfyUiBaseUrl, allowedToolPaths]() {
         return executeWorkflowWithProvider(
             providerName,
             providerBaseUrl,
             workspaceRoot,
             comfyUiBaseUrl,
+            allowedToolPaths,
             workflow,
             runContext
         );
