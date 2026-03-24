@@ -7,13 +7,20 @@ Diese Seite beschreibt die aktuell verfuegbaren Workflow-Tools in `PrivateClaw`,
 Aktuell verfuegbare Tools:
 
 - `file.read`
+- `json.extract`
+- `csv.read`
+- `csv.write`
 - `directory.read_recursive`
 - `directory.read_changed`
 - `directory.list`
+- `memory.search`
+- `memory.summarize`
+- `memory.delete_old`
 - `memory.ingest_directory`
 - `file.write_text`
 - `file.edit_diff`
 - `http.request`
+- `shell.run`
 - `comfyui.workflow`
 
 Tool-Schritte werden im Workflow ueber `type: "tool"` und `config.tool` verwendet.
@@ -64,6 +71,108 @@ Liest eine Datei aus dem Workspace.
     "line_end": 120,
     "max_chars": 4000,
     "output": "plan_text"
+  }
+}
+```
+
+## `json.extract`
+
+Extrahiert gezielt einen Wert aus JSON-Text, zum Beispiel aus einer Modellantwort oder einem API-Response.
+
+### Wichtige Felder
+
+- `input`
+- `path`
+- `pretty`
+- `output`
+
+### Beispiel
+
+```json
+{
+  "id": "extract_title",
+  "type": "tool",
+  "config": {
+    "tool": "json.extract",
+    "input": "{{last_response}}",
+    "path": "items[0].title",
+    "pretty": true,
+    "output": "first_title"
+  }
+}
+```
+
+## `csv.read`
+
+Liest eine CSV-Datei und gibt sie wahlweise als JSON oder als Texttabelle zurueck.
+
+### Wichtige Felder
+
+- `path`
+- `delimiter`
+- `has_header`
+- `max_rows`
+- `output_format`
+- `output`
+
+### Werte fuer `output_format`
+
+- `json`
+- `text`
+
+### Beispiel
+
+```json
+{
+  "id": "read_scores",
+  "type": "tool",
+  "config": {
+    "tool": "csv.read",
+    "path": "data/scores.csv",
+    "delimiter": ";",
+    "has_header": true,
+    "max_rows": 200,
+    "output_format": "json",
+    "output": "scores_json"
+  }
+}
+```
+
+## `csv.write`
+
+Schreibt CSV-Dateien entweder aus einem JSON-Zeilenarray oder aus rohem CSV-Text.
+
+### Wichtige Felder
+
+- `path`
+- `source_format`
+- `content`
+- `delimiter`
+- `has_header`
+- `create_dirs`
+- `return_content`
+- `output`
+
+### Werte fuer `source_format`
+
+- `rows_json`
+- `csv_text`
+
+### Beispiel
+
+```json
+{
+  "id": "write_scores",
+  "type": "tool",
+  "config": {
+    "tool": "csv.write",
+    "path": "artifacts/export/scores.csv",
+    "source_format": "rows_json",
+    "delimiter": ",",
+    "has_header": true,
+    "create_dirs": true,
+    "content": "[{\"name\":\"Alice\",\"score\":\"42\"},{\"name\":\"Bob\",\"score\":\"39\"}]",
+    "output": "csv_write_summary"
   }
 }
 ```
@@ -262,6 +371,118 @@ Es liest ein Verzeichnis ein und legt das Ergebnis direkt als Memory-Eintrag an.
 }
 ```
 
+## `memory.search`
+
+Sucht projektbezogen in der persistenten Erinnerung und liefert Treffer als Snippets oder Volltext.
+
+### Wichtige Felder
+
+- `query`
+- `entry_type`
+- `tags`
+- `limit`
+- `max_chars`
+- `format`
+- `output`
+
+### Werte fuer `format`
+
+- `snippets`
+- `full`
+
+### Beispiel
+
+```json
+{
+  "id": "find_plot_notes",
+  "type": "tool",
+  "config": {
+    "tool": "memory.search",
+    "query": "Plot Twist",
+    "entry_type": "note",
+    "tags": "roman,plot",
+    "limit": 8,
+    "max_chars": 12000,
+    "format": "snippets",
+    "output": "plot_memory"
+  }
+}
+```
+
+## `memory.summarize`
+
+Sucht passende Memory-Eintraege, fasst sie mit dem aktuell ausgewaehlten LLM zusammen und kann die Verdichtung wieder als neuen Memory-Eintrag ablegen.
+
+### Wichtige Felder
+
+- `query`
+- `entry_type`
+- `tags`
+- `limit`
+- `max_chars`
+- `prompt`
+- `system_prompt`
+- `save_as_memory`
+- `summary_entry_type`
+- `summary_source`
+- `summary_tags`
+- `summary_relevance`
+- `output`
+
+### Beispiel
+
+```json
+{
+  "id": "summarize_code_memory",
+  "type": "tool",
+  "config": {
+    "tool": "memory.summarize",
+    "query": "Refactor UI",
+    "tags": "codebase,ui",
+    "limit": 12,
+    "max_chars": 24000,
+    "save_as_memory": true,
+    "summary_entry_type": "summary",
+    "summary_tags": "codebase,summary,ui",
+    "summary_relevance": 80,
+    "output": "memory_summary"
+  }
+}
+```
+
+## `memory.delete_old`
+
+Bereinigt alte Memory-Eintraege projektbezogen.
+Hohe Relevanz oder die neuesten Eintraege koennen geschuetzt werden.
+
+### Wichtige Felder
+
+- `older_than_days`
+- `keep_latest`
+- `keep_relevance_at_or_above`
+- `query`
+- `entry_type`
+- `tags`
+- `dry_run`
+- `output`
+
+### Beispiel
+
+```json
+{
+  "id": "cleanup_memory",
+  "type": "tool",
+  "config": {
+    "tool": "memory.delete_old",
+    "older_than_days": 45,
+    "keep_latest": 20,
+    "keep_relevance_at_or_above": 90,
+    "dry_run": true,
+    "output": "cleanup_preview"
+  }
+}
+```
+
 ## `file.write_text`
 
 Schreibt Text direkt in eine Datei.
@@ -362,6 +583,45 @@ Damit lassen sich externe APIs, interne Webhooks oder kleine Hilfsdienste in Wor
     "body_json": "{\n  \"project\": \"{{project_name}}\",\n  \"summary\": \"{{last_response}}\"\n}",
     "timeout_ms": 30000,
     "output": "webhook_result"
+  }
+}
+```
+
+## `shell.run`
+
+Fuehrt einen bewusst eingeschraenkten lokalen Prozess aus.
+Der Schritt nutzt **kein** Shell-Parsing, sondern startet Programme direkt mit `QProcess`.
+
+### Wichtige Felder
+
+- `command`
+- `working_directory`
+- `timeout_ms`
+- `max_output_chars`
+- `include_stderr`
+- `output`
+
+### Sicherheitsmodell
+
+- Nur eine kleine Positivliste ist erlaubt: aktuell `rg`, `git`, `cmake`, `ctest`, `where`
+- Fuer `git` sind nur sichere Unterbefehle freigegeben, zum Beispiel `status`, `diff`, `show`, `log`, `branch`, `rev-parse`, `ls-files`, `grep`
+- Shell-Ketten, Pipes und Umleitungen werden blockiert
+- Das Arbeitsverzeichnis bleibt innerhalb des Workspace
+
+### Beispiel
+
+```json
+{
+  "id": "show_git_status",
+  "type": "tool",
+  "config": {
+    "tool": "shell.run",
+    "command": "git status --short",
+    "working_directory": ".",
+    "timeout_ms": 10000,
+    "max_output_chars": 12000,
+    "include_stderr": true,
+    "output": "git_status"
   }
 }
 ```
@@ -473,16 +733,25 @@ Zusaetzlich je nach Modus:
 1. `memory.ingest_directory` auf `src`
 2. `prompt` fuer Analyse oder Planung
 3. `directory.list` fuer einen schnellen Strukturueberblick
-3. `file.read` fuer gezielte Stellen
-4. `file.edit_diff` fuer kontrollierte Aenderungen
-5. `file.write_text` fuer Reports, Artefakte oder Exportdateien
+4. `file.read` fuer gezielte Stellen
+5. `memory.search` fuer vorhandene Projekterkenntnisse
+6. `file.edit_diff` fuer kontrollierte Aenderungen
+7. `file.write_text` fuer Reports, Artefakte oder Exportdateien
 
 ### Kontext fuer Schreibprojekte
 
 1. `memory.ingest_directory` auf ein Kapitelverzeichnis
-2. `prompt` fuer Stilabgleich oder Zusammenfassung
-3. `file.write_text` fuer Exporte oder Kapitelentwuerfe
-4. `save_memory` fuer Figuren-, Plot- oder Stilnotizen
+2. `memory.search` fuer Figuren-, Plot- oder Stilnotizen
+3. `prompt` fuer Stilabgleich oder Zusammenfassung
+4. `file.write_text` fuer Exporte oder Kapitelentwuerfe
+5. `save_memory` fuer neue Erkenntnisse
+
+### Memory-Pflege
+
+1. `memory.search` fuer bestehende relevante Eintraege
+2. `memory.summarize` fuer Verdichtung
+3. `memory.delete_old` im `dry_run`
+4. `memory.delete_old` ohne `dry_run`, wenn die Vorschau passt
 
 ### Bildworkflow
 
@@ -494,10 +763,15 @@ Zusaetzlich je nach Modus:
 ## Best Practices fuer Tools
 
 - Setze immer `output`, wenn ein Folge-Schritt das Ergebnis weiterverwendet.
+- Nutze `json.extract`, wenn ein Modell oder eine API JSON liefert und du nur einzelne Teile brauchst.
+- Nutze `csv.read` und `csv.write`, wenn Daten zwischen LLM, Datei und Tooling ausgetauscht werden muessen.
 - Begrenze Dateikontexte mit `max_files` und `max_total_chars`.
 - Nutze `directory.list`, wenn du erst die Struktur verstehen willst und noch keinen Volltext brauchst.
+- Nutze `memory.search` vor neuen Prompt-Schritten, wenn projektbezogenes Vorwissen relevant ist.
+- Nutze `memory.summarize` und `memory.delete_old`, um dein Projektgedaechtnis regelmaessig schlank zu halten.
 - Nutze `memory.ingest_directory`, wenn du Projektwissen langfristig aufbauen willst.
 - Nutze `file.write_text` fuer klar definierte Zielartefakte statt Antworten nur im Run-Log zu lassen.
 - Verwende `file.edit_diff` statt unstrukturierter Dateischreibaktionen.
 - Nutze `http.request` fuer einfache API-Anbindungen, wenn dafuer noch kein spezialisiertes Tool existiert.
+- Nutze `shell.run` nur fuer die bewusst freigegebenen lokalen Lese-, Build- und Testkommandos.
 - Nutze fuer `ComfyUI` bevorzugt den Builder-Modus, solange du keinen Spezialgraph brauchst.
