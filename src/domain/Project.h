@@ -15,6 +15,10 @@ struct Project
     QString description;
     QString defaultModel;
     QString systemPrompt;
+    bool confirmShellRun = true;
+    bool confirmFileEditDiff = true;
+    bool confirmHttpRequest = true;
+    bool allowUnattendedRiskyTools = false;
     QStringList tags;
     QDateTime createdAt;
     QDateTime updatedAt;

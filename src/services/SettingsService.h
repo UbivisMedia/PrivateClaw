@@ -19,6 +19,8 @@ public:
     QString workspaceRoot() const;
     QStringList customAllowedToolPaths() const;
     QStringList effectiveAllowedToolPaths() const;
+    bool backgroundTrayHintShown() const;
+    void setBackgroundTrayHintShown(bool shown);
     bool addAllowedToolPath(const QString& path, QString* errorMessage = nullptr);
     bool removeAllowedToolPath(const QString& path, QString* errorMessage = nullptr);
     bool isPathAllowed(const QString& path) const;

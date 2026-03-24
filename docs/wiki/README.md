@@ -18,8 +18,9 @@ Der aktuelle Schwerpunkt liegt auf:
 
 - Projektverwaltung mit Provider- und Modellwahl
 - Workflow-Ausfuehrung ueber `Ollama` oder `LM Studio`
-- Persistenter Projekterinnerung
+- Persistenter Projekterinnerung mit anpinnbaren Schluessel-Eintraegen
 - Visuellem Workflow-Editor mit JSON-Synchronisation
+- Template-Bibliothek fuer schnell importierbare Workflow-Vorlagen
 - Tool-Schritten fuer Dateien, Verzeichnisse, Memory-Ingest und `ComfyUI`
 - Zeitgesteuerter Ausfuehrung von Workflows innerhalb der laufenden App
 
@@ -33,18 +34,19 @@ Der aktuelle Schwerpunkt liegt auf:
 
 ## Navigation in der App
 
-In der linken Navigation der App gibt es aktuell vier Hauptbereiche:
+In der linken Navigation der App gibt es aktuell fuenf Hauptbereiche:
 
 - `Projekte`
 - `Workflows`
 - `Erinnerung`
+- `Runs`
 - `Zeitplaene`
 
 Das untere `Run-Protokoll` zeigt Laufmeldungen, Fehler und Hintergrundstarts.
 
 ## Wichtige Hinweise
 
-- Automatische Zeitplaene laufen aktuell nur, solange die App geoeffnet ist.
+- Automatische Zeitplaene laufen, solange die App selbst aktiv ist, bei verfuegbarem Tray auch im Hintergrund.
 - Prompt-Antworten werden automatisch von typischen Reasoning-Tags wie `<think>...</think>` bereinigt.
 - Sichtbare Workflow-Ausgaben verwenden die bereinigte Antwort.
 - Extrahiertes Reasoning kann bei Bedarf separat ueber Variablen wie `{{last_reasoning}}` gespeichert werden.

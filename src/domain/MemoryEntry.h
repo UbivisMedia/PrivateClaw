@@ -15,8 +15,8 @@ struct MemoryEntry
     QString source;
     QStringList tags;
     int relevance = 0;
+    bool pinned = false;
     QDateTime createdAt;
 };
 
 } // namespace privateclaw::domain
-

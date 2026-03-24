@@ -22,11 +22,20 @@ Die wichtigsten Felder sind:
 - `Provider`: `Ollama` oder `LM Studio`
 - `Modell`: Modellname des gewaehlten Providers
 - `Systemprompt`: Optionaler projektweiter Steuerprompt
+- `Sicherheitsrichtlinien`: Steuern Bestatigungen fuer riskante Tools und unbeaufsichtigte Zeitplaene
 
 ### Modellwahl
 
 Nutze `Modelle laden`, um dir die verfuegbaren Modelle des gewaehlten Providers anzeigen zu lassen.
 Waehle danach das Modell, mit dem Workflows standardmaessig laufen sollen.
+
+### Projekt-Secrets
+
+Auf derselben Projektseite kannst du API-Keys und andere Zugangsdaten verschluesselt speichern.
+Im Workflow stehen sie danach als Platzhalter zur Verfuegung, zum Beispiel:
+
+- `{{secret.comfy_api_key}}`
+- `{{secret.webhook_token}}`
 
 ## 3. Ersten Workflow anlegen
 
@@ -153,5 +162,6 @@ Wenn etwas nicht klappt, pruefe zuerst:
 - Ist das Modell noch verfuegbar?
 - Ist der Workflow gespeichert und JSON-gueltig?
 - Ist der Pfad eines Tools innerhalb des Workspace?
+- Blockiert gerade eine Projekt-Policy ein riskantes Tool?
 - Laeuft `ComfyUI`, wenn Bild-Tools verwendet werden?
 - Zeigt das `Run-Protokoll` eine konkrete Fehlermeldung?

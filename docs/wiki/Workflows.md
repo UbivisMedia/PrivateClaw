@@ -16,9 +16,27 @@ Workflows koennen auf zwei Arten bearbeitet werden:
 
 - direkt als JSON
 - ueber den visuellen Editor
+- ueber die eingebaute Template-Bibliothek als Startpunkt
 
 Wenn der visuelle Editor aktiv ist, blendet die App die JSON-Ansicht aus, um mehr Platz zu schaffen.
 Beide Darstellungen bleiben inhaltlich synchron.
+
+## Template-Bibliothek
+
+Im Workflow-Editor gibt es eine `Template-Bibliothek` mit importierbaren Vorlagen.
+Ein Template laedt:
+
+- vorgeschlagenen Workflow-Namen
+- Beschreibung
+- die komplette JSON-Definition
+
+Das ist besonders praktisch fuer:
+
+- Projektstatus-Workflows
+- Code- oder Dokument-Ingest
+- Memory-Pflege
+- taegliche Digests
+- `ComfyUI`-Pipelines
 
 ## Aufbau eines Workflows
 
@@ -85,6 +103,17 @@ Diese Variablen koennen in Prompts, Memory-Inhalten, Decision-Feldern und Tool-K
 - `{{comfyui_base_url}}`
 - `{{project_memory}}`
 - `{{project_memory_count}}`
+- `{{project_memory_pinned_count}}`
+- `{{project_memory_total_pinned_count}}`
+- `{{project_secret_count}}`
+
+### Secret-Platzhalter
+
+Projekt-Secrets werden auf der Projektseite gepflegt und stehen als `{{secret.name}}` zur Verfuegung.
+Beispiele:
+
+- `{{secret.comfy_api_key}}`
+- `{{secret.internal_webhook_token}}`
 
 ### Variablen aus Prompt-Schritten
 
@@ -177,6 +206,7 @@ Er wird im Lauf vorbereitet und nach erfolgreicher Workflow-Ausfuehrung gespeich
 - `source`: Quelle des Eintrags
 - `tags`: Tags als CSV oder Array
 - `relevance`: Wert zwischen `0` und `100`
+- `pinned`: optional `true`, wenn der Eintrag spaeter bevorzugt im Kontext gehalten werden soll
 
 ### Standardverhalten
 

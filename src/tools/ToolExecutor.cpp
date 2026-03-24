@@ -1,6 +1,7 @@
 #include "tools/ToolExecutor.h"
 
 #include "providers/ILlmProvider.h"
+#include "tools/ToolRisk.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -295,7 +296,8 @@ domain::MemoryEntry mapMemoryEntry(const QSqlQuery& query)
     entry.source = query.value(4).toString();
     entry.tags = parseTags(query.value(5).toString());
     entry.relevance = query.value(6).toInt();
-    entry.createdAt = QDateTime::fromString(query.value(7).toString(), Qt::ISODate);
+    entry.pinned = query.value(7).toInt() > 0;
+    entry.createdAt = QDateTime::fromString(query.value(8).toString(), Qt::ISODate);
     return entry;
 }
 
@@ -313,7 +315,7 @@ MemoryQueryResult queryMemoryEntries(const QSqlDatabase& database, const MemoryQ
     }
 
     QString statement =
-        "SELECT id, project_id, entry_type, content, source, tags, relevance, created_at "
+        "SELECT id, project_id, entry_type, content, source, tags, relevance, is_pinned, created_at "
         "FROM memory_entries "
         "WHERE project_id = ?";
 
@@ -344,7 +346,7 @@ MemoryQueryResult queryMemoryEntries(const QSqlDatabase& database, const MemoryQ
         statement += " AND (" + tagConditions.join(" OR ") + ")";
     }
 
-    statement += " ORDER BY relevance DESC, created_at DESC, id DESC";
+    statement += " ORDER BY is_pinned DESC, relevance DESC, created_at DESC, id DESC";
     if (options.limit > 0) {
         statement += " LIMIT ?";
     }
@@ -407,6 +409,9 @@ QString formatMemoryEntries(
     for (const domain::MemoryEntry& entry : entries) {
         QStringList blockLines;
         blockLines.append(QString("### MEMORY %1").arg(entry.id));
+        if (entry.pinned) {
+            blockLines.append("Angepinnt: ja");
+        }
         blockLines.append(QString("Typ: %1").arg(entry.type.trimmed().isEmpty() ? "note" : entry.type.trimmed()));
         if (!entry.source.trimmed().isEmpty()) {
             blockLines.append(QString("Quelle: %1").arg(entry.source.trimmed()));
@@ -1617,6 +1622,28 @@ QStringList ToolExecutor::availableTools() const
 ToolExecutionResult ToolExecutor::execute(const ToolExecutionRequest& request) const
 {
     const QString toolName = request.toolName.trimmed().toLower();
+    const RiskyToolKind riskyKind = classifyRiskyTool(toolName);
+    if (riskyKind == RiskyToolKind::ShellRun && !request.allowShellRun) {
+        ToolExecutionResult result;
+        result.errorMessage = "Tool 'shell.run' braucht fuer diesen Lauf eine ausdrueckliche Freigabe.";
+        result.logs.append("Freigabe fehlt: shell.run wurde blockiert.");
+        return result;
+    }
+
+    if (riskyKind == RiskyToolKind::FileEditDiff && !request.allowFileEditDiff) {
+        ToolExecutionResult result;
+        result.errorMessage = "Tool 'file.edit_diff' braucht fuer diesen Lauf eine ausdrueckliche Freigabe.";
+        result.logs.append("Freigabe fehlt: file.edit_diff wurde blockiert.");
+        return result;
+    }
+
+    if (riskyKind == RiskyToolKind::HttpRequest && !request.allowHttpRequest) {
+        ToolExecutionResult result;
+        result.errorMessage = "Tool 'http.request' braucht fuer diesen Lauf eine ausdrueckliche Freigabe.";
+        result.logs.append("Freigabe fehlt: http.request wurde blockiert.");
+        return result;
+    }
+
     if (toolName == "file.read") {
         return executeFileRead(request.config);
     }
@@ -2690,10 +2717,17 @@ ToolExecutionResult ToolExecutor::executeMemoryDeleteOld(const ToolExecutionRequ
 
     const QDateTime cutoff = QDateTime::currentDateTimeUtc().addDays(-olderThanDays);
     QList<qint64> idsToDelete;
+    int preservedByPinned = 0;
     int preservedByRecency = 0;
     int preservedByRelevance = 0;
     int index = 0;
     for (const domain::MemoryEntry& entry : queryResult.entries) {
+        if (entry.pinned) {
+            ++preservedByPinned;
+            ++index;
+            continue;
+        }
+
         if (index < keepLatest) {
             ++preservedByRecency;
             ++index;
@@ -2732,12 +2766,14 @@ ToolExecutionResult ToolExecutor::executeMemoryDeleteOld(const ToolExecutionRequ
         { "delete_candidates", idsToDelete.size() },
         { "older_than_days", olderThanDays },
         { "keep_latest", keepLatest },
-        { "keep_relevance_at_or_above", keepRelevanceAtOrAbove }
+        { "keep_relevance_at_or_above", keepRelevanceAtOrAbove },
+        { "preserved_pinned", preservedByPinned }
     };
     result.outputText = QString::fromUtf8(QJsonDocument(summary).toJson(QJsonDocument::Indented));
     result.success = true;
     result.logs.append(QString("Memory-Eintraege geprueft: %1").arg(queryResult.entries.size()));
     result.logs.append(QString("%1 Kandidat(en) fuer Loeschung.").arg(idsToDelete.size()));
+    result.logs.append(QString("Durch Pinning geschuetzt: %1").arg(preservedByPinned));
     result.logs.append(QString("Durch Recency geschuetzt: %1").arg(preservedByRecency));
     result.logs.append(QString("Durch Relevanz geschuetzt: %1").arg(preservedByRelevance));
     if (dryRun) {

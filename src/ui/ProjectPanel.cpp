@@ -5,9 +5,11 @@
 #include "providers/OllamaProvider.h"
 #include "providers/ProviderManager.h"
 #include "services/ProjectService.h"
+#include "services/SecretsService.h"
 #include "services/SettingsService.h"
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QFrame>
@@ -18,6 +20,7 @@
 #include <QListWidgetItem>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QTextEdit>
@@ -30,17 +33,20 @@ namespace privateclaw::ui {
 ProjectPanel::ProjectPanel(
     services::ProjectService& projectService,
     services::SettingsService& settingsService,
+    services::SecretsService& secretsService,
     providers::ProviderManager& providerManager,
     QWidget* parent
 )
     : QWidget(parent)
     , m_projectService(projectService)
     , m_settingsService(settingsService)
+    , m_secretsService(secretsService)
     , m_providerManager(providerManager)
 {
     buildUi();
     refreshProjects();
     refreshAllowedToolPaths();
+    refreshProjectSecrets();
 }
 
 int ProjectPanel::projectCount() const
@@ -167,9 +173,15 @@ void ProjectPanel::buildUi()
     listLayout->addWidget(m_projectList, 1);
     listLayout->addWidget(refreshButton, 0, Qt::AlignLeft);
 
-    auto* formCard = new QFrame(contentSplitter);
+    auto* formScrollArea = new QScrollArea(contentSplitter);
+    formScrollArea->setWidgetResizable(true);
+    formScrollArea->setFrameShape(QFrame::NoFrame);
+    formScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    auto* formCard = new QFrame(formScrollArea);
     formCard->setProperty("panelCard", true);
     auto* formOuterLayout = new QVBoxLayout(formCard);
+    formOuterLayout->setSizeConstraint(QLayout::SetMinAndMaxSize);
     m_formTitleLabel = new QLabel("Neues Projekt anlegen", formCard);
     m_formTitleLabel->setProperty("sectionTitle", true);
 
@@ -204,12 +216,42 @@ void ProjectPanel::buildUi()
     m_systemPromptEdit->setPlaceholderText("Optionaler Systemprompt fuer das Projekt");
     m_systemPromptEdit->setMinimumHeight(120);
 
+    auto* policyWidget = new QWidget(formCard);
+    auto* policyLayout = new QVBoxLayout(policyWidget);
+    policyLayout->setContentsMargins(0, 0, 0, 0);
+    policyLayout->setSpacing(6);
+
+    m_confirmShellRunCheck = new QCheckBox("shell.run nur nach manueller Bestaetigung erlauben", policyWidget);
+    m_confirmFileEditDiffCheck = new QCheckBox(
+        "file.edit_diff nur nach manueller Bestaetigung erlauben",
+        policyWidget
+    );
+    m_confirmHttpRequestCheck = new QCheckBox(
+        "http.request nur nach manueller Bestaetigung erlauben",
+        policyWidget
+    );
+    m_allowUnattendedRiskyToolsCheck = new QCheckBox(
+        "Riskante Tools fuer automatische Zeitplaene ohne Rueckfrage erlauben",
+        policyWidget
+    );
+
+    m_confirmShellRunCheck->setChecked(true);
+    m_confirmFileEditDiffCheck->setChecked(true);
+    m_confirmHttpRequestCheck->setChecked(true);
+    m_allowUnattendedRiskyToolsCheck->setChecked(false);
+
+    policyLayout->addWidget(m_confirmShellRunCheck);
+    policyLayout->addWidget(m_confirmFileEditDiffCheck);
+    policyLayout->addWidget(m_confirmHttpRequestCheck);
+    policyLayout->addWidget(m_allowUnattendedRiskyToolsCheck);
+
     formLayout->addRow("Name", m_nameEdit);
     formLayout->addRow("Provider", m_providerCombo);
     formLayout->addRow("Provider-URL", m_providerBaseUrlEdit);
     formLayout->addRow("Standardmodell", m_modelCombo);
     formLayout->addRow("Beschreibung", m_descriptionEdit);
     formLayout->addRow("Systemprompt", m_systemPromptEdit);
+    formLayout->addRow("Sicherheitsrichtlinien", policyWidget);
 
     auto* actionLayout = new QHBoxLayout();
     auto* saveButton = new QPushButton("Projekt speichern", formCard);
@@ -220,6 +262,43 @@ void ProjectPanel::buildUi()
     actionLayout->addWidget(clearButton);
     actionLayout->addStretch();
 
+    auto* secretTitle = new QLabel("Projekt-Secrets", formCard);
+    secretTitle->setProperty("sectionTitle", true);
+
+    auto* secretBody = new QLabel(
+        "API-Keys und andere Zugangsdaten werden lokal verschluesselt gespeichert. "
+        "Im Workflow kannst du sie als {{secret.name}} verwenden.",
+        formCard
+    );
+    secretBody->setProperty("sectionBody", true);
+    secretBody->setWordWrap(true);
+
+    m_secretInfoLabel = new QLabel(formCard);
+    m_secretInfoLabel->setProperty("sectionBody", true);
+    m_secretInfoLabel->setWordWrap(true);
+
+    m_secretList = new QListWidget(formCard);
+    m_secretList->setAlternatingRowColors(true);
+    m_secretList->setMinimumHeight(120);
+
+    auto* secretInputLayout = new QHBoxLayout();
+    m_secretNameEdit = new QLineEdit(formCard);
+    m_secretNameEdit->setPlaceholderText("z. B. comfy_api_key");
+    m_secretValueEdit = new QLineEdit(formCard);
+    m_secretValueEdit->setEchoMode(QLineEdit::Password);
+    m_secretValueEdit->setPlaceholderText("Secret-Wert eingeben oder zum Ueberschreiben neu setzen");
+    secretInputLayout->addWidget(m_secretNameEdit, 1);
+    secretInputLayout->addWidget(m_secretValueEdit, 1);
+
+    auto* secretButtonLayout = new QHBoxLayout();
+    auto* saveSecretButton = new QPushButton("Secret speichern", formCard);
+    auto* deleteSecretButton = new QPushButton("Secret loeschen", formCard);
+    auto* clearSecretButton = new QPushButton("Secret leeren", formCard);
+    secretButtonLayout->addWidget(saveSecretButton);
+    secretButtonLayout->addWidget(deleteSecretButton);
+    secretButtonLayout->addWidget(clearSecretButton);
+    secretButtonLayout->addStretch();
+
     m_feedbackLabel = new QLabel(formCard);
     m_feedbackLabel->setProperty("sectionBody", true);
     m_feedbackLabel->setWordWrap(true);
@@ -228,8 +307,15 @@ void ProjectPanel::buildUi()
     formOuterLayout->addWidget(formBody);
     formOuterLayout->addLayout(formLayout);
     formOuterLayout->addLayout(actionLayout);
+    formOuterLayout->addWidget(secretTitle);
+    formOuterLayout->addWidget(secretBody);
+    formOuterLayout->addWidget(m_secretInfoLabel);
+    formOuterLayout->addWidget(m_secretList);
+    formOuterLayout->addLayout(secretInputLayout);
+    formOuterLayout->addLayout(secretButtonLayout);
     formOuterLayout->addWidget(m_feedbackLabel);
     formOuterLayout->addStretch();
+    formScrollArea->setWidget(formCard);
 
     contentSplitter->setStretchFactor(0, 3);
     contentSplitter->setStretchFactor(1, 4);
@@ -276,6 +362,34 @@ void ProjectPanel::buildUi()
 
     connect(refreshModelsButton, &QPushButton::clicked, this, [this]() {
         refreshModelList();
+    });
+
+    connect(saveSecretButton, &QPushButton::clicked, this, [this]() {
+        saveProjectSecret();
+    });
+
+    connect(deleteSecretButton, &QPushButton::clicked, this, [this]() {
+        deleteSelectedProjectSecret();
+    });
+
+    connect(clearSecretButton, &QPushButton::clicked, this, [this]() {
+        if (m_secretList != nullptr) {
+            m_secretList->setCurrentRow(-1);
+        }
+        if (m_secretNameEdit != nullptr) {
+            m_secretNameEdit->clear();
+        }
+        if (m_secretValueEdit != nullptr) {
+            m_secretValueEdit->clear();
+        }
+    });
+
+    connect(m_secretValueEdit, &QLineEdit::returnPressed, this, [this]() {
+        saveProjectSecret();
+    });
+
+    connect(m_secretList, &QListWidget::currentRowChanged, this, [this](const int) {
+        loadSecretFromSelection();
     });
 
     connect(m_providerCombo, &QComboBox::currentTextChanged, this, [this]() {
@@ -442,6 +556,19 @@ void ProjectPanel::loadProjectFromRow(const int row)
     m_modelCombo->setEditText(project.defaultModel);
     m_descriptionEdit->setPlainText(project.description);
     m_systemPromptEdit->setPlainText(project.systemPrompt);
+    if (m_confirmShellRunCheck != nullptr) {
+        m_confirmShellRunCheck->setChecked(project.confirmShellRun);
+    }
+    if (m_confirmFileEditDiffCheck != nullptr) {
+        m_confirmFileEditDiffCheck->setChecked(project.confirmFileEditDiff);
+    }
+    if (m_confirmHttpRequestCheck != nullptr) {
+        m_confirmHttpRequestCheck->setChecked(project.confirmHttpRequest);
+    }
+    if (m_allowUnattendedRiskyToolsCheck != nullptr) {
+        m_allowUnattendedRiskyToolsCheck->setChecked(project.allowUnattendedRiskyTools);
+    }
+    refreshProjectSecrets();
 }
 
 void ProjectPanel::saveProject()
@@ -454,6 +581,11 @@ void ProjectPanel::saveProject()
     project.defaultModel = m_modelCombo->currentText();
     project.description = m_descriptionEdit->toPlainText();
     project.systemPrompt = m_systemPromptEdit->toPlainText();
+    project.confirmShellRun = m_confirmShellRunCheck != nullptr && m_confirmShellRunCheck->isChecked();
+    project.confirmFileEditDiff = m_confirmFileEditDiffCheck != nullptr && m_confirmFileEditDiffCheck->isChecked();
+    project.confirmHttpRequest = m_confirmHttpRequestCheck != nullptr && m_confirmHttpRequestCheck->isChecked();
+    project.allowUnattendedRiskyTools =
+        m_allowUnattendedRiskyToolsCheck != nullptr && m_allowUnattendedRiskyToolsCheck->isChecked();
 
     QString errorMessage;
     const bool isUpdate = project.id > 0;
@@ -475,6 +607,7 @@ void ProjectPanel::saveProject()
     );
 
     refreshProjects(project.id);
+    refreshProjectSecrets();
 
     if (m_onProjectDataChanged) {
         m_onProjectDataChanged();
@@ -511,8 +644,18 @@ void ProjectPanel::deleteProject()
         return;
     }
 
-    m_feedbackLabel->setStyleSheet("color: #2f6b3a;");
-    m_feedbackLabel->setText(QString("Projekt '%1' wurde geloescht.").arg(projectName));
+    QString secretCleanupError;
+    const bool secretsRemoved = m_secretsService.deleteSecretsForProject(m_currentProjectId, &secretCleanupError);
+    m_feedbackLabel->setStyleSheet(secretsRemoved ? "color: #2f6b3a;" : "color: #8b5e2f;");
+    m_feedbackLabel->setText(
+        secretsRemoved
+            ? QString("Projekt '%1' wurde geloescht.").arg(projectName)
+            : QString(
+                  "Projekt '%1' wurde geloescht, aber die zugehoerigen Secrets konnten nicht vollstaendig entfernt werden: %2"
+              )
+                  .arg(projectName)
+                  .arg(secretCleanupError)
+    );
 
     clearForm();
     refreshProjects();
@@ -551,6 +694,43 @@ void ProjectPanel::refreshAllowedToolPaths(const QString& pathToSelect)
     }
 
     m_allowedPathList->setCurrentRow(rowToSelect);
+}
+
+void ProjectPanel::refreshProjectSecrets(const QString& secretToSelect)
+{
+    if (m_secretList == nullptr || m_secretInfoLabel == nullptr) {
+        return;
+    }
+
+    int rowToSelect = -1;
+    QStringList secretNames;
+    if (m_currentProjectId > 0) {
+        secretNames = m_secretsService.listSecretNames(m_currentProjectId);
+    }
+
+    {
+        const QSignalBlocker blocker(m_secretList);
+        m_secretList->clear();
+        for (int index = 0; index < secretNames.size(); ++index) {
+            auto* item = new QListWidgetItem(secretNames.at(index), m_secretList);
+            item->setData(Qt::UserRole, secretNames.at(index));
+            item->setToolTip(QString("Workflow-Platzhalter: {{secret.%1}}").arg(secretNames.at(index)));
+            if (!secretToSelect.trimmed().isEmpty()
+                && secretNames.at(index).compare(secretToSelect.trimmed(), Qt::CaseInsensitive) == 0) {
+                rowToSelect = index;
+            }
+        }
+    }
+
+    if (m_currentProjectId <= 0) {
+        m_secretInfoLabel->setText("Secrets koennen gepflegt werden, sobald das Projekt einmal gespeichert wurde.");
+    } else {
+        m_secretInfoLabel->setText(
+            QString("Gespeicherte Secrets: %1 | Platzhalterformat: {{secret.name}}").arg(secretNames.size())
+        );
+    }
+
+    m_secretList->setCurrentRow(rowToSelect);
 }
 
 void ProjectPanel::addAllowedToolPath()
@@ -622,6 +802,90 @@ void ProjectPanel::removeSelectedAllowedToolPath()
     if (m_onProjectDataChanged) {
         m_onProjectDataChanged();
     }
+}
+
+void ProjectPanel::loadSecretFromSelection()
+{
+    if (m_secretList == nullptr || m_secretNameEdit == nullptr || m_secretValueEdit == nullptr) {
+        return;
+    }
+
+    if (m_secretList->currentItem() == nullptr) {
+        m_secretNameEdit->clear();
+        m_secretValueEdit->clear();
+        return;
+    }
+
+    const QString secretName = m_secretList->currentItem()->data(Qt::UserRole).toString();
+    m_secretNameEdit->setText(secretName);
+    m_secretValueEdit->clear();
+}
+
+void ProjectPanel::saveProjectSecret()
+{
+    if (m_currentProjectId <= 0) {
+        m_feedbackLabel->setStyleSheet("color: #8b5e2f;");
+        m_feedbackLabel->setText("Secrets koennen erst nach dem ersten Speichern des Projekts gepflegt werden.");
+        return;
+    }
+
+    if (m_secretNameEdit == nullptr || m_secretValueEdit == nullptr) {
+        return;
+    }
+
+    const QString secretName = m_secretNameEdit->text().trimmed();
+    const QString secretValue = m_secretValueEdit->text();
+    QString errorMessage;
+    if (!m_secretsService.saveSecret(m_currentProjectId, secretName, secretValue, &errorMessage)) {
+        m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
+        m_feedbackLabel->setText(QString("Secret konnte nicht gespeichert werden: %1").arg(errorMessage));
+        return;
+    }
+
+    m_feedbackLabel->setStyleSheet("color: #2f6b3a;");
+    m_feedbackLabel->setText(
+        QString("Secret '%1' wurde sicher gespeichert und steht als {{secret.%1}} zur Verfuegung.").arg(secretName)
+    );
+    m_secretValueEdit->clear();
+    refreshProjectSecrets(secretName);
+}
+
+void ProjectPanel::deleteSelectedProjectSecret()
+{
+    if (m_currentProjectId <= 0 || m_secretList == nullptr || m_secretList->currentItem() == nullptr) {
+        m_feedbackLabel->setStyleSheet("color: #8b5e2f;");
+        m_feedbackLabel->setText("Zum Entfernen bitte zuerst ein Projekt und ein Secret auswaehlen.");
+        return;
+    }
+
+    const QString secretName = m_secretList->currentItem()->data(Qt::UserRole).toString();
+    const QMessageBox::StandardButton answer = QMessageBox::question(
+        this,
+        "Secret loeschen",
+        QString("Secret '%1' wirklich entfernen? Danach ist {{secret.%1}} nicht mehr verfuegbar.").arg(secretName),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No
+    );
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    QString errorMessage;
+    if (!m_secretsService.deleteSecret(m_currentProjectId, secretName, &errorMessage)) {
+        m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
+        m_feedbackLabel->setText(QString("Secret konnte nicht entfernt werden: %1").arg(errorMessage));
+        return;
+    }
+
+    m_feedbackLabel->setStyleSheet("color: #2f6b3a;");
+    m_feedbackLabel->setText(QString("Secret '%1' wurde entfernt.").arg(secretName));
+    if (m_secretNameEdit != nullptr) {
+        m_secretNameEdit->clear();
+    }
+    if (m_secretValueEdit != nullptr) {
+        m_secretValueEdit->clear();
+    }
+    refreshProjectSecrets();
 }
 
 void ProjectPanel::testSelectedProviderConnection()
@@ -767,6 +1031,25 @@ void ProjectPanel::clearForm()
     m_modelCombo->setEditText(QString());
     m_descriptionEdit->clear();
     m_systemPromptEdit->clear();
+    if (m_confirmShellRunCheck != nullptr) {
+        m_confirmShellRunCheck->setChecked(true);
+    }
+    if (m_confirmFileEditDiffCheck != nullptr) {
+        m_confirmFileEditDiffCheck->setChecked(true);
+    }
+    if (m_confirmHttpRequestCheck != nullptr) {
+        m_confirmHttpRequestCheck->setChecked(true);
+    }
+    if (m_allowUnattendedRiskyToolsCheck != nullptr) {
+        m_allowUnattendedRiskyToolsCheck->setChecked(false);
+    }
+    if (m_secretNameEdit != nullptr) {
+        m_secretNameEdit->clear();
+    }
+    if (m_secretValueEdit != nullptr) {
+        m_secretValueEdit->clear();
+    }
+    refreshProjectSecrets();
     updateSelectedProviderUi();
 }
 

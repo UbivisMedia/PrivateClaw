@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(PrivateClaw
-    VERSION 0.1.0
+    VERSION 0.1.1.2
     DESCRIPTION "Desktop app for project-based LLM automation"
     LANGUAGES CXX
 )
@@ -60,8 +60,12 @@ set(PRIVATECLAW_SOURCES
     src/storage/DatabaseManager.h
     src/services/SettingsService.cpp
     src/services/SettingsService.h
+    src/services/SecretsService.cpp
+    src/services/SecretsService.h
     src/services/ComfyUiMetadataService.cpp
     src/services/ComfyUiMetadataService.h
+    src/services/UpdateChecker.cpp
+    src/services/UpdateChecker.h
     src/services/ProjectService.cpp
     src/services/ProjectService.h
     src/services/WorkflowService.cpp
@@ -74,6 +78,10 @@ set(PRIVATECLAW_SOURCES
     src/services/ScheduleService.h
     src/tools/ToolExecutor.cpp
     src/tools/ToolExecutor.h
+    src/tools/ToolRisk.cpp
+    src/tools/ToolRisk.h
+    src/ui/ExecutionApproval.cpp
+    src/ui/ExecutionApproval.h
     src/utils/Logger.cpp
     src/utils/Logger.h
     resources/resources.qrc
@@ -86,6 +94,13 @@ qt_add_executable(PrivateClaw
 
 target_include_directories(PrivateClaw PRIVATE src)
 
+target_compile_definitions(PrivateClaw
+    PRIVATE
+        PRIVATECLAW_APP_VERSION="${PROJECT_VERSION}"
+        PRIVATECLAW_GITHUB_RELEASE_API_URL="https://api.github.com/repos/UbivisMedia/PrivateClaw/releases/latest"
+        PRIVATECLAW_GITHUB_RELEASES_URL="https://github.com/UbivisMedia/PrivateClaw/releases/latest"
+)
+
 target_link_libraries(PrivateClaw
     PRIVATE
         Qt6::Widgets
@@ -96,6 +111,7 @@ target_link_libraries(PrivateClaw
 
 if(WIN32)
     set_target_properties(PrivateClaw PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_libraries(PrivateClaw PRIVATE Crypt32)
 
     if(PRIVATECLAW_DEPLOY_QT_RUNTIME)
         get_target_property(PRIVATECLAW_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)

@@ -34,6 +34,10 @@ bool ApplicationBootstrap::initialize(QString* errorMessage)
         return false;
     }
 
+    if (!m_secretsService.initialize(errorMessage)) {
+        return false;
+    }
+
     if (!m_databaseManager.initialize(errorMessage)) {
         return false;
     }
@@ -45,6 +49,7 @@ bool ApplicationBootstrap::initialize(QString* errorMessage)
         m_settingsService,
         m_projectService,
         m_memoryService,
+        m_secretsService,
         m_workflowService,
         m_runService,
         m_scheduleService,

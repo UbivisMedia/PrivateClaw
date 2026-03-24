@@ -11,7 +11,8 @@ Zwischenergebnisse, Zusammenfassungen, Artefakte und Projektwissen lassen sich a
 
 ## Aktuelle Hauptfunktionen
 
-- Projektverwaltung mit Provider-, Modell- und Systemprompt-Konfiguration
+- Projektverwaltung mit Provider-, Modell-, Systemprompt- und Sicherheitskonfiguration
+- Verschluesselte Projekt-Secrets fuer API-Keys und Tokens
 - Unterstuetzung fuer `Ollama` und `LM Studio`
 - Visueller Workflow-Editor mit bidirektionaler JSON-Synchronisation
 - Workflow-Schrittarten:
@@ -20,9 +21,11 @@ Zwischenergebnisse, Zusammenfassungen, Artefakte und Projektwissen lassen sich a
   - `save_memory`
   - `tool`
 - Persistente Projekterinnerung auf Basis von `SQLite`
+- Angepinnte Projekterinnerung mit smarter Priorisierung und verdichtetem Restkontext fuer Runs
 - Persistente Run-Historie fuer manuelle und geplante Workflow-Laeufe
 - Zeitplaene fuer einmalige, intervallbasierte und taegliche Workflow-Starts
 - Hintergrundausfuehrung von Workflows, damit die UI benutzbar bleibt
+- Template-Bibliothek mit importierbaren Workflow-Vorlagen direkt im Editor
 - ComfyUI-Integration fuer `txt2img`, `img2img` und `inpainting`
 
 ## Integrierte Tools
@@ -133,9 +136,12 @@ Das Token braucht Schreibrechte fuer das Wiki-Repository von `UbivisMedia/Privat
 
 ## Aktuelle Hinweise
 
-- Zeitplaene laufen derzeit nur, solange die App geoeffnet ist.
+- Zeitplaene laufen, solange die App aktiv ist. Beim Schliessen wird `PrivateClaw` bei verfuegbarem System-Tray in den Hintergrund verschoben und bleibt fuer geplante Laeufe aktiv.
+- Projekt-Memory priorisiert jetzt angepinnte Eintraege und verdichtet den Restkontext automatisch fuer Workflow-Runs.
 - Prompt-Antworten werden von typischen Reasoning-Tags wie `<think>...</think>` bereinigt, bevor sie als sichtbare Ausgabe weiterverwendet werden.
 - Tool-Zugriffe auf Dateien und Verzeichnisse bleiben auf den konfigurierten Workspace begrenzt.
+- API-Keys und andere Zugangsdaten lassen sich pro Projekt verschluesselt speichern und in Workflows ueber `{{secret.name}}` verwenden.
+- Riskante Tools wie `shell.run`, `file.edit_diff` und `http.request` koennen pro Projekt bestaetigungspflichtig gemacht werden.
 - `shell.run` ist absichtlich eingeschraenkt und nicht als allgemeine Shell-Exec gedacht.
 
 ## Geeignete Einsatzszenarien

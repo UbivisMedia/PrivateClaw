@@ -41,10 +41,23 @@ Allgemeines Muster:
 ## Allgemeine Hinweise
 
 - Tools arbeiten relativ zum konfigurierten Workspace.
-- Dateipfade sollten innerhalb dieses Workspace liegen.
+- Dateipfade sollten innerhalb dieses Workspace liegen oder vorab zur Allowlist hinzugefuegt werden.
 - Tool-Ausgaben koennen mit `output` in eine Workflow-Variable geschrieben werden.
 - Manche Tools liefern nur Text, andere JSON-Zusammenfassungen.
 - `memory.ingest_directory` erzeugt zusaetzlich echte Memory-Eintraege.
+- Projekt-Secrets koennen in Tool-Konfigurationen ueber `{{secret.name}}` verwendet werden.
+- Riskante Tools koennen pro Projekt bestaetigungspflichtig sein.
+
+## Riskante Tools und Freigaben
+
+Aktuell gelten diese Tools als riskant:
+
+- `shell.run`
+- `file.edit_diff`
+- `http.request`
+
+Wenn die Projekt-Policy das verlangt, fragt `PrivateClaw` vor manuellen Laeufen nach einer Freigabe.
+Automatische Zeitplaene brechen solche Schritte standardmaessig ab, bis das Projekt unbeaufsichtigte riskante Tools ausdruecklich erlaubt.
 
 ## `file.read`
 
@@ -552,6 +565,8 @@ Wendet einen Unified Diff auf eine Datei an.
 Fuehrt einen allgemeinen HTTP-Request aus.
 Damit lassen sich externe APIs, interne Webhooks oder kleine Hilfsdienste in Workflows einbinden.
 
+`http.request` gilt als riskantes Tool und kann projektbezogen bestaetigungspflichtig sein.
+
 ### Wichtige Felder
 
 - `url`
@@ -579,7 +594,7 @@ Damit lassen sich externe APIs, interne Webhooks oder kleine Hilfsdienste in Wor
     "tool": "http.request",
     "url": "https://example.org/api/task",
     "method": "POST",
-    "headers_json": "{\n  \"Authorization\": \"Bearer {{api_token}}\"\n}",
+    "headers_json": "{\n  \"Authorization\": \"Bearer {{secret.webhook_token}}\"\n}",
     "body_json": "{\n  \"project\": \"{{project_name}}\",\n  \"summary\": \"{{last_response}}\"\n}",
     "timeout_ms": 30000,
     "output": "webhook_result"
@@ -591,6 +606,7 @@ Damit lassen sich externe APIs, interne Webhooks oder kleine Hilfsdienste in Wor
 
 Fuehrt einen bewusst eingeschraenkten lokalen Prozess aus.
 Der Schritt nutzt **kein** Shell-Parsing, sondern startet Programme direkt mit `QProcess`.
+Auch dieses Tool kann pro Projekt bestaetigungspflichtig sein.
 
 ### Wichtige Felder
 

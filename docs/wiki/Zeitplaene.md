@@ -17,8 +17,21 @@ Aktive Zeitplaene werden im Hintergrund geprueft und bei Faelligkeit automatisch
 
 Aktuell gilt:
 
-- Zeitplaene laufen nur, solange die App geoeffnet ist
+- Zeitplaene laufen nur, solange die App selbst aktiv ist
+- beim Schliessen wird `PrivateClaw` bei verfuegbarem System-Tray in den Hintergrund verschoben, damit Zeitplaene weiterlaufen koennen
 - es gibt derzeit keinen separaten Systemdienst oder Hintergrundprozess ausserhalb der App
+
+## Hintergrundbetrieb
+
+Wenn ein System-Tray verfuegbar ist, beendet ein Klick auf das Fensterschliessen die App nicht sofort.
+Stattdessen wird das Fenster ausgeblendet und `PrivateClaw` laeuft im Hintergrund weiter.
+
+Das bedeutet:
+
+- aktive Zeitplaene werden weiter geprueft
+- automatische Workflow-Laeufe funktionieren weiter
+- ueber das Tray-Menue kann das Fenster wieder geoeffnet werden
+- wirklich beendet wird die App ueber den Tray-Eintrag `Beenden`
 
 ## Unterstuetzte Triggerarten
 

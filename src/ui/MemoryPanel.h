@@ -8,6 +8,7 @@
 #include <functional>
 
 class QComboBox;
+class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -64,6 +65,7 @@ private:
     QLineEdit* m_sourceEdit = nullptr;
     QLineEdit* m_tagsEdit = nullptr;
     QSpinBox* m_relevanceSpin = nullptr;
+    QCheckBox* m_pinnedCheckBox = nullptr;
     QLabel* m_createdAtLabel = nullptr;
     QPlainTextEdit* m_contentEdit = nullptr;
 };

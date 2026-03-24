@@ -125,6 +125,10 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
         "description TEXT NOT NULL DEFAULT '',"
         "default_model TEXT NOT NULL DEFAULT '',"
         "system_prompt TEXT NOT NULL DEFAULT '',"
+        "confirm_shell_run INTEGER NOT NULL DEFAULT 1,"
+        "confirm_file_edit_diff INTEGER NOT NULL DEFAULT 1,"
+        "confirm_http_request INTEGER NOT NULL DEFAULT 1,"
+        "allow_unattended_risky_tools INTEGER NOT NULL DEFAULT 0,"
         "created_at TEXT NOT NULL,"
         "updated_at TEXT NOT NULL"
         ")",
@@ -162,6 +166,7 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
         "source TEXT NOT NULL DEFAULT '',"
         "tags TEXT NOT NULL DEFAULT '',"
         "relevance INTEGER NOT NULL DEFAULT 0,"
+        "is_pinned INTEGER NOT NULL DEFAULT 0,"
         "created_at TEXT NOT NULL"
         ")",
         "CREATE TABLE IF NOT EXISTS schedules ("
@@ -271,6 +276,56 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
             "projects",
             "provider_base_url",
             "ALTER TABLE projects ADD COLUMN provider_base_url TEXT NOT NULL DEFAULT ''",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "projects",
+            "confirm_shell_run",
+            "ALTER TABLE projects ADD COLUMN confirm_shell_run INTEGER NOT NULL DEFAULT 1",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "projects",
+            "confirm_file_edit_diff",
+            "ALTER TABLE projects ADD COLUMN confirm_file_edit_diff INTEGER NOT NULL DEFAULT 1",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "projects",
+            "confirm_http_request",
+            "ALTER TABLE projects ADD COLUMN confirm_http_request INTEGER NOT NULL DEFAULT 1",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "projects",
+            "allow_unattended_risky_tools",
+            "ALTER TABLE projects ADD COLUMN allow_unattended_risky_tools INTEGER NOT NULL DEFAULT 0",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "memory_entries",
+            "is_pinned",
+            "ALTER TABLE memory_entries ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0",
             errorMessage
         )) {
         return false;

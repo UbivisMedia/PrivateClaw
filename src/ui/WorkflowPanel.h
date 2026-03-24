@@ -34,6 +34,7 @@ namespace privateclaw::services {
 class MemoryService;
 class ProjectService;
 class RunService;
+class SecretsService;
 class SettingsService;
 class WorkflowService;
 }
@@ -47,6 +48,7 @@ public:
         services::ProjectService& projectService,
         services::SettingsService& settingsService,
         services::MemoryService& memoryService,
+        services::SecretsService& secretsService,
         services::RunService& runService,
         services::WorkflowService& workflowService,
         providers::ProviderManager& providerManager,
@@ -70,6 +72,12 @@ private:
     void executeWorkflow();
     void updateExecutionStatus();
     void updateVisualEditorVisibility();
+    void startNewWorkflow();
+    void refreshTemplateLibrary();
+    void updateTemplatePreview();
+    void setTemplateLibraryExpanded(bool expanded);
+    void updateTemplateLibraryVisibility();
+    void loadSelectedTemplateIntoEditor();
     void registerAllowlistPrompt(QLineEdit* lineEdit, bool preferParentDirectory, const QString& contextLabel);
     void registerAllowlistPrompt(QComboBox* comboBox, bool preferParentDirectory, const QString& contextLabel);
     bool ensurePathAllowedForUi(const QString& path, bool preferParentDirectory, const QString& contextLabel);
@@ -110,6 +118,7 @@ private:
     services::ProjectService& m_projectService;
     services::SettingsService& m_settingsService;
     services::MemoryService& m_memoryService;
+    services::SecretsService& m_secretsService;
     services::RunService& m_runService;
     services::WorkflowService& m_workflowService;
     providers::ProviderManager& m_providerManager;
@@ -139,6 +148,11 @@ private:
     QComboBox* m_projectCombo = nullptr;
     QLineEdit* m_nameEdit = nullptr;
     QTextEdit* m_descriptionEdit = nullptr;
+    QFrame* m_templateFrame = nullptr;
+    QFrame* m_templateBodyFrame = nullptr;
+    QPushButton* m_templateToggleButton = nullptr;
+    QComboBox* m_templateCombo = nullptr;
+    QLabel* m_templateDescriptionLabel = nullptr;
     QCheckBox* m_visualEditorToggle = nullptr;
     QFrame* m_visualEditorFrame = nullptr;
     QLabel* m_visualEditorStatusLabel = nullptr;

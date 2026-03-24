@@ -24,6 +24,9 @@ struct ToolExecutionRequest
     QString selectedModel;
     QString systemPrompt;
     providers::ILlmProvider* llmProvider = nullptr;
+    bool allowShellRun = false;
+    bool allowFileEditDiff = false;
+    bool allowHttpRequest = false;
 };
 
 struct ToolExecutionResult

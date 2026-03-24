@@ -3,6 +3,7 @@
 #include "services/MemoryService.h"
 #include "services/ProjectService.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QFrame>
@@ -77,7 +78,8 @@ void MemoryPanel::buildUi()
 
     auto* infoBody = new QLabel(
         "Hier werden projektbezogene Fakten, Notizen, Entscheidungen und Kontextbausteine gespeichert. "
-        "Die juengsten Eintraege koennen bei Workflow-Runs automatisch als Zusatzkontext verwendet werden.",
+        "Angepinnte Eintraege werden bei Workflow-Runs bevorzugt beruecksichtigt, waehrend aeltere Inhalte "
+        "automatisch verdichtet in den Kontext einfliessen koennen.",
         infoCard
     );
     infoBody->setWordWrap(true);
@@ -156,6 +158,8 @@ void MemoryPanel::buildUi()
     m_relevanceSpin->setRange(0, 100);
     m_relevanceSpin->setValue(50);
 
+    m_pinnedCheckBox = new QCheckBox("Wichtige Erinnerung anpinnen", editorCard);
+
     m_createdAtLabel = new QLabel("Noch nicht gespeichert", editorCard);
     m_createdAtLabel->setProperty("sectionBody", true);
 
@@ -163,6 +167,7 @@ void MemoryPanel::buildUi()
     formLayout->addRow("Quelle", m_sourceEdit);
     formLayout->addRow("Tags", m_tagsEdit);
     formLayout->addRow("Relevanz", m_relevanceSpin);
+    formLayout->addRow("", m_pinnedCheckBox);
     formLayout->addRow("Erstellt", m_createdAtLabel);
 
     auto* contentLabel = new QLabel("Inhalt", editorCard);
@@ -289,6 +294,12 @@ void MemoryPanel::refreshEntryList(const qint64 entryIdToSelect)
     const qint64 projectId = currentProjectId();
     const qint64 targetEntryId = entryIdToSelect > 0 ? entryIdToSelect : m_currentEntryId;
     m_entries = m_memoryService.listEntries(projectId, m_searchEdit->text(), 300);
+    int pinnedCount = 0;
+    for (const domain::MemoryEntry& entry : m_entries) {
+        if (entry.pinned) {
+            ++pinnedCount;
+        }
+    }
 
     int rowToSelect = -1;
     {
@@ -305,7 +316,7 @@ void MemoryPanel::refreshEntryList(const qint64 entryIdToSelect)
             }
         }
 
-        m_entryCountLabel->setText(QString("%1 Eintraege").arg(m_entries.size()));
+        m_entryCountLabel->setText(QString("%1 Eintraege | %2 angepinnt").arg(m_entries.size()).arg(pinnedCount));
         if (rowToSelect < 0 && !m_entries.isEmpty() && targetEntryId <= 0) {
             rowToSelect = 0;
         }
@@ -336,6 +347,7 @@ void MemoryPanel::loadEntryFromRow(const int row)
     m_sourceEdit->setText(entry.source);
     m_tagsEdit->setText(entry.tags.join(", "));
     m_relevanceSpin->setValue(entry.relevance);
+    m_pinnedCheckBox->setChecked(entry.pinned);
     m_createdAtLabel->setText(formatTimestamp(entry.createdAt));
     m_contentEdit->setPlainText(entry.content);
 }
@@ -349,6 +361,7 @@ void MemoryPanel::saveEntry()
     entry.source = m_sourceEdit->text();
     entry.tags = m_tagsEdit->text().split(',', Qt::SkipEmptyParts);
     entry.relevance = m_relevanceSpin->value();
+    entry.pinned = m_pinnedCheckBox->isChecked();
     entry.content = m_contentEdit->toPlainText();
 
     QString errorMessage;
@@ -412,6 +425,7 @@ void MemoryPanel::clearEditor(const bool keepFeedback)
     m_sourceEdit->clear();
     m_tagsEdit->clear();
     m_relevanceSpin->setValue(50);
+    m_pinnedCheckBox->setChecked(false);
     m_createdAtLabel->setText("Noch nicht gespeichert");
     m_contentEdit->clear();
 
@@ -427,6 +441,7 @@ void MemoryPanel::setEditorEnabled(const bool enabled)
     m_sourceEdit->setEnabled(enabled);
     m_tagsEdit->setEnabled(enabled);
     m_relevanceSpin->setEnabled(enabled);
+    m_pinnedCheckBox->setEnabled(enabled);
     m_contentEdit->setEnabled(enabled);
     m_entryList->setEnabled(enabled);
 }
@@ -453,8 +468,9 @@ QString MemoryPanel::formatEntryLabel(const domain::MemoryEntry& entry) const
         ? entry.createdAt.toLocalTime().toString("yyyy-MM-dd HH:mm")
         : "ohne Datum";
     const QString type = entry.type.trimmed().isEmpty() ? "note" : entry.type.trimmed();
-    return QString("%1 | %2 | R%3 | %4")
-        .arg(timestamp, type, QString::number(entry.relevance), previewText(entry.content));
+    const QString pinMarker = entry.pinned ? "[PIN] " : QString();
+    return QString("%1%2 | %3 | R%4 | %5")
+        .arg(pinMarker, timestamp, type, QString::number(entry.relevance), previewText(entry.content));
 }
 
 } // namespace privateclaw::ui

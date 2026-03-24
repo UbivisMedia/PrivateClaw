@@ -7,9 +7,11 @@
 #include "services/MemoryService.h"
 #include "services/ProjectService.h"
 #include "services/RunService.h"
+#include "services/SecretsService.h"
 #include "services/SettingsService.h"
 #include "services/WorkflowService.h"
 #include "tools/ToolExecutor.h"
+#include "ui/ExecutionApproval.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -66,6 +68,16 @@ struct PreparedMemoryContext
     int compressedEntries = 0;
 };
 
+struct WorkflowTemplateDefinition
+{
+    QString id;
+    QString name;
+    QString description;
+    QString workflowName;
+    QString workflowDescription;
+    QString definitionJson;
+};
+
 QString defaultWorkflowJson()
 {
     return QString::fromUtf8(
@@ -83,6 +95,233 @@ QString defaultWorkflowJson()
         "  ]\n"
         "}\n"
     );
+}
+
+const QList<WorkflowTemplateDefinition>& workflowTemplates()
+{
+    static const QList<WorkflowTemplateDefinition> templates = {
+        {
+            "project_status",
+            "Projektstatus mit Memory",
+            "Fasst vorhandenes Projektwissen in drei praezisen Stichpunkten zusammen und speichert den Status wieder im Memory.",
+            "Projektstatus mit Memory",
+            "Erzeugt eine kompakte Status-Zusammenfassung aus dem aktuellen Projektkontext.",
+            QString::fromUtf8(
+                "{\n"
+                "  \"version\": 1,\n"
+                "  \"steps\": [\n"
+                "    {\n"
+                "      \"id\": \"draft_status\",\n"
+                "      \"type\": \"prompt\",\n"
+                "      \"name\": \"Status zusammenfassen\",\n"
+                "      \"config\": {\n"
+                "        \"prompt\": \"Fasse den aktuellen Projektstand anhand des Projekt-Memory in drei praezisen Stichpunkten zusammen.\",\n"
+                "        \"output\": \"status_summary\"\n"
+                "      }\n"
+                "    },\n"
+                "    {\n"
+                "      \"id\": \"save_status\",\n"
+                "      \"type\": \"save_memory\",\n"
+                "      \"name\": \"Status speichern\",\n"
+                "      \"config\": {\n"
+                "        \"content\": \"{{status_summary}}\",\n"
+                "        \"entry_type\": \"summary\",\n"
+                "        \"source\": \"workflow:project_status\",\n"
+                "        \"tags\": \"status,summary\",\n"
+                "        \"relevance\": 75\n"
+                "      }\n"
+                "    }\n"
+                "  ]\n"
+                "}\n"
+            )
+        },
+        {
+            "codebase_delta_ingest",
+            "Codebasis Delta Ingest",
+            "Liest geaenderte Quelldateien rekursiv ein und speichert daraus automatisch neuen Projektkontext.",
+            "Codebasis Delta Ingest",
+            "Pflegt das Projekt-Memory inkrementell aus zuletzt geaenderten Dateien.",
+            QString::fromUtf8(
+                "{\n"
+                "  \"version\": 1,\n"
+                "  \"steps\": [\n"
+                "    {\n"
+                "      \"id\": \"ingest_changes\",\n"
+                "      \"type\": \"tool\",\n"
+                "      \"name\": \"Aenderungen ins Memory uebernehmen\",\n"
+                "      \"config\": {\n"
+                "        \"tool\": \"memory.ingest_directory\",\n"
+                "        \"path\": \"src\",\n"
+                "        \"mode\": \"changed\",\n"
+                "        \"within_minutes\": 240,\n"
+                "        \"include_extensions\": \".cpp,.h,.md\",\n"
+                "        \"exclude_paths\": \".git,build,node_modules\",\n"
+                "        \"entry_type\": \"artifact\",\n"
+                "        \"tags\": \"codebase,delta,context\",\n"
+                "        \"relevance\": 85,\n"
+                "        \"output\": \"ingest_summary\"\n"
+                "      }\n"
+                "    }\n"
+                "  ]\n"
+                "}\n"
+            )
+        },
+        {
+            "memory_maintenance",
+            "Memory pflegen und verdichten",
+            "Verdichtet vorhandene Erinnerungen ueber das aktuelle Modell und entfernt anschliessend alte, nicht angepinnte Eintraege.",
+            "Memory pflegen und verdichten",
+            "Reduziert Memory-Wachstum und erzeugt dabei eine frische Projekt-Zusammenfassung.",
+            QString::fromUtf8(
+                "{\n"
+                "  \"version\": 1,\n"
+                "  \"steps\": [\n"
+                "    {\n"
+                "      \"id\": \"summarize_memory\",\n"
+                "      \"type\": \"tool\",\n"
+                "      \"name\": \"Memory zusammenfassen\",\n"
+                "      \"config\": {\n"
+                "        \"tool\": \"memory.summarize\",\n"
+                "        \"limit\": 16,\n"
+                "        \"max_chars\": 22000,\n"
+                "        \"save_as_memory\": true,\n"
+                "        \"summary_entry_type\": \"summary\",\n"
+                "        \"summary_source\": \"workflow:memory_maintenance\",\n"
+                "        \"summary_tags\": \"memory,summary,maintenance\",\n"
+                "        \"summary_relevance\": 82,\n"
+                "        \"output\": \"memory_digest\"\n"
+                "      }\n"
+                "    },\n"
+                "    {\n"
+                "      \"id\": \"cleanup_memory\",\n"
+                "      \"type\": \"tool\",\n"
+                "      \"name\": \"Alte Eintraege aufraeumen\",\n"
+                "      \"config\": {\n"
+                "        \"tool\": \"memory.delete_old\",\n"
+                "        \"older_than_days\": 45,\n"
+                "        \"keep_latest\": 8,\n"
+                "        \"keep_relevance_at_or_above\": 85,\n"
+                "        \"dry_run\": false,\n"
+                "        \"output\": \"cleanup_result\"\n"
+                "      }\n"
+                "    }\n"
+                "  ]\n"
+                "}\n"
+            )
+        },
+        {
+            "daily_digest",
+            "Taeglicher Projekt-Digest",
+            "Ideal fuer Zeitplaene: erstellt einen kurzen Tagesbericht und speichert ihn im Projekt-Memory.",
+            "Taeglicher Projekt-Digest",
+            "Erzeugt einen geplanten Tagesbericht mit Bezug auf den ausloesenden Zeitplan.",
+            QString::fromUtf8(
+                "{\n"
+                "  \"version\": 1,\n"
+                "  \"steps\": [\n"
+                "    {\n"
+                "      \"id\": \"draft_daily_digest\",\n"
+                "      \"type\": \"prompt\",\n"
+                "      \"name\": \"Tagesbericht entwerfen\",\n"
+                "      \"config\": {\n"
+                "        \"prompt\": \"Erstelle fuer den geplanten Lauf {{schedule_id}} einen kurzen Projekt-Digest mit drei Stichpunkten, offenen Punkten und naechstem sinnvollen Schritt.\",\n"
+                "        \"output\": \"daily_digest\"\n"
+                "      }\n"
+                "    },\n"
+                "    {\n"
+                "      \"id\": \"save_daily_digest\",\n"
+                "      \"type\": \"save_memory\",\n"
+                "      \"name\": \"Digest speichern\",\n"
+                "      \"config\": {\n"
+                "        \"content\": \"{{daily_digest}}\",\n"
+                "        \"entry_type\": \"summary\",\n"
+                "        \"source\": \"schedule:daily_digest\",\n"
+                "        \"tags\": \"daily,digest,scheduled\",\n"
+                "        \"relevance\": 70\n"
+                "      }\n"
+                "    }\n"
+                "  ]\n"
+                "}\n"
+            )
+        },
+        {
+            "comfy_prompt_pipeline",
+            "Comfy Prompt Pipeline",
+            "Erzeugt positiven und negativen Prompt mit dem LLM und uebergibt beides direkt an das ComfyUI-Tool.",
+            "Comfy Prompt Pipeline",
+            "Startpunkt fuer bildbasierte Workflows mit Prompt-Erzeugung und ComfyUI.",
+            QString::fromUtf8(
+                "{\n"
+                "  \"version\": 1,\n"
+                "  \"steps\": [\n"
+                "    {\n"
+                "      \"id\": \"create_positive_prompt\",\n"
+                "      \"type\": \"prompt\",\n"
+                "      \"name\": \"Positiven Prompt erzeugen\",\n"
+                "      \"config\": {\n"
+                "        \"prompt\": \"Erzeuge einen detailreichen englischen Bildprompt fuer ein stimmungsvolles Cinematic-Motiv. Antworte nur mit dem Prompt.\",\n"
+                "        \"output\": \"positive_prompt\"\n"
+                "      }\n"
+                "    },\n"
+                "    {\n"
+                "      \"id\": \"create_negative_prompt\",\n"
+                "      \"type\": \"prompt\",\n"
+                "      \"name\": \"Negativen Prompt erzeugen\",\n"
+                "      \"config\": {\n"
+                "        \"prompt\": \"Erzeuge einen passenden negativen Bildprompt fuer denselben Render. Antworte nur mit dem Prompt.\",\n"
+                "        \"output\": \"negative_prompt\"\n"
+                "      }\n"
+                "    },\n"
+                "    {\n"
+                "      \"id\": \"save_prompt_pair\",\n"
+                "      \"type\": \"save_memory\",\n"
+                "      \"name\": \"Prompt-Paar speichern\",\n"
+                "      \"config\": {\n"
+                "        \"content\": \"Positive prompt:\\n{{positive_prompt}}\\n\\nNegative prompt:\\n{{negative_prompt}}\",\n"
+                "        \"entry_type\": \"artifact\",\n"
+                "        \"source\": \"workflow:comfy_prompt_pipeline\",\n"
+                "        \"tags\": \"comfy,prompt,image\",\n"
+                "        \"relevance\": 65\n"
+                "      }\n"
+                "    },\n"
+                "    {\n"
+                "      \"id\": \"render_image\",\n"
+                "      \"type\": \"tool\",\n"
+                "      \"name\": \"Bild rendern\",\n"
+                "      \"config\": {\n"
+                "        \"tool\": \"comfyui.workflow\",\n"
+                "        \"builder_mode\": \"txt2img\",\n"
+                "        \"checkpoint\": \"REPLACE_WITH_YOUR_CHECKPOINT\",\n"
+                "        \"positive_prompt\": \"{{positive_prompt}}\",\n"
+                "        \"negative_prompt\": \"{{negative_prompt}}\",\n"
+                "        \"width\": 1024,\n"
+                "        \"height\": 1024,\n"
+                "        \"steps\": 28,\n"
+                "        \"cfg\": 7.0,\n"
+                "        \"filename_prefix\": \"PrivateClaw\",\n"
+                "        \"download_images\": true,\n"
+                "        \"output\": \"render_summary\"\n"
+                "      }\n"
+                "    }\n"
+                "  ]\n"
+                "}\n"
+            )
+        }
+    };
+
+    return templates;
+}
+
+const WorkflowTemplateDefinition* findWorkflowTemplate(const QString& templateId)
+{
+    const QList<WorkflowTemplateDefinition>& templates = workflowTemplates();
+    for (const WorkflowTemplateDefinition& definition : templates) {
+        if (definition.id == templateId) {
+            return &definition;
+        }
+    }
+
+    return nullptr;
 }
 
 QString prefixRunLog(const int runId, const QString& logText)
@@ -156,31 +395,9 @@ QString formatCompressedMemorySnippet(const QList<domain::MemoryEntry>& entries)
     return lines.join("\n");
 }
 
-PreparedMemoryContext prepareMemoryContext(services::MemoryService& memoryService, const qint64 projectId)
+services::PreparedMemoryContext prepareMemoryContext(services::MemoryService& memoryService, const qint64 projectId)
 {
-    PreparedMemoryContext context;
-    const QList<domain::MemoryEntry> memoryEntries = memoryService.listEntries(projectId, QString(), 24);
-    context.totalEntries = memoryEntries.size();
-    if (memoryEntries.isEmpty()) {
-        return context;
-    }
-
-    const int directEntryLimit = qMin(memoryEntries.size(), 6);
-    context.directEntries = directEntryLimit;
-    for (int index = 0; index < directEntryLimit; ++index) {
-        context.snippets.append(formatMemorySnippet(memoryEntries.at(index)));
-    }
-
-    if (memoryEntries.size() > directEntryLimit) {
-        const QList<domain::MemoryEntry> compressedEntries = memoryEntries.mid(directEntryLimit);
-        const QString compressedSnippet = formatCompressedMemorySnippet(compressedEntries);
-        if (!compressedSnippet.trimmed().isEmpty()) {
-            context.snippets.append(compressedSnippet);
-            context.compressedEntries = compressedEntries.size();
-        }
-    }
-
-    return context;
+    return memoryService.prepareRunContext(projectId);
 }
 
 QString summarizeRunText(QString text)
@@ -466,6 +683,7 @@ WorkflowPanel::WorkflowPanel(
     services::ProjectService& projectService,
     services::SettingsService& settingsService,
     services::MemoryService& memoryService,
+    services::SecretsService& secretsService,
     services::RunService& runService,
     services::WorkflowService& workflowService,
     providers::ProviderManager& providerManager,
@@ -475,12 +693,14 @@ WorkflowPanel::WorkflowPanel(
     , m_projectService(projectService)
     , m_settingsService(settingsService)
     , m_memoryService(memoryService)
+    , m_secretsService(secretsService)
     , m_runService(runService)
     , m_workflowService(workflowService)
     , m_providerManager(providerManager)
 {
     buildUi();
     refreshData();
+    setTemplateLibraryExpanded(false);
 }
 
 int WorkflowPanel::workflowCount() const
@@ -602,6 +822,41 @@ void WorkflowPanel::buildUi()
     formLayout->addRow("Name", m_nameEdit);
     formLayout->addRow("Beschreibung", m_descriptionEdit);
     formLayout->addRow("", m_activeCheckBox);
+
+    m_templateFrame = new QFrame(editorCard);
+    m_templateFrame->setProperty("panelCard", true);
+    auto* templateLayout = new QVBoxLayout(m_templateFrame);
+    templateLayout->setContentsMargins(12, 12, 12, 12);
+    auto* templateHeaderLayout = new QHBoxLayout();
+    templateHeaderLayout->setContentsMargins(0, 0, 0, 0);
+    auto* templateTitle = new QLabel("Template-Bibliothek", m_templateFrame);
+    templateTitle->setProperty("sectionTitle", true);
+    m_templateToggleButton = new QPushButton(m_templateFrame);
+    m_templateToggleButton->setCheckable(true);
+    m_templateToggleButton->setChecked(false);
+    templateHeaderLayout->addWidget(templateTitle);
+    templateHeaderLayout->addStretch();
+    templateHeaderLayout->addWidget(m_templateToggleButton);
+    m_templateBodyFrame = new QFrame(m_templateFrame);
+    auto* templateBodyLayout = new QVBoxLayout(m_templateBodyFrame);
+    templateBodyLayout->setContentsMargins(0, 0, 0, 0);
+    auto* templateBody = new QLabel(
+        "Vorgefertigte Workflow-Vorlagen fuer typische Aufgaben. Laden uebernimmt Name, Beschreibung und JSON direkt in den Editor.",
+        m_templateBodyFrame
+    );
+    templateBody->setProperty("sectionBody", true);
+    templateBody->setWordWrap(true);
+    m_templateCombo = new QComboBox(m_templateBodyFrame);
+    m_templateDescriptionLabel = new QLabel(m_templateBodyFrame);
+    m_templateDescriptionLabel->setProperty("sectionBody", true);
+    m_templateDescriptionLabel->setWordWrap(true);
+    auto* loadTemplateButton = new QPushButton("Template in Editor laden", m_templateBodyFrame);
+    templateBodyLayout->addWidget(templateBody);
+    templateBodyLayout->addWidget(m_templateCombo);
+    templateBodyLayout->addWidget(m_templateDescriptionLabel);
+    templateBodyLayout->addWidget(loadTemplateButton, 0, Qt::AlignLeft);
+    templateLayout->addLayout(templateHeaderLayout);
+    templateLayout->addWidget(m_templateBodyFrame);
 
     m_visualEditorToggle = new QCheckBox("Visuellen Editor anzeigen", editorCard);
     m_visualEditorToggle->setChecked(true);
@@ -1305,6 +1560,7 @@ void WorkflowPanel::buildUi()
     editorLayout->addWidget(editorTitle);
     editorLayout->addWidget(editorBody);
     editorLayout->addLayout(formLayout);
+    editorLayout->addWidget(m_templateFrame);
     editorLayout->addWidget(m_visualEditorToggle);
     editorLayout->addWidget(m_visualEditorFrame);
     editorLayout->addWidget(m_jsonDefinitionLabel);
@@ -1326,9 +1582,7 @@ void WorkflowPanel::buildUi()
     });
 
     connect(newButton, &QPushButton::clicked, this, [this]() {
-        m_currentWorkflowId = -1;
-        m_workflowList->setCurrentRow(-1);
-        resetEditor();
+        startNewWorkflow();
     });
 
     connect(saveButton, &QPushButton::clicked, this, [this]() {
@@ -1349,6 +1603,18 @@ void WorkflowPanel::buildUi()
 
     connect(m_visualEditorToggle, &QCheckBox::toggled, this, [this]() {
         updateVisualEditorVisibility();
+    });
+
+    connect(m_templateCombo, &QComboBox::currentIndexChanged, this, [this]() {
+        updateTemplatePreview();
+    });
+
+    connect(m_templateToggleButton, &QPushButton::clicked, this, [this]() {
+        updateTemplateLibraryVisibility();
+    });
+
+    connect(loadTemplateButton, &QPushButton::clicked, this, [this]() {
+        loadSelectedTemplateIntoEditor();
     });
 
     connect(m_visualStepList, &QListWidget::currentRowChanged, this, [this](const int row) {
@@ -1820,6 +2086,7 @@ void WorkflowPanel::buildUi()
         applyVisualStepChanges();
     });
 
+    refreshTemplateLibrary();
     updateVisualEditorVisibility();
     syncVisualEditorFromJson();
     applyComfyCatalogToUi();
@@ -2017,16 +2284,54 @@ void WorkflowPanel::executeWorkflow()
     runContext.variables.insert("comfyui_base_url", m_settingsService.comfyUiBaseUrl());
     runContext.variables.insert("provider_base_url", providerBaseUrl);
 
-    const PreparedMemoryContext memoryContext = prepareMemoryContext(m_memoryService, project->id);
+    const services::PreparedMemoryContext memoryContext = prepareMemoryContext(m_memoryService, project->id);
     runContext.memorySnippets = memoryContext.snippets;
     runContext.memoryEntryCount = memoryContext.totalEntries;
     runContext.directMemoryEntryCount = memoryContext.directEntries;
     runContext.compressedMemoryEntryCount = memoryContext.compressedEntries;
+    runContext.pinnedMemoryEntryCount = memoryContext.pinnedEntries;
+    runContext.totalPinnedMemoryEntryCount = memoryContext.totalPinnedEntries;
     runContext.variables.insert("project_memory", runContext.memorySnippets.join("\n"));
     runContext.variables.insert("project_memory_count", QString::number(runContext.memoryEntryCount));
     runContext.variables.insert("project_memory_snippet_count", QString::number(runContext.memorySnippets.size()));
     runContext.variables.insert("project_memory_direct_count", QString::number(runContext.directMemoryEntryCount));
     runContext.variables.insert("project_memory_compressed_count", QString::number(runContext.compressedMemoryEntryCount));
+    runContext.variables.insert("project_memory_pinned_count", QString::number(runContext.pinnedMemoryEntryCount));
+    runContext.variables.insert("project_memory_total_pinned_count", QString::number(runContext.totalPinnedMemoryEntryCount));
+
+    QString secretLoadError;
+    const QHash<QString, QString> projectSecrets = m_secretsService.loadSecretsForProject(project->id, &secretLoadError);
+    if (!secretLoadError.isEmpty()) {
+        m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
+        m_feedbackLabel->setText(QString("Projekt-Secrets konnten nicht geladen werden: %1").arg(secretLoadError));
+        publishExecutionLog(QString("[ui] Secret-Laden fehlgeschlagen: %1").arg(secretLoadError));
+        return;
+    }
+
+    for (auto it = projectSecrets.constBegin(); it != projectSecrets.constEnd(); ++it) {
+        runContext.variables.insert(QString("secret.%1").arg(it.key()), it.value());
+    }
+    runContext.variables.insert("project_secret_count", QString::number(projectSecrets.size()));
+
+    RiskApprovalOptions riskApprovalOptions;
+    riskApprovalOptions.dialogParent = this;
+    riskApprovalOptions.unattended = false;
+    riskApprovalOptions.executionLabel = "Workflow-Ausfuehrung";
+    const RiskApprovalDecision riskApproval = evaluateRiskyToolExecution(
+        *project,
+        workflow,
+        riskApprovalOptions
+    );
+    if (!riskApproval.allowed) {
+        m_feedbackLabel->setStyleSheet("color: #8b5e2f;");
+        m_feedbackLabel->setText(riskApproval.message);
+        publishExecutionLog(QString("[ui] %1").arg(riskApproval.message));
+        return;
+    }
+
+    runContext.allowShellRun = riskApproval.allowShellRun;
+    runContext.allowFileEditDiff = riskApproval.allowFileEditDiff;
+    runContext.allowHttpRequest = riskApproval.allowHttpRequest;
 
     domain::Run persistedRun;
     persistedRun.projectId = project->id;
@@ -2045,10 +2350,11 @@ void WorkflowPanel::executeWorkflow()
         .arg(runContext.selectedModel)
         .arg(
             runContext.compressedMemoryEntryCount > 0
-                ? QString("%1 (%2 direkt, %3 komprimiert)")
+                ? QString("%1 (%2 direkt, %3 komprimiert, %4 angepinnt)")
                       .arg(runContext.memoryEntryCount)
                       .arg(runContext.directMemoryEntryCount)
                       .arg(runContext.compressedMemoryEntryCount)
+                      .arg(runContext.totalPinnedMemoryEntryCount)
                 : QString::number(runContext.memoryEntryCount)
         );
     QString runPersistenceError;
@@ -2227,6 +2533,151 @@ void WorkflowPanel::updateExecutionStatus()
 
     m_executionStatusLabel->setText(
         QString("Status: %1 aktive Laeufe - Modelle denken%2").arg(m_activeRunCount).arg(dots)
+    );
+}
+
+void WorkflowPanel::startNewWorkflow()
+{
+    QMessageBox choiceDialog(this);
+    choiceDialog.setWindowTitle("Neuer Workflow");
+    choiceDialog.setText("Wie moechtest du den neuen Workflow starten?");
+    choiceDialog.setInformativeText(
+        "Du kannst mit einer Vorlage beginnen oder einen leeren Workflow selbst aufbauen."
+    );
+    auto* emptyButton = choiceDialog.addButton("Leer starten", QMessageBox::AcceptRole);
+    auto* templateButton = choiceDialog.addButton("Template waehlen", QMessageBox::ActionRole);
+    auto* cancelButton = choiceDialog.addButton(QMessageBox::Cancel);
+    choiceDialog.setDefaultButton(qobject_cast<QPushButton*>(emptyButton));
+    choiceDialog.exec();
+
+    if (choiceDialog.clickedButton() == cancelButton || choiceDialog.clickedButton() == nullptr) {
+        return;
+    }
+
+    m_currentWorkflowId = -1;
+    if (m_workflowList != nullptr) {
+        m_workflowList->setCurrentRow(-1);
+    }
+    resetEditor();
+
+    if (choiceDialog.clickedButton() == templateButton) {
+        setTemplateLibraryExpanded(true);
+        if (m_templateCombo != nullptr) {
+            m_templateCombo->setFocus();
+            m_templateCombo->showPopup();
+        }
+        m_feedbackLabel->setStyleSheet("color: #5f5548;");
+        m_feedbackLabel->setText("Waehle jetzt ein Template aus oder klappe die Bibliothek wieder ein.");
+        return;
+    }
+
+    setTemplateLibraryExpanded(false);
+    m_feedbackLabel->setStyleSheet("color: #5f5548;");
+    m_feedbackLabel->setText("Leerer Workflow wurde vorbereitet.");
+}
+
+void WorkflowPanel::refreshTemplateLibrary()
+{
+    if (m_templateCombo == nullptr) {
+        return;
+    }
+
+    const QSignalBlocker blocker(m_templateCombo);
+    const QString currentTemplateId = m_templateCombo->currentData().toString();
+    m_templateCombo->clear();
+    for (const WorkflowTemplateDefinition& definition : workflowTemplates()) {
+        m_templateCombo->addItem(definition.name, definition.id);
+    }
+
+    const int currentIndex = currentTemplateId.isEmpty()
+        ? 0
+        : m_templateCombo->findData(currentTemplateId);
+    m_templateCombo->setCurrentIndex(currentIndex >= 0 ? currentIndex : 0);
+    updateTemplatePreview();
+}
+
+void WorkflowPanel::setTemplateLibraryExpanded(const bool expanded)
+{
+    if (m_templateToggleButton == nullptr || m_templateBodyFrame == nullptr) {
+        return;
+    }
+
+    {
+        const QSignalBlocker blocker(m_templateToggleButton);
+        m_templateToggleButton->setChecked(expanded);
+    }
+
+    updateTemplateLibraryVisibility();
+}
+
+void WorkflowPanel::updateTemplatePreview()
+{
+    if (m_templateDescriptionLabel == nullptr || m_templateCombo == nullptr) {
+        return;
+    }
+
+    const WorkflowTemplateDefinition* definition =
+        findWorkflowTemplate(m_templateCombo->currentData().toString());
+    if (definition == nullptr) {
+        m_templateDescriptionLabel->setText("Keine Vorlage ausgewaehlt.");
+        return;
+    }
+
+    m_templateDescriptionLabel->setText(
+        QString("%1\n\nVorgeschlagener Name: %2")
+            .arg(definition->description, definition->workflowName)
+    );
+}
+
+void WorkflowPanel::updateTemplateLibraryVisibility()
+{
+    if (m_templateToggleButton == nullptr || m_templateBodyFrame == nullptr) {
+        return;
+    }
+
+    const bool expanded = m_templateToggleButton->isChecked();
+    m_templateBodyFrame->setVisible(expanded);
+    m_templateToggleButton->setText(expanded ? "Einklappen" : "Einblenden");
+}
+
+void WorkflowPanel::loadSelectedTemplateIntoEditor()
+{
+    if (m_templateCombo == nullptr) {
+        return;
+    }
+
+    const WorkflowTemplateDefinition* definition =
+        findWorkflowTemplate(m_templateCombo->currentData().toString());
+    if (definition == nullptr) {
+        return;
+    }
+
+    const bool editorHasContent = m_currentWorkflowId > 0
+        || !m_nameEdit->text().trimmed().isEmpty()
+        || !m_descriptionEdit->toPlainText().trimmed().isEmpty()
+        || m_definitionEdit->toPlainText().trimmed() != defaultWorkflowJson().trimmed();
+    if (editorHasContent) {
+        const int answer = QMessageBox::question(
+            this,
+            "Template laden",
+            "Die aktuelle Workflow-Bearbeitung wird im Editor ersetzt. Fortfahren?"
+        );
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
+    }
+
+    m_currentWorkflowId = -1;
+    m_nameEdit->setText(definition->workflowName);
+    m_descriptionEdit->setPlainText(definition->workflowDescription);
+    m_activeCheckBox->setChecked(true);
+    m_definitionEdit->setPlainText(definition->definitionJson);
+    m_executionOutputView->clear();
+    syncVisualEditorFromJson();
+    setTemplateLibraryExpanded(false);
+    m_feedbackLabel->setStyleSheet("color: #2f6b3a;");
+    m_feedbackLabel->setText(
+        QString("Template '%1' wurde in den Editor geladen.").arg(definition->name)
     );
 }
 

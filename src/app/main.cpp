@@ -23,6 +23,7 @@ int main(int argc, char* argv[])
     QApplication::setApplicationName("PrivateClaw");
     QApplication::setOrganizationName("PrivateClaw");
     QApplication::setOrganizationDomain("local.privateclaw");
+    QApplication::setApplicationVersion(QString::fromUtf8(PRIVATECLAW_APP_VERSION));
 
     applyStyleSheet(app);
 
@@ -35,4 +36,3 @@ int main(int argc, char* argv[])
 
     return bootstrap.run();
 }
-

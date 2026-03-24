@@ -40,6 +40,10 @@ bool SettingsService::initialize()
         m_settings.setValue("tools/allowedPaths", QStringList{});
     }
 
+    if (!m_settings.contains("ui/backgroundTrayHintShown")) {
+        m_settings.setValue("ui/backgroundTrayHintShown", false);
+    }
+
     m_settings.sync();
     return m_settings.status() == QSettings::NoError;
 }
@@ -115,6 +119,17 @@ QStringList SettingsService::effectiveAllowedToolPaths() const
     }
 
     return allowedPaths;
+}
+
+bool SettingsService::backgroundTrayHintShown() const
+{
+    return m_settings.value("ui/backgroundTrayHintShown", false).toBool();
+}
+
+void SettingsService::setBackgroundTrayHintShown(const bool shown)
+{
+    m_settings.setValue("ui/backgroundTrayHintShown", shown);
+    m_settings.sync();
 }
 
 bool SettingsService::addAllowedToolPath(const QString& path, QString* errorMessage)

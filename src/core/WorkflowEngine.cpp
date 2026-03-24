@@ -176,6 +176,9 @@ QString previewText(QString text)
 QString memorySnippetFromEntry(const domain::MemoryEntry& entry)
 {
     QStringList parts;
+    if (entry.pinned) {
+        parts.append("Angepinnt");
+    }
     parts.append(QString("Typ: %1").arg(entry.type.trimmed().isEmpty() ? "note" : entry.type.trimmed()));
 
     if (!entry.source.trimmed().isEmpty()) {
@@ -545,12 +548,17 @@ ExecutionResult WorkflowEngine::executeWorkflow(
 
             entry.tags = configTags(step.config, "tags", runContext);
             entry.relevance = configRelevance(step.config, "relevance", 50);
+            entry.pinned = configBool(step.config, "pinned", false);
             entry.content = content;
 
             result.memoryEntriesToPersist.append(entry);
             runContext.memorySnippets.append(memorySnippetFromEntry(entry));
             ++runContext.memoryEntryCount;
             ++runContext.directMemoryEntryCount;
+            if (entry.pinned) {
+                ++runContext.pinnedMemoryEntryCount;
+                ++runContext.totalPinnedMemoryEntryCount;
+            }
             runContext.variables.insert("last_memory_content", entry.content);
             runContext.variables.insert("last_memory_type", entry.type);
             runContext.variables.insert("project_memory", runContext.memorySnippets.join("\n"));
@@ -558,10 +566,15 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             runContext.variables.insert("project_memory_snippet_count", QString::number(runContext.memorySnippets.size()));
             runContext.variables.insert("project_memory_direct_count", QString::number(runContext.directMemoryEntryCount));
             runContext.variables.insert("project_memory_compressed_count", QString::number(runContext.compressedMemoryEntryCount));
+            runContext.variables.insert("project_memory_pinned_count", QString::number(runContext.pinnedMemoryEntryCount));
+            runContext.variables.insert("project_memory_total_pinned_count", QString::number(runContext.totalPinnedMemoryEntryCount));
 
             result.logs.append(QString("[step:%1] Typ: save_memory").arg(step.id));
             result.logs.append(QString("[step:%1] Memory-Typ: %2").arg(step.id, entry.type));
             result.logs.append(QString("[step:%1] Memory-Quelle: %2").arg(step.id, entry.source));
+            if (entry.pinned) {
+                result.logs.append(QString("[step:%1] Memory wird angepinnt gespeichert.").arg(step.id));
+            }
             result.logs.append(QString("[step:%1] Memory gespeichert vorgemerkt.").arg(step.id));
             result.logs.append(QString("[step:%1] Inhalt: %2").arg(step.id, previewText(entry.content)));
             currentStepIndex = sequentialNextIndex;
@@ -728,6 +741,9 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             request.selectedModel = runContext.selectedModel;
             request.systemPrompt = runContext.systemPrompt;
             request.llmProvider = &provider;
+            request.allowShellRun = runContext.allowShellRun;
+            request.allowFileEditDiff = runContext.allowFileEditDiff;
+            request.allowHttpRequest = runContext.allowHttpRequest;
 
             const tools::ToolExecutionResult toolResult = m_toolExecutor->execute(request);
             for (const QString& logLine : toolResult.logs) {
@@ -752,6 +768,10 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                     runContext.memorySnippets.append(memorySnippetFromEntry(entry));
                     ++runContext.memoryEntryCount;
                     ++runContext.directMemoryEntryCount;
+                    if (entry.pinned) {
+                        ++runContext.pinnedMemoryEntryCount;
+                        ++runContext.totalPinnedMemoryEntryCount;
+                    }
                     runContext.variables.insert("last_memory_content", entry.content);
                     runContext.variables.insert("last_memory_type", entry.type);
                 }
@@ -760,6 +780,8 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                 runContext.variables.insert("project_memory_snippet_count", QString::number(runContext.memorySnippets.size()));
                 runContext.variables.insert("project_memory_direct_count", QString::number(runContext.directMemoryEntryCount));
                 runContext.variables.insert("project_memory_compressed_count", QString::number(runContext.compressedMemoryEntryCount));
+                runContext.variables.insert("project_memory_pinned_count", QString::number(runContext.pinnedMemoryEntryCount));
+                runContext.variables.insert("project_memory_total_pinned_count", QString::number(runContext.totalPinnedMemoryEntryCount));
                 result.logs.append(
                     QString("[step:%1] Tool hat %2 Memory-Eintrag(e) vorgemerkt.")
                         .arg(step.id)

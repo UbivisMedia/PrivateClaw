@@ -9,10 +9,13 @@
 #include "services/ProjectService.h"
 #include "services/RunService.h"
 #include "services/ScheduleService.h"
+#include "services/SecretsService.h"
 #include "services/SettingsService.h"
+#include "services/UpdateChecker.h"
 #include "services/WorkflowService.h"
 #include "storage/DatabaseManager.h"
 #include "tools/ToolExecutor.h"
+#include "ui/ExecutionApproval.h"
 #include "ui/MemoryPanel.h"
 #include "ui/ProjectPanel.h"
 #include "ui/RunPanel.h"
@@ -20,11 +23,22 @@
 #include "ui/SchedulePanel.h"
 #include "ui/WorkflowPanel.h"
 
+#include <QApplication>
+#include <QAction>
+#include <QCloseEvent>
+#include <QDesktopServices>
+#include <QFont>
+#include <QIcon>
 #include <QListWidget>
+#include <QMenu>
+#include <QPainter>
+#include <QPixmap>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QSystemTrayIcon>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QFutureWatcher>
@@ -100,31 +114,9 @@ QString formatCompressedMemorySnippet(const QList<domain::MemoryEntry>& entries)
     return lines.join("\n");
 }
 
-PreparedMemoryContext prepareMemoryContext(services::MemoryService& memoryService, const qint64 projectId)
+services::PreparedMemoryContext prepareMemoryContext(services::MemoryService& memoryService, const qint64 projectId)
 {
-    PreparedMemoryContext context;
-    const QList<domain::MemoryEntry> memoryEntries = memoryService.listEntries(projectId, QString(), 24);
-    context.totalEntries = memoryEntries.size();
-    if (memoryEntries.isEmpty()) {
-        return context;
-    }
-
-    const int directEntryLimit = qMin(memoryEntries.size(), 6);
-    context.directEntries = directEntryLimit;
-    for (int index = 0; index < directEntryLimit; ++index) {
-        context.snippets.append(formatMemorySnippet(memoryEntries.at(index)));
-    }
-
-    if (memoryEntries.size() > directEntryLimit) {
-        const QList<domain::MemoryEntry> compressedEntries = memoryEntries.mid(directEntryLimit);
-        const QString compressedSnippet = formatCompressedMemorySnippet(compressedEntries);
-        if (!compressedSnippet.trimmed().isEmpty()) {
-            context.snippets.append(compressedSnippet);
-            context.compressedEntries = compressedEntries.size();
-        }
-    }
-
-    return context;
+    return memoryService.prepareRunContext(projectId);
 }
 
 QString prefixRunLog(const QString& prefix, const QStringList& lines)
@@ -178,6 +170,40 @@ core::ExecutionResult executeWorkflowWithProvider(
     return result;
 }
 
+QIcon buildTrayIcon(const bool updateBadge)
+{
+    QPixmap pixmap(64, 64);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(Qt::NoPen);
+
+    painter.setBrush(QColor("#d8c19c"));
+    painter.drawRoundedRect(QRectF(4.0, 4.0, 56.0, 56.0), 14.0, 14.0);
+
+    painter.setBrush(QColor("#5b4732"));
+    painter.drawRoundedRect(QRectF(12.0, 12.0, 40.0, 40.0), 10.0, 10.0);
+
+    QFont font = painter.font();
+    font.setBold(true);
+    font.setPointSize(20);
+    painter.setFont(font);
+    painter.setPen(QColor("#f7f0e5"));
+    painter.drawText(QRect(12, 12, 40, 40), Qt::AlignCenter, "PC");
+
+    if (updateBadge) {
+        painter.setBrush(QColor("#d96b2b"));
+        painter.drawEllipse(QRectF(38.0, 2.0, 24.0, 24.0));
+        font.setPointSize(16);
+        painter.setFont(font);
+        painter.setPen(Qt::white);
+        painter.drawText(QRect(38, 2, 24, 24), Qt::AlignCenter, "!");
+    }
+
+    return QIcon(pixmap);
+}
+
 } // namespace
 
 MainWindow::MainWindow(
@@ -185,6 +211,7 @@ MainWindow::MainWindow(
     services::SettingsService& settingsService,
     services::ProjectService& projectService,
     services::MemoryService& memoryService,
+    services::SecretsService& secretsService,
     services::WorkflowService& workflowService,
     services::RunService& runService,
     services::ScheduleService& scheduleService,
@@ -196,17 +223,20 @@ MainWindow::MainWindow(
     , m_settingsService(settingsService)
     , m_projectService(projectService)
     , m_memoryService(memoryService)
+    , m_secretsService(secretsService)
     , m_workflowService(workflowService)
     , m_runService(runService)
     , m_scheduleService(scheduleService)
     , m_providerManager(providerManager)
 {
-    setWindowTitle("PrivateClaw");
+    setWindowTitle(QString("PrivateClaw v%1").arg(services::UpdateChecker::currentVersion()));
     resize(1360, 840);
     buildUi();
+    buildSystemTray();
     recoverInterruptedRuns();
     updateStatusBar();
     startSchedulePolling();
+    startUpdateChecks();
 }
 
 void MainWindow::buildUi()
@@ -225,7 +255,13 @@ void MainWindow::buildUi()
     m_navigation->setFixedWidth(220);
 
     m_pages = new QStackedWidget(topSplitter);
-    m_projectPanel = new ProjectPanel(m_projectService, m_settingsService, m_providerManager, m_pages);
+    m_projectPanel = new ProjectPanel(
+        m_projectService,
+        m_settingsService,
+        m_secretsService,
+        m_providerManager,
+        m_pages
+    );
     m_projectPanel->setOnProjectDataChanged([this]() {
         refreshProjectDependentViews();
     });
@@ -254,6 +290,7 @@ void MainWindow::buildUi()
         m_projectService,
         m_settingsService,
         m_memoryService,
+        m_secretsService,
         m_runService,
         m_workflowService,
         m_providerManager,
@@ -306,6 +343,91 @@ void MainWindow::buildUi()
     m_navigation->setCurrentRow(0);
 }
 
+void MainWindow::buildSystemTray()
+{
+    m_updateChecker = new services::UpdateChecker(this);
+    connect(
+        m_updateChecker,
+        &services::UpdateChecker::checkFinished,
+        this,
+        [this](
+            const bool manual,
+            const bool success,
+            const bool updateAvailable,
+            const QString& currentVersion,
+            const QString& latestVersion,
+            const QString& releaseUrl,
+            const QString& message
+        ) {
+            handleUpdateCheckFinished(
+                manual,
+                success,
+                updateAvailable,
+                currentVersion,
+                latestVersion,
+                releaseUrl,
+                message
+            );
+        }
+    );
+
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) {
+        return;
+    }
+
+    QApplication::setQuitOnLastWindowClosed(false);
+
+    m_trayIcon = new QSystemTrayIcon(this);
+    m_trayIcon->setIcon(buildTrayIcon(false));
+    m_trayIcon->setToolTip(QString("PrivateClaw v%1").arg(services::UpdateChecker::currentVersion()));
+
+    m_trayMenu = new QMenu(this);
+    m_hideToTrayAction = m_trayMenu->addAction("Im Hintergrund weiterlaufen");
+    m_openWindowAction = m_trayMenu->addAction("Fenster anzeigen");
+    m_checkUpdatesAction = m_trayMenu->addAction("Nach Updates suchen");
+    m_openReleasePageAction = m_trayMenu->addAction("Release-Seite oeffnen");
+    m_trayMenu->addSeparator();
+    m_quitAction = m_trayMenu->addAction("Beenden");
+
+    connect(m_hideToTrayAction, &QAction::triggered, this, [this]() {
+        hideToBackground();
+    });
+    connect(m_openWindowAction, &QAction::triggered, this, [this]() {
+        showOrRaiseWindow();
+    });
+    connect(m_checkUpdatesAction, &QAction::triggered, this, [this]() {
+        triggerUpdateCheck(true);
+    });
+    connect(m_openReleasePageAction, &QAction::triggered, this, [this]() {
+        openLatestReleasePage();
+    });
+    connect(m_quitAction, &QAction::triggered, this, [this]() {
+        requestApplicationQuit();
+    });
+    connect(m_trayIcon, &QSystemTrayIcon::activated, this, [this](const QSystemTrayIcon::ActivationReason reason) {
+        if (reason != QSystemTrayIcon::DoubleClick) {
+            return;
+        }
+
+        if (m_updateAvailable) {
+            openLatestReleasePage();
+            return;
+        }
+
+        showOrRaiseWindow();
+    });
+
+    m_trayBlinkTimer = new QTimer(this);
+    m_trayBlinkTimer->setInterval(650);
+    connect(m_trayBlinkTimer, &QTimer::timeout, this, [this]() {
+        m_trayBlinkHighlighted = !m_trayBlinkHighlighted;
+        updateTrayPresentation();
+    });
+
+    m_trayIcon->setContextMenu(m_trayMenu);
+    m_trayIcon->show();
+}
+
 void MainWindow::refreshProjectDependentViews()
 {
     updateStatusBar();
@@ -350,11 +472,85 @@ void MainWindow::recoverInterruptedRuns()
     }
 }
 
+void MainWindow::hideToBackground()
+{
+    if (m_trayIcon == nullptr || !m_trayIcon->isVisible()) {
+        return;
+    }
+
+    hide();
+
+    if (!m_settingsService.backgroundTrayHintShown()) {
+        m_trayIcon->showMessage(
+            "PrivateClaw laeuft weiter",
+            "Die App wurde in den Hintergrund verschoben. Zeitplaene und laufende Aufgaben bleiben aktiv. Ueber das Tray-Menue kannst du das Fenster wieder oeffnen oder die App wirklich beenden.",
+            QSystemTrayIcon::Information,
+            12000
+        );
+        m_settingsService.setBackgroundTrayHintShown(true);
+    }
+
+    if (m_runLogPanel != nullptr) {
+        m_runLogPanel->appendLogLine(
+            "[app] Fenster wurde in den Hintergrund verschoben. Zeitplaene laufen weiter."
+        );
+    }
+}
+
+void MainWindow::requestApplicationQuit()
+{
+    m_forceQuitRequested = true;
+    QApplication::setQuitOnLastWindowClosed(true);
+
+    if (m_schedulePollTimer != nullptr) {
+        m_schedulePollTimer->stop();
+    }
+    if (m_updateCheckTimer != nullptr) {
+        m_updateCheckTimer->stop();
+    }
+    if (m_trayBlinkTimer != nullptr) {
+        m_trayBlinkTimer->stop();
+    }
+
+    if (m_trayMenu != nullptr) {
+        m_trayMenu->hide();
+    }
+    if (m_trayIcon != nullptr) {
+        m_trayIcon->hide();
+    }
+
+    if (m_runLogPanel != nullptr) {
+        m_runLogPanel->appendLogLine("[app] Anwendung wird ueber das Tray-Menue beendet.");
+    }
+
+    close();
+    QTimer::singleShot(0, qApp, &QCoreApplication::quit);
+}
+
+void MainWindow::startUpdateChecks()
+{
+    if (m_updateChecker == nullptr) {
+        return;
+    }
+
+    m_updateCheckTimer = new QTimer(this);
+    m_updateCheckTimer->setInterval(4 * 60 * 60 * 1000);
+    connect(m_updateCheckTimer, &QTimer::timeout, this, [this]() {
+        triggerUpdateCheck(false);
+    });
+    m_updateCheckTimer->start();
+
+    QTimer::singleShot(4000, this, [this]() {
+        triggerUpdateCheck(false);
+    });
+}
+
 void MainWindow::updateStatusBar()
 {
     statusBar()->showMessage(
-        QString("Datenbank: %1 | Provider: %2 | Projekte: %3 | Workflows: %4 | Memory: %5 | Runs: %6 | Zeitplaene: %7 | Laufende Schedules: %8 | Externe Pfade: %9")
+        QString("Version: %1 | Datenbank: %2 | Provider: %3 | Projekte: %4 | Workflows: %5 | Memory: %6 | Runs: %7 | Zeitplaene: %8 | Laufende Schedules: %9 | Externe Pfade: %10%11")
             .arg(
+                services::UpdateChecker::currentVersion(),
                 m_databaseManager.databasePath(),
                 QString::number(m_providerManager.providers().size()),
                 QString::number(m_projectService.projectCount()),
@@ -363,7 +559,10 @@ void MainWindow::updateStatusBar()
                 QString::number(m_runService.runCount()),
                 QString::number(m_scheduleService.scheduleCount()),
                 QString::number(m_runningScheduleIds.size()),
-                QString::number(m_settingsService.customAllowedToolPaths().size())
+                QString::number(m_settingsService.customAllowedToolPaths().size()),
+                m_updateAvailable && !m_latestReleaseVersion.trimmed().isEmpty()
+                    ? QString(" | Update verfuegbar: %1").arg(m_latestReleaseVersion)
+                    : QString()
             )
     );
 }
@@ -380,6 +579,140 @@ void MainWindow::startSchedulePolling()
     QTimer::singleShot(1000, this, [this]() {
         pollDueSchedules();
     });
+}
+
+void MainWindow::triggerUpdateCheck(const bool manual)
+{
+    if (m_updateChecker == nullptr) {
+        return;
+    }
+
+    m_updateChecker->checkForUpdates(manual);
+}
+
+void MainWindow::handleUpdateCheckFinished(
+    const bool manual,
+    const bool success,
+    const bool updateAvailable,
+    const QString& currentVersion,
+    const QString& latestVersion,
+    const QString& releaseUrl,
+    const QString& message
+)
+{
+    m_updateAvailable = success && updateAvailable;
+    m_latestReleaseVersion = latestVersion.trimmed();
+    m_latestReleaseUrl = releaseUrl.trimmed();
+
+    if (!m_updateAvailable) {
+        m_updateNotificationShown = false;
+        m_trayBlinkHighlighted = false;
+        if (m_trayBlinkTimer != nullptr) {
+            m_trayBlinkTimer->stop();
+        }
+    } else if (m_trayBlinkTimer != nullptr && !m_trayBlinkTimer->isActive()) {
+        m_trayBlinkHighlighted = true;
+        m_trayBlinkTimer->start();
+    }
+
+    updateTrayPresentation();
+    updateStatusBar();
+
+    if (m_trayIcon != nullptr && success && updateAvailable && !m_updateNotificationShown) {
+        m_trayIcon->showMessage(
+            "PrivateClaw Update",
+            QString("Neue Version %1 verfuegbar. Doppelklick auf das Tray-Icon oeffnet die Release-Seite.")
+                .arg(latestVersion),
+            QSystemTrayIcon::Information,
+            12000
+        );
+        m_updateNotificationShown = true;
+    } else if (manual && m_trayIcon != nullptr) {
+        m_trayIcon->showMessage(
+            success ? "PrivateClaw Update" : "PrivateClaw Update-Check",
+            message,
+            success ? QSystemTrayIcon::Information : QSystemTrayIcon::Warning,
+            9000
+        );
+    }
+
+    if (manual) {
+        statusBar()->showMessage(message, 10000);
+    }
+
+    if (m_runLogPanel != nullptr && (manual || !success || m_updateAvailable)) {
+        const QString updateLog = QString("[update] %1 | Lokal: %2%3")
+            .arg(
+                message,
+                currentVersion,
+                latestVersion.trimmed().isEmpty() ? QString() : QString(" | Release: %1").arg(latestVersion)
+            );
+        m_runLogPanel->appendLogLine(updateLog);
+    }
+}
+
+void MainWindow::updateTrayPresentation()
+{
+    if (m_trayIcon == nullptr) {
+        return;
+    }
+
+    const bool highlight = m_updateAvailable && m_trayBlinkHighlighted;
+    m_trayIcon->setIcon(buildTrayIcon(highlight));
+
+    QString toolTip = QString("PrivateClaw v%1").arg(services::UpdateChecker::currentVersion());
+    if (m_updateAvailable && !m_latestReleaseVersion.trimmed().isEmpty()) {
+        toolTip += QString("\nNeue Version verfuegbar: %1").arg(m_latestReleaseVersion);
+    }
+    m_trayIcon->setToolTip(toolTip);
+
+    if (m_openReleasePageAction != nullptr) {
+        m_openReleasePageAction->setText(
+            m_latestReleaseVersion.trimmed().isEmpty()
+                ? "Release-Seite oeffnen"
+                : QString("Release-Seite oeffnen (%1)").arg(m_latestReleaseVersion)
+        );
+    }
+}
+
+void MainWindow::openLatestReleasePage()
+{
+    const QString releaseUrl = m_latestReleaseUrl.trimmed().isEmpty()
+        ? services::UpdateChecker::releasesPageUrl()
+        : m_latestReleaseUrl.trimmed();
+
+    QDesktopServices::openUrl(QUrl(releaseUrl));
+}
+
+void MainWindow::showOrRaiseWindow()
+{
+    showNormal();
+    raise();
+    activateWindow();
+}
+
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    if (!m_forceQuitRequested && m_trayIcon != nullptr && m_trayIcon->isVisible()) {
+        event->ignore();
+        hideToBackground();
+        return;
+    }
+
+    if (m_trayIcon != nullptr) {
+        m_trayIcon->hide();
+    }
+    if (m_schedulePollTimer != nullptr) {
+        m_schedulePollTimer->stop();
+    }
+    if (m_updateCheckTimer != nullptr) {
+        m_updateCheckTimer->stop();
+    }
+    if (m_trayBlinkTimer != nullptr) {
+        m_trayBlinkTimer->stop();
+    }
+
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::pollDueSchedules()
@@ -520,16 +853,62 @@ void MainWindow::executeSchedule(
     runContext.variables.insert("schedule_trigger_expression", schedule.triggerExpression);
     runContext.variables.insert("schedule_origin", originLabel);
 
-    const PreparedMemoryContext memoryContext = prepareMemoryContext(m_memoryService, project->id);
+    const services::PreparedMemoryContext memoryContext = prepareMemoryContext(m_memoryService, project->id);
     runContext.memorySnippets = memoryContext.snippets;
     runContext.memoryEntryCount = memoryContext.totalEntries;
     runContext.directMemoryEntryCount = memoryContext.directEntries;
     runContext.compressedMemoryEntryCount = memoryContext.compressedEntries;
+    runContext.pinnedMemoryEntryCount = memoryContext.pinnedEntries;
+    runContext.totalPinnedMemoryEntryCount = memoryContext.totalPinnedEntries;
     runContext.variables.insert("project_memory", runContext.memorySnippets.join("\n"));
     runContext.variables.insert("project_memory_count", QString::number(runContext.memoryEntryCount));
     runContext.variables.insert("project_memory_snippet_count", QString::number(runContext.memorySnippets.size()));
     runContext.variables.insert("project_memory_direct_count", QString::number(runContext.directMemoryEntryCount));
     runContext.variables.insert("project_memory_compressed_count", QString::number(runContext.compressedMemoryEntryCount));
+    runContext.variables.insert("project_memory_pinned_count", QString::number(runContext.pinnedMemoryEntryCount));
+    runContext.variables.insert("project_memory_total_pinned_count", QString::number(runContext.totalPinnedMemoryEntryCount));
+
+    QString secretLoadError;
+    const QHash<QString, QString> projectSecrets = m_secretsService.loadSecretsForProject(project->id, &secretLoadError);
+    if (!secretLoadError.isEmpty()) {
+        if (m_runLogPanel != nullptr) {
+            m_runLogPanel->appendLogLine(
+                QString("[schedule:%1] Projekt-Secrets konnten nicht geladen werden: %2")
+                    .arg(schedule.id)
+                    .arg(secretLoadError)
+            );
+        }
+        return;
+    }
+
+    for (auto it = projectSecrets.constBegin(); it != projectSecrets.constEnd(); ++it) {
+        runContext.variables.insert(QString("secret.%1").arg(it.key()), it.value());
+    }
+    runContext.variables.insert("project_secret_count", QString::number(projectSecrets.size()));
+
+    RiskApprovalOptions riskApprovalOptions;
+    riskApprovalOptions.dialogParent = this;
+    riskApprovalOptions.unattended = advanceScheduleAfterRun;
+    riskApprovalOptions.executionLabel = advanceScheduleAfterRun
+        ? "Automatischer Zeitplan"
+        : "Manueller Zeitplan";
+    const RiskApprovalDecision riskApproval = evaluateRiskyToolExecution(
+        *project,
+        workflow,
+        riskApprovalOptions
+    );
+    if (!riskApproval.allowed) {
+        if (m_runLogPanel != nullptr) {
+            m_runLogPanel->appendLogLine(
+                QString("[schedule:%1] %2").arg(schedule.id).arg(riskApproval.message)
+            );
+        }
+        return;
+    }
+
+    runContext.allowShellRun = riskApproval.allowShellRun;
+    runContext.allowFileEditDiff = riskApproval.allowFileEditDiff;
+    runContext.allowHttpRequest = riskApproval.allowHttpRequest;
 
     domain::Run persistedRun;
     persistedRun.projectId = project->id;
@@ -551,10 +930,11 @@ void MainWindow::executeSchedule(
         .arg(runContext.selectedModel)
         .arg(
             runContext.compressedMemoryEntryCount > 0
-                ? QString("%1 (%2 direkt, %3 komprimiert)")
+                ? QString("%1 (%2 direkt, %3 komprimiert, %4 angepinnt)")
                       .arg(runContext.memoryEntryCount)
                       .arg(runContext.directMemoryEntryCount)
                       .arg(runContext.compressedMemoryEntryCount)
+                      .arg(runContext.totalPinnedMemoryEntryCount)
                 : QString::number(runContext.memoryEntryCount)
         );
     QString runPersistenceError;

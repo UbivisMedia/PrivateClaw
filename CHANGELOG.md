@@ -12,7 +12,28 @@ Unterstuetzte Ueberschriften sind zum Beispiel:
 
 Wenn kein passender Abschnitt gefunden wird, faellt der Workflow automatisch auf GitHubs generierte Release-Notes zurueck.
 
-## [Unreleased]
+## [unreleased]
+
+### Added
+
+- System-Tray mit GitHub-Update-Check, blinkendem Update-Hinweis und Direktsprung zur Release-Seite per Doppelklick
+- Template-Bibliothek im Workflow-Editor mit importierbaren Vorlagen fuer Status, Ingest, Memory-Pflege, Zeitplaene und ComfyUI
+- Verschluesselte Projekt-Secrets mit Nutzung ueber `{{secret.name}}` in Workflow-Prompts und Tool-Konfigurationen
+
+### Changed
+
+- Die Entwicklungs-Version der App ist jetzt als `0.1.1.1` im Programm hinterlegt und wird fuer Update-Vergleiche gegen GitHub-Releases verwendet
+- Beim Schliessen laeuft `PrivateClaw` bei verfuegbarem System-Tray jetzt im Hintergrund weiter, damit Zeitplaene aktiv bleiben
+- Projekt-Memory priorisiert jetzt angepinnte Eintraege und verdichtet Restkontext fuer Workflow-Runs automatisch
+- Projekte haben jetzt Sicherheitsrichtlinien fuer `shell.run`, `file.edit_diff` und `http.request`, inklusive optionaler Freigabe fuer unbeaufsichtigte Zeitplaene
+- Neue Workflows fragen jetzt zwischen leerem Start und Template-Auswahl, und die Template-Bibliothek laesst sich platzsparend ein- und ausklappen
+
+### Fixed
+
+- Der rechte Projekt-Editor ist jetzt scrollbar, damit Sicherheitsrichtlinien und Secret-Verwaltung nicht mehr mit der Projektansicht ueberlappen
+- Das Beenden ueber das Tray-Menue faehrt Fenster, Tray und Hintergrund-Timer jetzt sauberer herunter, damit keine haengenden Instanzen zurueckbleiben
+
+## [v0.1.1] - 2026-03-24
 
 ### Added
 
