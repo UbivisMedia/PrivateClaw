@@ -107,6 +107,27 @@ QString normalizedStepType(QString type)
     return type.trimmed().toLower();
 }
 
+QString effectiveProviderBaseUrl(
+    const domain::Project& project,
+    providers::ProviderManager& providerManager
+)
+{
+    const QString configuredBaseUrl = project.providerBaseUrl.trimmed();
+    if (!configuredBaseUrl.isEmpty()) {
+        return configuredBaseUrl;
+    }
+
+    const QString providerName = project.providerName.trimmed().isEmpty()
+        ? "Ollama"
+        : project.providerName.trimmed();
+    if (providers::ILlmProvider* provider = providerManager.providerByName(providerName);
+        provider != nullptr) {
+        return provider->baseUrl().trimmed();
+    }
+
+    return QString();
+}
+
 void setJsonTextValue(QJsonObject* object, const QString& key, const QString& value)
 {
     if (object == nullptr) {
@@ -851,11 +872,14 @@ void WorkflowPanel::buildUi()
 
     auto* comfyModeLayout = new QFormLayout();
     comfyModeLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolComfyBaseUrlEdit = new QLineEdit(comfyPage);
+    m_toolComfyBaseUrlEdit->setPlaceholderText(m_settingsService.comfyUiBaseUrl());
     m_toolComfyModeCombo = new QComboBox(comfyPage);
     m_toolComfyModeCombo->addItem("Formular (txt2img)", "txt2img");
     m_toolComfyModeCombo->addItem("Formular (img2img)", "img2img");
     m_toolComfyModeCombo->addItem("Formular (Inpainting)", "inpainting");
     m_toolComfyModeCombo->addItem("Rohes Workflow-JSON", "raw_json");
+    comfyModeLayout->addRow("ComfyUI-URL", m_toolComfyBaseUrlEdit);
     comfyModeLayout->addRow("Bearbeitungsmodus", m_toolComfyModeCombo);
 
     m_toolComfyModeStack = new QStackedWidget(comfyPage);
@@ -1435,6 +1459,17 @@ void WorkflowPanel::buildUi()
     connect(m_toolComfyRefreshButton, &QPushButton::clicked, this, [this]() {
         refreshComfyMetadata(true);
     });
+    connect(m_toolComfyBaseUrlEdit, &QLineEdit::textEdited, this, [this]() {
+        m_comfyMetadataLoaded = false;
+        m_comfyCatalogBaseUrl.clear();
+        if (m_toolComfyStatusLabel != nullptr) {
+            m_toolComfyStatusLabel->setStyleSheet("color: #5f5548;");
+            m_toolComfyStatusLabel->setText(
+                QString("ComfyUI-URL angepasst: %1").arg(currentComfyUiBaseUrl())
+            );
+        }
+        scheduleVisualStepApply();
+    });
     connect(m_toolComfyModeCombo, &QComboBox::currentTextChanged, this, [this]() {
         updateVisualToolConfigPage();
         scheduleVisualStepApply();
@@ -1689,19 +1724,19 @@ void WorkflowPanel::executeWorkflow()
     const QString providerName = project->providerName.trimmed().isEmpty()
         ? "Ollama"
         : project->providerName.trimmed();
-    auto* provider = m_providerManager.providerByName(providerName);
-    if (provider == nullptr) {
+    providers::ILlmProvider* registeredProvider = m_providerManager.providerByName(providerName);
+    if (registeredProvider == nullptr) {
         m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
         m_feedbackLabel->setText(QString("Provider '%1' ist nicht registriert.").arg(providerName));
         publishExecutionLog(QString("[ui] Provider '%1' ist nicht registriert.").arg(providerName));
         return;
     }
 
-    const QString providerBaseUrl = provider->baseUrl();
+    const QString providerBaseUrl = effectiveProviderBaseUrl(*project, m_providerManager);
     if (providerBaseUrl.trimmed().isEmpty()) {
         m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
-        m_feedbackLabel->setText(QString("Provider-URL fuer '%1' ist nicht konfiguriert.").arg(provider->name()));
-        publishExecutionLog(QString("[ui] Provider-URL fuer '%1' ist nicht konfiguriert.").arg(provider->name()));
+        m_feedbackLabel->setText(QString("Provider-URL fuer '%1' ist nicht konfiguriert.").arg(providerName));
+        publishExecutionLog(QString("[ui] Provider-URL fuer '%1' ist nicht konfiguriert.").arg(providerName));
         return;
     }
 
@@ -1735,6 +1770,7 @@ void WorkflowPanel::executeWorkflow()
     runContext.variables.insert("workflow_name", workflow.name);
     runContext.variables.insert("workspace_root", m_settingsService.workspaceRoot());
     runContext.variables.insert("comfyui_base_url", m_settingsService.comfyUiBaseUrl());
+    runContext.variables.insert("provider_base_url", providerBaseUrl);
 
     const QList<domain::MemoryEntry> memoryEntries = m_memoryService.recentEntries(project->id, 6);
     for (const domain::MemoryEntry& entry : memoryEntries) {
@@ -1762,7 +1798,7 @@ void WorkflowPanel::executeWorkflow()
         QString("[run:%1] Workflow '%2' wurde im Hintergrund ueber Provider '%3' gestartet.")
             .arg(runId)
             .arg(workflow.name)
-            .arg(provider->name())
+            .arg(registeredProvider->name())
     );
     publishExecutionLog(
         QString("[run:%1] %2 Memory-Eintraege als Projektkontext geladen.")
@@ -2111,6 +2147,7 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
         const QSignalBlocker toolShellTimeoutBlocker(m_toolShellTimeoutSpin);
         const QSignalBlocker toolShellMaxOutputCharsBlocker(m_toolShellMaxOutputCharsSpin);
         const QSignalBlocker toolShellIncludeStderrBlocker(m_toolShellIncludeStderrCheckBox);
+        const QSignalBlocker toolComfyBaseUrlBlocker(m_toolComfyBaseUrlEdit);
         const QSignalBlocker toolComfyModeBlocker(m_toolComfyModeCombo);
         const QSignalBlocker toolComfyCheckpointBlocker(m_toolComfyCheckpointCombo);
         const QSignalBlocker toolComfyVaeBlocker(m_toolComfyVaeCombo);
@@ -2422,8 +2459,15 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
         } else {
             m_toolComfyWorkflowEdit->setPlainText(config.value("workflow_json").toString());
         }
-        const QString comfyMode = config.value("builder_mode").toString().trimmed().toLower() == "txt2img"
-            ? "txt2img"
+        const QString configuredComfyBaseUrl = config.value("base_url").toString().trimmed();
+        m_toolComfyBaseUrlEdit->setText(
+            configuredComfyBaseUrl.isEmpty() ? m_settingsService.comfyUiBaseUrl() : configuredComfyBaseUrl
+        );
+        const QString configuredComfyMode = config.value("builder_mode").toString().trimmed().toLower();
+        const QString comfyMode = configuredComfyMode == "txt2img"
+                || configuredComfyMode == "img2img"
+                || configuredComfyMode == "inpainting"
+            ? configuredComfyMode
             : (config.value("workflow").isObject() || !config.value("workflow_json").toString().trimmed().isEmpty()
                 ? "raw_json"
                 : "txt2img");
@@ -2630,6 +2674,7 @@ void WorkflowPanel::clearVisualStepEditor()
         m_toolShellTimeoutSpin->setValue(60000);
         m_toolShellMaxOutputCharsSpin->setValue(20000);
         m_toolShellIncludeStderrCheckBox->setChecked(true);
+        m_toolComfyBaseUrlEdit->setText(m_settingsService.comfyUiBaseUrl());
         m_toolComfyModeCombo->setCurrentIndex(0);
         m_toolComfyCheckpointCombo->clearEditText();
         m_toolComfyVaeCombo->clearEditText();
@@ -2828,7 +2873,10 @@ void WorkflowPanel::updateVisualToolConfigPage()
     if (m_toolComfyRefreshButton != nullptr) {
         m_toolComfyRefreshButton->setEnabled(!m_comfyMetadataLoading);
     }
-    if (isComfyTool && !m_comfyMetadataLoaded && !m_comfyMetadataLoading) {
+    if (isComfyTool
+        && !m_comfyMetadataLoading
+        && (!m_comfyMetadataLoaded
+            || m_comfyCatalogBaseUrl.compare(currentComfyUiBaseUrl(), Qt::CaseInsensitive) != 0)) {
         refreshComfyMetadata(false);
     }
     if (toolName == "json.extract") {
@@ -2891,7 +2939,26 @@ void WorkflowPanel::refreshComfyMetadata(const bool forceReload)
     if (m_comfyMetadataLoading) {
         return;
     }
-    if (m_comfyMetadataLoaded && !forceReload) {
+
+    const QString baseUrl = currentComfyUiBaseUrl();
+    if (baseUrl.trimmed().isEmpty()) {
+        m_comfyMetadataLoaded = false;
+        m_comfyCatalogBaseUrl.clear();
+        if (m_toolComfyStatusLabel != nullptr) {
+            m_toolComfyStatusLabel->setStyleSheet("color: #8b5e2f;");
+            m_toolComfyStatusLabel->setText(
+                "ComfyUI-URL ist leer. Bitte im Tool eine URL eintragen oder den Standard verwenden."
+            );
+        }
+        if (m_toolComfyRefreshButton != nullptr) {
+            m_toolComfyRefreshButton->setEnabled(true);
+        }
+        return;
+    }
+
+    if (m_comfyMetadataLoaded
+        && m_comfyCatalogBaseUrl.compare(baseUrl, Qt::CaseInsensitive) == 0
+        && !forceReload) {
         applyComfyCatalogToUi();
         return;
     }
@@ -2902,26 +2969,25 @@ void WorkflowPanel::refreshComfyMetadata(const bool forceReload)
     }
     if (m_toolComfyStatusLabel != nullptr) {
         m_toolComfyStatusLabel->setStyleSheet("color: #5f5548;");
-        m_toolComfyStatusLabel->setText("ComfyUI-Daten werden geladen...");
+        m_toolComfyStatusLabel->setText(QString("ComfyUI-Daten werden geladen: %1").arg(baseUrl));
     }
-
-    const QString baseUrl = m_settingsService.comfyUiBaseUrl();
     auto* watcher = new QFutureWatcher<services::ComfyUiCatalog>(this);
     connect(
         watcher,
         &QFutureWatcher<services::ComfyUiCatalog>::finished,
         this,
-        [this, watcher]() {
+        [this, watcher, baseUrl]() {
             m_comfyMetadataLoading = false;
             m_comfyCatalog = watcher->result();
             m_comfyMetadataLoaded = m_comfyCatalog.success;
+            m_comfyCatalogBaseUrl = m_comfyCatalog.success ? baseUrl : QString();
             if (m_comfyCatalog.success) {
                 applyComfyCatalogToUi();
             } else if (m_toolComfyStatusLabel != nullptr) {
                 m_toolComfyStatusLabel->setStyleSheet("color: #8b2f2f;");
                 m_toolComfyStatusLabel->setText(
-                    QString("ComfyUI-Daten konnten nicht geladen werden: %1")
-                        .arg(m_comfyCatalog.errorMessage)
+                    QString("ComfyUI-Daten von %1 konnten nicht geladen werden: %2")
+                        .arg(baseUrl, m_comfyCatalog.errorMessage)
                 );
             }
             if (m_toolComfyRefreshButton != nullptr) {
@@ -2992,7 +3058,8 @@ void WorkflowPanel::applyComfyCatalogToUi()
     if (m_toolComfyStatusLabel != nullptr) {
         m_toolComfyStatusLabel->setStyleSheet("color: #2f6b3a;");
         m_toolComfyStatusLabel->setText(
-            QString("ComfyUI-Daten geladen: %1 Checkpoints, %2 LoRAs, %3 Input-Bilder.")
+            QString("ComfyUI-Daten geladen von %1: %2 Checkpoints, %3 LoRAs, %4 Input-Bilder.")
+                .arg(currentComfyUiBaseUrl())
                 .arg(m_comfyCatalog.checkpoints.size())
                 .arg(m_comfyCatalog.loras.size())
                 .arg(m_comfyCatalog.inputImages.size())
@@ -3144,6 +3211,7 @@ void WorkflowPanel::applyVisualStepChanges()
                 "clip_skip",
                 "filename_prefix",
                 "loras",
+                "base_url",
                 "workflow",
                 "workflow_json",
                 "save_outputs_to",
@@ -3201,6 +3269,7 @@ void WorkflowPanel::applyVisualStepChanges()
                 "clip_skip",
                 "filename_prefix",
                 "loras",
+                "base_url",
                 "workflow",
                 "workflow_json",
                 "save_outputs_to",
@@ -3266,6 +3335,7 @@ void WorkflowPanel::applyVisualStepChanges()
                 "clip_skip",
                 "filename_prefix",
                 "loras",
+                "base_url",
                 "workflow",
                 "workflow_json",
                 "save_outputs_to",
@@ -3799,6 +3869,13 @@ void WorkflowPanel::applyVisualStepChanges()
                     "headers_json"
                 }
             );
+            const QString comfyBaseUrl = m_toolComfyBaseUrlEdit->text().trimmed();
+            if (comfyBaseUrl.isEmpty()
+                || comfyBaseUrl.compare(m_settingsService.comfyUiBaseUrl().trimmed(), Qt::CaseInsensitive) == 0) {
+                config.remove("base_url");
+            } else {
+                setJsonTextValue(&config, "base_url", comfyBaseUrl);
+            }
             const QString comfyMode = m_toolComfyModeCombo->currentData().toString().trimmed();
             setJsonTextValue(&config, "builder_mode", comfyMode);
             if (comfyMode == "raw_json") {
@@ -3978,6 +4055,10 @@ void WorkflowPanel::applyVisualStepChanges()
                 "width",
                 "height",
                 "batch_size",
+                "input_image",
+                "mask_image",
+                "mask_channel",
+                "mask_grow_by",
                 "steps",
                 "seed",
                 "randomize_seed",
@@ -3988,6 +4069,7 @@ void WorkflowPanel::applyVisualStepChanges()
                 "clip_skip",
                 "filename_prefix",
                 "loras",
+                "base_url",
                 "workflow",
                 "workflow_json",
                 "save_outputs_to",
@@ -4205,6 +4287,16 @@ const domain::Project* WorkflowPanel::currentProject() const
     }
 
     return nullptr;
+}
+
+QString WorkflowPanel::currentComfyUiBaseUrl() const
+{
+    if (m_toolComfyBaseUrlEdit == nullptr) {
+        return m_settingsService.comfyUiBaseUrl().trimmed();
+    }
+
+    const QString configuredBaseUrl = m_toolComfyBaseUrlEdit->text().trimmed();
+    return configuredBaseUrl.isEmpty() ? m_settingsService.comfyUiBaseUrl().trimmed() : configuredBaseUrl;
 }
 
 QString WorkflowPanel::projectNameForId(const qint64 projectId) const

@@ -333,8 +333,8 @@ void MainWindow::executeSchedule(
     const QString providerName = project->providerName.trimmed().isEmpty()
         ? "Ollama"
         : project->providerName.trimmed();
-    auto* provider = m_providerManager.providerByName(providerName);
-    if (provider == nullptr) {
+    providers::ILlmProvider* registeredProvider = m_providerManager.providerByName(providerName);
+    if (registeredProvider == nullptr) {
         if (m_runLogPanel != nullptr) {
             m_runLogPanel->appendLogLine(
                 QString("[schedule:%1] Provider '%2' ist nicht registriert.")
@@ -345,13 +345,16 @@ void MainWindow::executeSchedule(
         return;
     }
 
-    const QString providerBaseUrl = provider->baseUrl();
+    QString providerBaseUrl = project->providerBaseUrl.trimmed();
+    if (providerBaseUrl.isEmpty()) {
+        providerBaseUrl = registeredProvider->baseUrl().trimmed();
+    }
     if (providerBaseUrl.trimmed().isEmpty()) {
         if (m_runLogPanel != nullptr) {
             m_runLogPanel->appendLogLine(
                 QString("[schedule:%1] Provider-URL fuer '%2' ist leer.")
                     .arg(schedule.id)
-                    .arg(provider->name())
+                    .arg(providerName)
             );
         }
         return;
@@ -371,6 +374,7 @@ void MainWindow::executeSchedule(
     runContext.variables.insert("workflow_name", workflow.name);
     runContext.variables.insert("workspace_root", m_settingsService.workspaceRoot());
     runContext.variables.insert("comfyui_base_url", m_settingsService.comfyUiBaseUrl());
+    runContext.variables.insert("provider_base_url", providerBaseUrl);
     runContext.variables.insert("schedule_id", QString::number(schedule.id));
     runContext.variables.insert("schedule_trigger_type", schedule.triggerType);
     runContext.variables.insert("schedule_trigger_expression", schedule.triggerExpression);

@@ -1,6 +1,8 @@
 #include "ui/ProjectPanel.h"
 
 #include "providers/ILlmProvider.h"
+#include "providers/LmStudioProvider.h"
+#include "providers/OllamaProvider.h"
 #include "providers/ProviderManager.h"
 #include "services/ProjectService.h"
 
@@ -137,6 +139,9 @@ void ProjectPanel::buildUi()
 
     m_providerCombo = new QComboBox(formCard);
 
+    m_providerBaseUrlEdit = new QLineEdit(formCard);
+    m_providerBaseUrlEdit->setPlaceholderText("http://127.0.0.1:11434");
+
     m_modelCombo = new QComboBox(formCard);
     m_modelCombo->setEditable(true);
     m_modelCombo->setInsertPolicy(QComboBox::NoInsert);
@@ -152,6 +157,7 @@ void ProjectPanel::buildUi()
 
     formLayout->addRow("Name", m_nameEdit);
     formLayout->addRow("Provider", m_providerCombo);
+    formLayout->addRow("Provider-URL", m_providerBaseUrlEdit);
     formLayout->addRow("Standardmodell", m_modelCombo);
     formLayout->addRow("Beschreibung", m_descriptionEdit);
     formLayout->addRow("Systemprompt", m_systemPromptEdit);
@@ -207,6 +213,24 @@ void ProjectPanel::buildUi()
     });
 
     connect(m_providerCombo, &QComboBox::currentTextChanged, this, [this]() {
+        const QString previousProviderName = m_lastProviderName.trimmed();
+        const QString currentProviderNameValue = currentProviderName();
+        const QString previousDefaultBaseUrl = defaultBaseUrlForProvider(previousProviderName);
+        const QString currentBaseUrl = m_providerBaseUrlEdit != nullptr
+            ? m_providerBaseUrlEdit->text().trimmed()
+            : QString();
+
+        if (m_providerBaseUrlEdit != nullptr
+            && (currentBaseUrl.isEmpty()
+                || (!previousDefaultBaseUrl.isEmpty() && currentBaseUrl == previousDefaultBaseUrl))) {
+            m_providerBaseUrlEdit->setText(defaultBaseUrlForProvider(currentProviderNameValue));
+        }
+
+        m_lastProviderName = currentProviderNameValue;
+        updateSelectedProviderUi();
+    });
+
+    connect(m_providerBaseUrlEdit, &QLineEdit::textChanged, this, [this]() {
         updateSelectedProviderUi();
     });
 
@@ -285,11 +309,12 @@ void ProjectPanel::populateProviderChoices(const QString& providerToSelect)
 
 void ProjectPanel::refreshModelList()
 {
-    auto* provider = currentProvider();
+    const QString providerName = currentProviderName();
+    std::unique_ptr<providers::ILlmProvider> provider = buildProvider(providerName, currentProviderBaseUrl());
     if (provider == nullptr) {
         m_providerStatusLabel->setStyleSheet("color: #8b2f2f;");
         m_providerStatusLabel->setText(
-            QString("Status: Provider '%1' ist nicht registriert.").arg(currentProviderName())
+            QString("Status: Provider '%1' ist nicht registriert.").arg(providerName)
         );
         return;
     }
@@ -340,6 +365,13 @@ void ProjectPanel::loadProjectFromRow(const int row)
     m_formTitleLabel->setText("Projekt bearbeiten");
     m_nameEdit->setText(project.name);
     populateProviderChoices(project.providerName);
+    const QString providerBaseUrl = project.providerBaseUrl.trimmed().isEmpty()
+        ? defaultBaseUrlForProvider(project.providerName)
+        : project.providerBaseUrl.trimmed();
+    if (m_providerBaseUrlEdit != nullptr) {
+        m_providerBaseUrlEdit->setText(providerBaseUrl);
+    }
+    m_lastProviderName = currentProviderName();
     updateSelectedProviderUi();
     m_modelCombo->setEditText(project.defaultModel);
     m_descriptionEdit->setPlainText(project.description);
@@ -352,6 +384,7 @@ void ProjectPanel::saveProject()
     project.id = m_currentProjectId;
     project.name = m_nameEdit->text();
     project.providerName = currentProviderName();
+    project.providerBaseUrl = currentProviderBaseUrl();
     project.defaultModel = m_modelCombo->currentText();
     project.description = m_descriptionEdit->toPlainText();
     project.systemPrompt = m_systemPromptEdit->toPlainText();
@@ -425,11 +458,12 @@ void ProjectPanel::deleteProject()
 
 void ProjectPanel::testSelectedProviderConnection()
 {
-    auto* provider = currentProvider();
+    const QString providerName = currentProviderName();
+    std::unique_ptr<providers::ILlmProvider> provider = buildProvider(providerName, currentProviderBaseUrl());
     if (provider == nullptr) {
         m_providerStatusLabel->setStyleSheet("color: #8b2f2f;");
         m_providerStatusLabel->setText(
-            QString("Status: Provider '%1' ist nicht registriert.").arg(currentProviderName())
+            QString("Status: Provider '%1' ist nicht registriert.").arg(providerName)
         );
         return;
     }
@@ -457,8 +491,9 @@ void ProjectPanel::testSelectedProviderConnection()
 
 void ProjectPanel::updateSelectedProviderUi(const bool resetStatusMessage)
 {
-    auto* provider = currentProvider();
     const QString providerName = currentProviderName().trimmed();
+    const QString providerBaseUrl = currentProviderBaseUrl();
+    std::unique_ptr<providers::ILlmProvider> provider = buildProvider(providerName, providerBaseUrl);
 
     if (provider == nullptr) {
         m_providerEndpointLabel->setText(
@@ -471,8 +506,11 @@ void ProjectPanel::updateSelectedProviderUi(const bool resetStatusMessage)
         return;
     }
 
-    const QString endpoint = provider->baseUrl().trimmed().isEmpty() ? "nicht konfiguriert" : provider->baseUrl().trimmed();
+    const QString endpoint = providerBaseUrl.trimmed().isEmpty() ? "nicht konfiguriert" : providerBaseUrl.trimmed();
     m_providerEndpointLabel->setText(QString("Endpoint (%1): %2").arg(provider->name(), endpoint));
+    if (m_providerBaseUrlEdit != nullptr) {
+        m_providerBaseUrlEdit->setPlaceholderText(defaultBaseUrlForProvider(provider->name()));
+    }
     m_modelCombo->setPlaceholderText(QString("%1-Modell auswaehlen oder eintragen").arg(provider->name()));
 
     const QString currentModel = m_modelCombo->currentText();
@@ -502,14 +540,45 @@ void ProjectPanel::updateSelectedProviderUi(const bool resetStatusMessage)
     );
 }
 
-providers::ILlmProvider* ProjectPanel::currentProvider() const
-{
-    return m_providerManager.providerByName(currentProviderName());
-}
-
 QString ProjectPanel::currentProviderName() const
 {
     return m_providerCombo != nullptr ? m_providerCombo->currentText().trimmed() : QString();
+}
+
+QString ProjectPanel::currentProviderBaseUrl() const
+{
+    const QString providerName = currentProviderName();
+    const QString baseUrl = m_providerBaseUrlEdit != nullptr ? m_providerBaseUrlEdit->text().trimmed() : QString();
+    return baseUrl.isEmpty() ? defaultBaseUrlForProvider(providerName) : baseUrl;
+}
+
+QString ProjectPanel::defaultBaseUrlForProvider(const QString& providerName) const
+{
+    if (providerName.trimmed().isEmpty()) {
+        return QString();
+    }
+
+    if (providers::ILlmProvider* provider = m_providerManager.providerByName(providerName.trimmed()); provider != nullptr) {
+        return provider->baseUrl().trimmed();
+    }
+
+    return QString();
+}
+
+std::unique_ptr<providers::ILlmProvider> ProjectPanel::buildProvider(
+    const QString& providerName,
+    const QString& baseUrl
+) const
+{
+    if (providerName.compare("Ollama", Qt::CaseInsensitive) == 0) {
+        return std::make_unique<providers::OllamaProvider>(baseUrl);
+    }
+
+    if (providerName.compare("LM Studio", Qt::CaseInsensitive) == 0) {
+        return std::make_unique<providers::LmStudioProvider>(baseUrl);
+    }
+
+    return nullptr;
 }
 
 void ProjectPanel::clearForm()
@@ -522,6 +591,10 @@ void ProjectPanel::clearForm()
     m_formTitleLabel->setText("Neues Projekt anlegen");
     m_nameEdit->clear();
     populateProviderChoices("Ollama");
+    if (m_providerBaseUrlEdit != nullptr) {
+        m_providerBaseUrlEdit->setText(defaultBaseUrlForProvider("Ollama"));
+    }
+    m_lastProviderName = "Ollama";
     m_modelCombo->setCurrentIndex(-1);
     m_modelCombo->setEditText(QString());
     m_descriptionEdit->clear();

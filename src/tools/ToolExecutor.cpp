@@ -3116,7 +3116,10 @@ ToolExecutionResult ToolExecutor::executeShellRun(const QJsonObject& config) con
 ToolExecutionResult ToolExecutor::executeComfyUiWorkflow(const QJsonObject& config) const
 {
     ToolExecutionResult result;
-    if (m_comfyUiBaseUrl.trimmed().isEmpty()) {
+    const QString comfyUiBaseUrl = configString(config, "base_url").isEmpty()
+        ? m_comfyUiBaseUrl.trimmed()
+        : configString(config, "base_url");
+    if (comfyUiBaseUrl.trimmed().isEmpty()) {
         result.errorMessage = "Keine ComfyUI-URL konfiguriert.";
         return result;
     }
@@ -3132,7 +3135,7 @@ ToolExecutionResult ToolExecutor::executeComfyUiWorkflow(const QJsonObject& conf
         workflowObject = buildComfyGeneratedImageWorkflow(
             config,
             m_workspaceRoot,
-            m_comfyUiBaseUrl,
+            comfyUiBaseUrl,
             &buildError,
             &result.logs
         );
@@ -3184,7 +3187,7 @@ ToolExecutionResult ToolExecutor::executeComfyUiWorkflow(const QJsonObject& conf
     }
 
     QNetworkAccessManager networkManager;
-    QNetworkRequest submitRequest(buildEndpoint(m_comfyUiBaseUrl, "/prompt"));
+    QNetworkRequest submitRequest(buildEndpoint(comfyUiBaseUrl, "/prompt"));
     submitRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
     const int submitTimeoutMs = qMax(1000, configInt(config, "submit_timeout_ms", 15000));
@@ -3228,7 +3231,7 @@ ToolExecutionResult ToolExecutor::executeComfyUiWorkflow(const QJsonObject& conf
         }
 
         const NetworkCallResult historyResult = waitForReply(
-            networkManager.get(QNetworkRequest(buildEndpoint(m_comfyUiBaseUrl, QString("/history/%1").arg(promptId)))),
+            networkManager.get(QNetworkRequest(buildEndpoint(comfyUiBaseUrl, QString("/history/%1").arg(promptId)))),
             10000
         );
         if (historyResult.success) {
@@ -3264,7 +3267,7 @@ ToolExecutionResult ToolExecutor::executeComfyUiWorkflow(const QJsonObject& conf
             const QJsonArray images = it.value().toObject().value("images").toArray();
             for (const QJsonValue& imageValue : images) {
                 const QJsonObject imageObject = imageValue.toObject();
-                QUrl viewUrl = buildEndpoint(m_comfyUiBaseUrl, "/view");
+                QUrl viewUrl = buildEndpoint(comfyUiBaseUrl, "/view");
                 QUrlQuery query;
                 query.addQueryItem("filename", imageObject.value("filename").toString());
                 query.addQueryItem("subfolder", imageObject.value("subfolder").toString());
@@ -3322,6 +3325,7 @@ ToolExecutionResult ToolExecutor::executeComfyUiWorkflow(const QJsonObject& conf
 
     QJsonObject summary{
         { "tool", "comfyui.workflow" },
+        { "base_url", comfyUiBaseUrl },
         { "prompt_id", promptId },
         { "client_id", clientId },
         { "saved_files", QJsonArray::fromStringList(savedFiles) },

@@ -121,6 +121,14 @@ Weiterfuehrende Dokumentation liegt im Repository:
 - [Zeitplaene](./docs/wiki/Zeitplaene.md)
 - [Beispiel-Workflows](./docs/examples/README.md)
 
+## GitHub Wiki Sync
+
+Die Dateien unter `docs/wiki` sind die pflegbare Quelle fuer die GitHub-Wiki.
+Der Workflow [wiki-sync.yml](./.github/workflows/wiki-sync.yml) spiegelt sie automatisch nach `PrivateClaw.wiki.git`.
+
+Fuer den Push in das Wiki-Repository wird ein Repository-Secret `WIKI_PUSH_TOKEN` erwartet.
+Das Token braucht Schreibrechte fuer das Wiki-Repository von `UbivisMedia/PrivateClaw`.
+
 ## Aktuelle Hinweise
 
 - Zeitplaene laufen derzeit nur, solange die App geoeffnet ist.

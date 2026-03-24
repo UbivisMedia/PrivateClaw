@@ -94,6 +94,7 @@ private:
     int indexOfProject(qint64 projectId) const;
     qint64 currentProjectId() const;
     const domain::Project* currentProject() const;
+    QString currentComfyUiBaseUrl() const;
     QString projectNameForId(qint64 projectId) const;
     QString formatWorkflowLabel(const domain::Workflow& workflow) const;
     void publishExecutionLog(const QString& text) const;
@@ -117,6 +118,7 @@ private:
     bool m_visualEditorHasValidJson = false;
     bool m_comfyMetadataLoaded = false;
     bool m_comfyMetadataLoading = false;
+    QString m_comfyCatalogBaseUrl;
     QJsonObject m_visualDefinitionRoot;
     services::ComfyUiCatalog m_comfyCatalog;
 
@@ -232,6 +234,7 @@ private:
     QCheckBox* m_toolShellIncludeStderrCheckBox = nullptr;
     QPushButton* m_toolComfyRefreshButton = nullptr;
     QLabel* m_toolComfyStatusLabel = nullptr;
+    QLineEdit* m_toolComfyBaseUrlEdit = nullptr;
     QComboBox* m_toolComfyModeCombo = nullptr;
     QStackedWidget* m_toolComfyModeStack = nullptr;
     QComboBox* m_toolComfyCheckpointCombo = nullptr;

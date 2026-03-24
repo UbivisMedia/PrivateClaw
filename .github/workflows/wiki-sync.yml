@@ -1,0 +1,73 @@
+name: Sync GitHub Wiki
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "docs/wiki/**"
+      - "docs/examples/**"
+      - "scripts/sync-wiki.ps1"
+      - ".github/workflows/wiki-sync.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: false
+
+env:
+  WIKI_REPOSITORY_URL: https://github.com/UbivisMedia/PrivateClaw.wiki.git
+
+jobs:
+  sync-wiki:
+    name: Sync repository docs to GitHub wiki
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Ensure wiki token is configured
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.WIKI_PUSH_TOKEN }}" ]; then
+            echo "::error::Missing repository secret WIKI_PUSH_TOKEN. Create a token with access to the PrivateClaw wiki repository."
+            exit 1
+          fi
+
+      - name: Clone wiki repository
+        shell: pwsh
+        run: |
+          git clone "https://x-access-token:${{ secrets.WIKI_PUSH_TOKEN }}@github.com/UbivisMedia/PrivateClaw.wiki.git" wiki-out
+
+      - name: Sync wiki content
+        shell: pwsh
+        run: |
+          ./scripts/sync-wiki.ps1 `
+            -SourceWikiDir "docs/wiki" `
+            -SourceExamplesDir "docs/examples" `
+            -TargetWikiDir "wiki-out" `
+            -RepositorySlug "${{ github.repository }}" `
+            -RepositoryRevision "${{ github.sha }}"
+
+      - name: Commit and push wiki changes
+        shell: pwsh
+        run: |
+          Set-Location "wiki-out"
+          $status = git status --porcelain
+          if ([string]::IsNullOrWhiteSpace($status)) {
+            Write-Host "Wiki is already up to date."
+            exit 0
+          }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Sync wiki from $env:GITHUB_REPOSITORY@$env:GITHUB_SHA"
+          git push

@@ -5,6 +5,7 @@
 #include <QWidget>
 
 #include <functional>
+#include <memory>
 
 class QComboBox;
 class QLabel;
@@ -45,8 +46,13 @@ private:
     void deleteProject();
     void testSelectedProviderConnection();
     void updateSelectedProviderUi(bool resetStatusMessage = true);
-    providers::ILlmProvider* currentProvider() const;
     QString currentProviderName() const;
+    QString currentProviderBaseUrl() const;
+    QString defaultBaseUrlForProvider(const QString& providerName) const;
+    std::unique_ptr<providers::ILlmProvider> buildProvider(
+        const QString& providerName,
+        const QString& baseUrl
+    ) const;
     void clearForm();
     int indexOfProject(qint64 projectId) const;
     QString formatProjectLabel(const domain::Project& project) const;
@@ -64,10 +70,12 @@ private:
     QLabel* m_formTitleLabel = nullptr;
     QLineEdit* m_nameEdit = nullptr;
     QComboBox* m_providerCombo = nullptr;
+    QLineEdit* m_providerBaseUrlEdit = nullptr;
     QComboBox* m_modelCombo = nullptr;
     QTextEdit* m_descriptionEdit = nullptr;
     QTextEdit* m_systemPromptEdit = nullptr;
     QLabel* m_feedbackLabel = nullptr;
+    QString m_lastProviderName;
     std::function<void()> m_onProjectDataChanged;
 };
 

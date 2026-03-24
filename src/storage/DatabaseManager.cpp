@@ -121,6 +121,7 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "name TEXT NOT NULL,"
         "provider_name TEXT NOT NULL DEFAULT 'Ollama',"
+        "provider_base_url TEXT NOT NULL DEFAULT '',"
         "description TEXT NOT NULL DEFAULT '',"
         "default_model TEXT NOT NULL DEFAULT '',"
         "system_prompt TEXT NOT NULL DEFAULT '',"
@@ -183,6 +184,16 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
             "projects",
             "provider_name",
             "ALTER TABLE projects ADD COLUMN provider_name TEXT NOT NULL DEFAULT 'Ollama'",
+            errorMessage
+        )) {
+        return false;
+    }
+
+    if (!ensureColumnExists(
+            database(),
+            "projects",
+            "provider_base_url",
+            "ALTER TABLE projects ADD COLUMN provider_base_url TEXT NOT NULL DEFAULT ''",
             errorMessage
         )) {
         return false;
