@@ -16,6 +16,7 @@ Aktuell verfuegbare Tools:
 - `memory.search`
 - `memory.summarize`
 - `memory.delete_old`
+- `variables.set`
 - `memory.ingest_directory`
 - `file.write_text`
 - `file.edit_diff`
@@ -496,6 +497,55 @@ Hohe Relevanz oder die neuesten Eintraege koennen geschuetzt werden.
 }
 ```
 
+## `variables.set`
+
+Legt Laufvariablen fuer den aktuellen Workflow an oder ueberschreibt sie.
+Das ist besonders praktisch fuer Titel, Dateipfade, Labels und Zaehler wie `kapitel_nummer`.
+
+### Wichtige Felder
+
+- `name`
+- `value_type`
+- `operation`
+- `value`
+- `current_value`
+- `amount`
+- `output`
+
+### Werte fuer `value_type`
+
+- `string`
+- `int`
+
+### Werte fuer `operation`
+
+- `set`
+- `increment`
+
+### Hinweise
+
+- Das Tool aktualisiert die benannte Variable direkt im aktuellen Run, nicht nur die `output`-Variable.
+- Integer werden intern weiterhin als Textvariable gespeichert, koennen aber in Decisions numerisch verglichen werden.
+- Fuer Zaehler ist `increment` meist bequemer als ein neuer Prompt oder ein JSON-Hilfsschritt.
+
+### Beispiel
+
+```json
+{
+  "id": "advance_scene_counter",
+  "type": "tool",
+  "config": {
+    "tool": "variables.set",
+    "name": "szenen_nummer",
+    "value_type": "int",
+    "operation": "increment",
+    "current_value": "{{szenen_nummer}}",
+    "amount": 1,
+    "output": "szenen_nummer_status"
+  }
+}
+```
+
 ## `file.write_text`
 
 Schreibt Text direkt in eine Datei.
@@ -758,9 +808,10 @@ Zusaetzlich je nach Modus:
 
 1. `memory.ingest_directory` auf ein Kapitelverzeichnis
 2. `memory.search` fuer Figuren-, Plot- oder Stilnotizen
-3. `prompt` fuer Stilabgleich oder Zusammenfassung
-4. `file.write_text` fuer Exporte oder Kapitelentwuerfe
-5. `save_memory` fuer neue Erkenntnisse
+3. `variables.set` fuer Titel, Kapitel- oder Szenenzaehler
+4. `prompt` fuer Stilabgleich, Szenenentwurf oder Extraktion neuer Figuren
+5. `file.write_text` fuer Exporte oder Kapitelentwuerfe
+6. `save_memory` fuer neue Erkenntnisse, Figuren, Orte oder Ereignisse
 
 ### Memory-Pflege
 
@@ -786,6 +837,7 @@ Zusaetzlich je nach Modus:
 - Nutze `memory.search` vor neuen Prompt-Schritten, wenn projektbezogenes Vorwissen relevant ist.
 - Nutze `memory.summarize` und `memory.delete_old`, um dein Projektgedaechtnis regelmaessig schlank zu halten.
 - Nutze `memory.ingest_directory`, wenn du Projektwissen langfristig aufbauen willst.
+- Nutze `variables.set` fuer lesbare Laufvariablen wie Kapitelzaehler, Statuslabels oder exportierte Dateipfade.
 - Nutze `file.write_text` fuer klar definierte Zielartefakte statt Antworten nur im Run-Log zu lassen.
 - Verwende `file.edit_diff` statt unstrukturierter Dateischreibaktionen.
 - Nutze `http.request` fuer einfache API-Anbindungen, wenn dafuer noch kein spezialisiertes Tool existiert.

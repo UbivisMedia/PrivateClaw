@@ -337,6 +337,23 @@ bool evaluateDecisionOperator(
 
     const QString left = caseSensitive ? inputValue : inputValue.toCaseFolded();
     const QString right = caseSensitive ? comparisonValue : comparisonValue.toCaseFolded();
+    const auto parseNumeric = [&](const QString& text, double* parsedValue) {
+        if (parsedValue == nullptr) {
+            return false;
+        }
+
+        bool ok = false;
+        const double numericValue = text.trimmed().toDouble(&ok);
+        if (!ok) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QString("Decision erwartet fuer '%1' einen numerischen Wert.").arg(operatorName);
+            }
+            return false;
+        }
+
+        *parsedValue = numericValue;
+        return true;
+    };
 
     bool localMatch = false;
     if (normalizedOperator == "equals") {
@@ -367,6 +384,25 @@ bool evaluateDecisionOperator(
             return false;
         }
         localMatch = pattern.match(inputValue).hasMatch();
+    } else if (normalizedOperator == "greater_than"
+        || normalizedOperator == "greater_or_equal"
+        || normalizedOperator == "less_than"
+        || normalizedOperator == "less_or_equal") {
+        double leftNumber = 0.0;
+        double rightNumber = 0.0;
+        if (!parseNumeric(inputValue, &leftNumber) || !parseNumeric(comparisonValue, &rightNumber)) {
+            return false;
+        }
+
+        if (normalizedOperator == "greater_than") {
+            localMatch = leftNumber > rightNumber;
+        } else if (normalizedOperator == "greater_or_equal") {
+            localMatch = leftNumber >= rightNumber;
+        } else if (normalizedOperator == "less_than") {
+            localMatch = leftNumber < rightNumber;
+        } else {
+            localMatch = leftNumber <= rightNumber;
+        }
     } else {
         if (errorMessage != nullptr) {
             *errorMessage = QString("Unbekannter Decision-Operator '%1'.").arg(operatorName);
@@ -897,6 +933,13 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             runContext.variables.insert(outputKey, toolResult.outputText);
             runContext.variables.insert("last_tool_output", toolResult.outputText);
             runContext.variables.insert("last_tool_name", toolName);
+            QStringList updatedVariableNames = toolResult.outputVariables.keys();
+            std::sort(updatedVariableNames.begin(), updatedVariableNames.end(), [](const QString& left, const QString& right) {
+                return left.toCaseFolded() < right.toCaseFolded();
+            });
+            for (const QString& variableName : updatedVariableNames) {
+                runContext.variables.insert(variableName, toolResult.outputVariables.value(variableName));
+            }
             result.finalOutput = toolResult.outputText;
 
             if (!toolResult.memoryEntriesToPersist.isEmpty()) {
@@ -923,6 +966,15 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                     QString("[step:%1] Tool hat %2 Memory-Eintrag(e) vorgemerkt.")
                         .arg(step.id)
                         .arg(toolResult.memoryEntriesToPersist.size())
+                );
+            }
+
+            if (!updatedVariableNames.isEmpty()) {
+                appendLog(
+                    QString("[step:%1] Tool hat %2 Variable(n) aktualisiert: %3")
+                        .arg(step.id)
+                        .arg(updatedVariableNames.size())
+                        .arg(updatedVariableNames.join(", "))
                 );
             }
 

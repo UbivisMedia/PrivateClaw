@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(PrivateClaw
-    VERSION 0.1.2
+    VERSION 0.1.2.1
     DESCRIPTION "Desktop app for project-based LLM automation"
     LANGUAGES CXX
 )

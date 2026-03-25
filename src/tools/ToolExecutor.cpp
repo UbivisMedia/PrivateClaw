@@ -104,6 +104,11 @@ QString configString(const QJsonObject& object, const QString& key)
     return object.value(key).toString().trimmed();
 }
 
+QString rawConfigString(const QJsonObject& object, const QString& key)
+{
+    return object.value(key).toString();
+}
+
 int configInt(const QJsonObject& object, const QString& key, const int fallback)
 {
     const QJsonValue value = object.value(key);
@@ -214,6 +219,38 @@ QString serializeTags(const QStringList& tags)
         }
     }
     return normalized.join(", ");
+}
+
+bool parseIntegerValue(const QJsonValue& value, qlonglong* parsedValue)
+{
+    if (parsedValue == nullptr) {
+        return false;
+    }
+
+    if (value.isDouble()) {
+        const double numericValue = value.toDouble();
+        const qlonglong integerValue = static_cast<qlonglong>(numericValue);
+        if (numericValue != static_cast<double>(integerValue)) {
+            return false;
+        }
+        *parsedValue = integerValue;
+        return true;
+    }
+
+    bool ok = false;
+    const qlonglong integerValue = value.toString().trimmed().toLongLong(&ok);
+    if (!ok) {
+        return false;
+    }
+
+    *parsedValue = integerValue;
+    return true;
+}
+
+bool isValidWorkflowVariableName(const QString& name)
+{
+    static const QRegularExpression pattern("^[A-Za-z0-9_.-]+$");
+    return pattern.match(name).hasMatch();
 }
 
 QString normalizeLineEndings(QString text)
@@ -1611,6 +1648,7 @@ QStringList ToolExecutor::availableTools() const
         "memory.summarize",
         "memory.delete_old",
         "memory.ingest_directory",
+        "variables.set",
         "file.write_text",
         "file.edit_diff",
         "http.request",
@@ -1686,6 +1724,10 @@ ToolExecutionResult ToolExecutor::execute(const ToolExecutionRequest& request) c
 
     if (toolName == "memory.ingest_directory") {
         return executeMemoryIngestDirectory(request);
+    }
+
+    if (toolName == "variables.set") {
+        return executeVariablesSet(request.config);
     }
 
     if (toolName == "file.write_text") {
@@ -2781,6 +2823,108 @@ ToolExecutionResult ToolExecutor::executeMemoryDeleteOld(const ToolExecutionRequ
     } else {
         result.logs.append("Loeschung abgeschlossen.");
     }
+    return result;
+}
+
+ToolExecutionResult ToolExecutor::executeVariablesSet(const QJsonObject& config) const
+{
+    ToolExecutionResult result;
+
+    const QString variableName = configString(config, "name");
+    if (variableName.isEmpty()) {
+        result.errorMessage = "Tool 'variables.set' braucht ein Feld 'name'.";
+        return result;
+    }
+
+    if (!isValidWorkflowVariableName(variableName)) {
+        result.errorMessage = QString(
+            "Variable '%1' hat einen ungueltigen Namen. Erlaubt sind Buchstaben, Zahlen, Punkt, Unterstrich und Bindestrich."
+        ).arg(variableName);
+        return result;
+    }
+
+    const QString operation = configString(config, "operation").toLower().isEmpty()
+        ? "set"
+        : configString(config, "operation").toLower();
+    QString valueType = configString(config, "value_type").toLower();
+    if (valueType.isEmpty()) {
+        valueType = operation == "increment" ? "int" : "string";
+    }
+
+    if (valueType != "string" && valueType != "int") {
+        result.errorMessage = QString(
+            "Tool 'variables.set' kennt nur value_type 'string' oder 'int', nicht '%1'."
+        ).arg(valueType);
+        return result;
+    }
+
+    if (operation == "set") {
+        if (valueType == "int") {
+            qlonglong parsedInteger = 0;
+            if (!parseIntegerValue(config.value("value"), &parsedInteger)) {
+                result.errorMessage = QString(
+                    "Tool 'variables.set' konnte den Integer-Wert fuer '%1' nicht lesen."
+                ).arg(variableName);
+                return result;
+            }
+
+            result.outputText = QString::number(parsedInteger);
+            result.outputVariables.insert(variableName, result.outputText);
+            result.logs.append(
+                QString("Integer-Variable '%1' wurde auf %2 gesetzt.").arg(variableName, result.outputText)
+            );
+        } else {
+            result.outputText = rawConfigString(config, "value");
+            result.outputVariables.insert(variableName, result.outputText);
+            result.logs.append(
+                QString("String-Variable '%1' wurde gesetzt (%2 Zeichen).")
+                    .arg(variableName)
+                    .arg(result.outputText.size())
+            );
+        }
+
+        result.success = true;
+        return result;
+    }
+
+    if (operation == "increment") {
+        qlonglong currentValue = 0;
+        if (config.contains("current_value") && !config.value("current_value").toString().trimmed().isEmpty()) {
+            if (!parseIntegerValue(config.value("current_value"), &currentValue)) {
+                result.errorMessage = QString(
+                    "Tool 'variables.set' konnte current_value fuer '%1' nicht als Integer lesen."
+                ).arg(variableName);
+                return result;
+            }
+        }
+
+        qlonglong amount = 1;
+        if (config.contains("amount")) {
+            if (!parseIntegerValue(config.value("amount"), &amount)) {
+                result.errorMessage = QString(
+                    "Tool 'variables.set' konnte amount fuer '%1' nicht als Integer lesen."
+                ).arg(variableName);
+                return result;
+            }
+        }
+
+        const qlonglong nextValue = currentValue + amount;
+        result.outputText = QString::number(nextValue);
+        result.outputVariables.insert(variableName, result.outputText);
+        result.logs.append(
+            QString("Integer-Variable '%1' wurde von %2 um %3 auf %4 erhoeht.")
+                .arg(variableName)
+                .arg(currentValue)
+                .arg(amount)
+                .arg(nextValue)
+        );
+        result.success = true;
+        return result;
+    }
+
+    result.errorMessage = QString(
+        "Tool 'variables.set' kennt nur operation 'set' oder 'increment', nicht '%1'."
+    ).arg(operation);
     return result;
 }
 

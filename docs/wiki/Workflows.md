@@ -162,6 +162,9 @@ Zusatzvariablen fuer die letzte Prompt-Antwort:
 - `{{last_tool_name}}`
 - die konfigurierte Output-Variable, zum Beispiel `{{render_summary}}`
 
+Tools koennen zusaetzlich eigene Laufvariablen setzen.
+`variables.set` mit `name: "kapitel_nummer"` macht also `{{kapitel_nummer}}` sofort fuer spaetere Prompt-, Tool-, Memory- und Decision-Schritte verfuegbar.
+
 ### Variablen aus Memory-Schritten
 
 - `{{last_memory_content}}`
@@ -293,9 +296,15 @@ Unterstuetzte Operatoren:
 - `not_contains`
 - `starts_with`
 - `ends_with`
+- `greater_than`
+- `greater_or_equal`
+- `less_than`
+- `less_or_equal`
 - `empty`
 - `not_empty`
 - `regex`
+
+Die vier Vergleichsoperatoren fuer Groesser/Kleiner erwarten numerische Werte und sind fuer Kapitel-, Szenen- oder Retry-Zaehler gedacht.
 
 ### Beispiel
 
@@ -339,6 +348,27 @@ Die eigentliche Tool-Logik liegt nicht in der Engine, sondern in der Tool-Schich
 Alle weiteren Felder haengen vom gewaehlten Tool ab.
 
 Die Details dazu stehen in [Tools](./Tools.md).
+
+### Eigene Laufvariablen mit `variables.set`
+
+Mit dem Tool `variables.set` lassen sich String- und Integer-Variablen innerhalb eines Runs gezielt setzen oder erhoehen.
+
+```json
+{
+  "id": "set_chapter_label",
+  "type": "tool",
+  "config": {
+    "tool": "variables.set",
+    "name": "kapitel_label",
+    "value_type": "string",
+    "operation": "set",
+    "value": "Kapitel {{kapitel_nummer}}, Szene {{szenen_nummer}}",
+    "output": "kapitel_label_status"
+  }
+}
+```
+
+Das Ergebnis steht danach sowohl als `{{kapitel_label}}` als auch ueber die konfigurierte `output`-Variable bereit.
 
 ## Beispiel: LLM plus Tool plus Memory
 

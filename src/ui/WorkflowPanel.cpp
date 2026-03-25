@@ -1063,7 +1063,11 @@ void WorkflowPanel::buildUi()
         "ends_with",
         "empty",
         "not_empty",
-        "regex"
+        "regex",
+        "greater_than",
+        "greater_or_equal",
+        "less_than",
+        "less_or_equal"
     });
     m_decisionValueEdit = new QLineEdit(decisionPage);
     m_decisionOutputEdit = new QLineEdit(decisionPage);
@@ -1100,6 +1104,7 @@ void WorkflowPanel::buildUi()
         "memory.summarize",
         "memory.delete_old",
         "memory.ingest_directory",
+        "variables.set",
         "file.write_text",
         "file.edit_diff",
         "http.request",
@@ -1325,6 +1330,32 @@ void WorkflowPanel::buildUi()
     memoryToolLayout->addRow("Ab Relevanz behalten", m_toolMemoryDeleteKeepRelevanceSpin);
     memoryToolLayout->addRow("", m_toolMemoryDeleteDryRunCheckBox);
     m_toolConfigStack->addWidget(memoryToolPage);
+
+    auto* variableToolPage = new QWidget(m_toolConfigStack);
+    auto* variableToolLayout = new QFormLayout(variableToolPage);
+    variableToolLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolVariableNameEdit = new QLineEdit(variableToolPage);
+    m_toolVariableNameEdit->setPlaceholderText("kapitel_nummer");
+    m_toolVariableTypeCombo = new QComboBox(variableToolPage);
+    m_toolVariableTypeCombo->addItem("String", "string");
+    m_toolVariableTypeCombo->addItem("Integer", "int");
+    m_toolVariableOperationCombo = new QComboBox(variableToolPage);
+    m_toolVariableOperationCombo->addItem("Setzen / ueberschreiben", "set");
+    m_toolVariableOperationCombo->addItem("Integer erhoehen", "increment");
+    m_toolVariableValueEdit = new QLineEdit(variableToolPage);
+    m_toolVariableValueEdit->setPlaceholderText("{{last_response}} oder Roman ohne Morgen");
+    m_toolVariableCurrentValueEdit = new QLineEdit(variableToolPage);
+    m_toolVariableCurrentValueEdit->setPlaceholderText("{{kapitel_nummer}}");
+    m_toolVariableAmountSpin = new QSpinBox(variableToolPage);
+    m_toolVariableAmountSpin->setRange(-1000000, 1000000);
+    m_toolVariableAmountSpin->setValue(1);
+    variableToolLayout->addRow("Variablenname", m_toolVariableNameEdit);
+    variableToolLayout->addRow("Typ", m_toolVariableTypeCombo);
+    variableToolLayout->addRow("Operation", m_toolVariableOperationCombo);
+    variableToolLayout->addRow("Wert (set)", m_toolVariableValueEdit);
+    variableToolLayout->addRow("Aktueller Wert (increment)", m_toolVariableCurrentValueEdit);
+    variableToolLayout->addRow("Delta (increment)", m_toolVariableAmountSpin);
+    m_toolConfigStack->addWidget(variableToolPage);
 
     auto* fileWritePage = new QWidget(m_toolConfigStack);
     auto* fileWriteLayout = new QFormLayout(fileWritePage);
@@ -1846,6 +1877,25 @@ void WorkflowPanel::buildUi()
         scheduleVisualStepApply();
     });
     connect(m_toolOutputEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolVariableNameEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolVariableTypeCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolVariableOperationCombo, &QComboBox::currentTextChanged, this, [this]() {
+        updateVisualToolConfigPage();
+        scheduleVisualStepApply();
+    });
+    connect(m_toolVariableValueEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolVariableCurrentValueEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolVariableAmountSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
         scheduleVisualStepApply();
     });
     connect(m_toolFileReadPathEdit, &QLineEdit::textEdited, this, [this]() {
@@ -3578,6 +3628,20 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
         m_toolMemoryDeleteDryRunCheckBox->setChecked(
             config.contains("dry_run") ? config.value("dry_run").toBool(true) : true
         );
+        m_toolVariableNameEdit->setText(config.value("name").toString());
+        {
+            const QString variableType = config.value("value_type").toString().trimmed().toLower();
+            const int index = m_toolVariableTypeCombo->findData(variableType.isEmpty() ? "string" : variableType);
+            m_toolVariableTypeCombo->setCurrentIndex(index >= 0 ? index : 0);
+        }
+        {
+            const QString variableOperation = config.value("operation").toString().trimmed().toLower();
+            const int index = m_toolVariableOperationCombo->findData(variableOperation.isEmpty() ? "set" : variableOperation);
+            m_toolVariableOperationCombo->setCurrentIndex(index >= 0 ? index : 0);
+        }
+        m_toolVariableValueEdit->setText(config.value("value").toString());
+        m_toolVariableCurrentValueEdit->setText(config.value("current_value").toString());
+        m_toolVariableAmountSpin->setValue(config.value("amount").toInt(1));
         m_toolFileWritePathEdit->setText(config.value("path").toString());
         const QString writeMode = config.value("mode").toString().trimmed().toLower();
         const int writeModeIndex = m_toolFileWriteModeCombo->findData(writeMode.isEmpty() ? "overwrite" : writeMode);
@@ -3929,6 +3993,7 @@ void WorkflowPanel::updateVisualToolConfigPage()
     const bool isMemorySearchTool = toolName == "memory.search";
     const bool isMemorySummarizeTool = toolName == "memory.summarize";
     const bool isMemoryDeleteTool = toolName == "memory.delete_old";
+    const bool isVariableTool = toolName == "variables.set";
     const bool isComfyTool = toolName == "comfyui.workflow";
     const bool isCsvReadTool = toolName == "csv.read";
     const bool isCsvWriteTool = toolName == "csv.write";
@@ -4029,6 +4094,33 @@ void WorkflowPanel::updateVisualToolConfigPage()
     if (m_toolMemoryDeleteDryRunCheckBox != nullptr) {
         m_toolMemoryDeleteDryRunCheckBox->setEnabled(isMemoryDeleteTool);
     }
+    const bool variableIncrementMode = isVariableTool
+        && m_toolVariableOperationCombo != nullptr
+        && m_toolVariableOperationCombo->currentData().toString().trimmed() == "increment";
+    if (m_toolVariableNameEdit != nullptr) {
+        m_toolVariableNameEdit->setEnabled(isVariableTool);
+    }
+    if (m_toolVariableTypeCombo != nullptr) {
+        if (variableIncrementMode) {
+            const int intIndex = m_toolVariableTypeCombo->findData("int");
+            if (intIndex >= 0) {
+                m_toolVariableTypeCombo->setCurrentIndex(intIndex);
+            }
+        }
+        m_toolVariableTypeCombo->setEnabled(isVariableTool && !variableIncrementMode);
+    }
+    if (m_toolVariableOperationCombo != nullptr) {
+        m_toolVariableOperationCombo->setEnabled(isVariableTool);
+    }
+    if (m_toolVariableValueEdit != nullptr) {
+        m_toolVariableValueEdit->setEnabled(isVariableTool && !variableIncrementMode);
+    }
+    if (m_toolVariableCurrentValueEdit != nullptr) {
+        m_toolVariableCurrentValueEdit->setEnabled(variableIncrementMode);
+    }
+    if (m_toolVariableAmountSpin != nullptr) {
+        m_toolVariableAmountSpin->setEnabled(variableIncrementMode);
+    }
     if (m_toolComfyModeStack != nullptr && m_toolComfyModeCombo != nullptr) {
         const QString comfyMode = m_toolComfyModeCombo->currentData().toString().trimmed();
         m_toolComfyModeStack->setCurrentIndex(comfyMode == "raw_json" ? 1 : 0);
@@ -4083,28 +4175,33 @@ void WorkflowPanel::updateVisualToolConfigPage()
         return;
     }
 
-    if (toolName == "file.write_text") {
+    if (toolName == "variables.set") {
         m_toolConfigStack->setCurrentIndex(6);
         return;
     }
 
-    if (toolName == "file.edit_diff") {
+    if (toolName == "file.write_text") {
         m_toolConfigStack->setCurrentIndex(7);
         return;
     }
 
-    if (toolName == "http.request") {
+    if (toolName == "file.edit_diff") {
         m_toolConfigStack->setCurrentIndex(8);
         return;
     }
 
-    if (toolName == "shell.run") {
+    if (toolName == "http.request") {
         m_toolConfigStack->setCurrentIndex(9);
         return;
     }
 
-    if (toolName == "comfyui.workflow") {
+    if (toolName == "shell.run") {
         m_toolConfigStack->setCurrentIndex(10);
+        return;
+    }
+
+    if (toolName == "comfyui.workflow") {
+        m_toolConfigStack->setCurrentIndex(11);
         return;
     }
 
@@ -4568,7 +4665,12 @@ void WorkflowPanel::applyVisualStepChanges()
                 "command",
                 "working_directory",
                 "include_stderr",
-                "max_output_chars"
+                "max_output_chars",
+                "name",
+                "value_type",
+                "operation",
+                "current_value",
+                "amount"
             }
         );
         const QString toolName = m_toolNameCombo->currentText().trimmed();
@@ -4715,6 +4817,75 @@ void WorkflowPanel::applyVisualStepChanges()
                 config.insert("dry_run", true);
             } else {
                 config.insert("dry_run", false);
+            }
+        } else if (toolName == "variables.set") {
+            removeConfigKeys(
+                &config,
+                {
+                    "path",
+                    "include_extensions",
+                    "exclude_paths",
+                    "mode",
+                    "modified_after_iso",
+                    "within_minutes",
+                    "max_files",
+                    "max_chars_per_file",
+                    "max_total_chars",
+                    "include_hidden",
+                    "skip_binary",
+                    "recursive",
+                    "directories_only",
+                    "max_entries",
+                    "query",
+                    "entry_type",
+                    "tags",
+                    "limit",
+                    "max_chars",
+                    "format",
+                    "prompt",
+                    "system_prompt",
+                    "save_as_memory",
+                    "summary_entry_type",
+                    "summary_source",
+                    "summary_tags",
+                    "summary_relevance",
+                    "older_than_days",
+                    "keep_latest",
+                    "keep_relevance_at_or_above",
+                    "dry_run",
+                    "line_start",
+                    "line_end",
+                    "diff",
+                    "patch",
+                    "return_content",
+                    "create_dirs",
+                    "url",
+                    "method",
+                    "body",
+                    "body_json",
+                    "headers",
+                    "headers_json",
+                    "workflow",
+                    "workflow_json",
+                    "save_outputs_to",
+                    "download_images",
+                    "include_history_json",
+                    "poll_interval_ms",
+                    "timeout_ms"
+                }
+            );
+            setJsonTextValue(&config, "name", m_toolVariableNameEdit->text());
+            setJsonTextValue(&config, "value_type", m_toolVariableTypeCombo->currentData().toString());
+            setJsonTextValue(&config, "operation", m_toolVariableOperationCombo->currentData().toString());
+            const bool incrementMode = m_toolVariableOperationCombo->currentData().toString() == "increment";
+            if (incrementMode) {
+                setJsonTextValue(&config, "current_value", m_toolVariableCurrentValueEdit->text());
+                config.insert("amount", m_toolVariableAmountSpin->value());
+                config.remove("value");
+            } else {
+                setJsonTextValue(&config, "value", m_toolVariableValueEdit->text());
+                config.remove("current_value");
+                config.remove("amount");
             }
         } else if (toolName == "file.write_text") {
             removeConfigKeys(

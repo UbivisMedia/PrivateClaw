@@ -27,3 +27,23 @@ Falls du spaeter etwas Komplexeres brauchst, kannst du denselben Schritt im Edit
 Prompt-Ausgaben werden beim Workflow-Lauf automatisch von typischen Reasoning-Tags wie `<think>...</think>` bereinigt.
 Fuer sichtbare Folge-Schritte wie `{{last_response}}` oder `{{positive_prompt}}` wird nur die bereinigte Ausgabe verwendet.
 Falls du das extrahierte Reasoning bewusst separat speichern willst, stehen zusaetzlich Variablen wie `{{last_reasoning}}` oder `{{positive_prompt_reasoning}}` zur Verfuegung.
+
+## Buchautor Szene Workflow
+
+Datei:
+
+`buchautor_szene_workflow.json`
+
+Zweck:
+
+- restauriert Kapitel- und Szenenstand aus einem Fortschritts-Memory
+- nutzt `variables.set` fuer Titel, Dateipfade, Labels und Zaehler
+- bootstrappt Hauptcharakter-Memories nur dann, wenn noch keine vorhanden sind
+- schreibt eine neue Szene und exportiert sie als Markdown-Datei
+- legt bei Bedarf gezielte Update-Memories fuer Nebencharaktere, Orte und plotrelevante Ereignisse an
+- speichert am Ende den naechsten Kapitel-/Szenenstand wieder als Fortschritts-Memory
+
+Hinweis:
+
+Der Workflow legt Erinnerungen fuer neue Figuren, Orte und Ereignisse als kategorisierte Update-Notizen an.
+Solange es noch keine Schleifen oder Foreach-Schritte gibt, ist das der robusteste Weg, mehrere neue Entitaeten in einem Run gesammelt festzuhalten.

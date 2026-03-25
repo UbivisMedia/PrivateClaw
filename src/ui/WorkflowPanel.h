@@ -259,6 +259,12 @@ private:
     QSpinBox* m_toolMemoryDeleteKeepLatestSpin = nullptr;
     QSpinBox* m_toolMemoryDeleteKeepRelevanceSpin = nullptr;
     QCheckBox* m_toolMemoryDeleteDryRunCheckBox = nullptr;
+    QLineEdit* m_toolVariableNameEdit = nullptr;
+    QComboBox* m_toolVariableTypeCombo = nullptr;
+    QComboBox* m_toolVariableOperationCombo = nullptr;
+    QLineEdit* m_toolVariableValueEdit = nullptr;
+    QLineEdit* m_toolVariableCurrentValueEdit = nullptr;
+    QSpinBox* m_toolVariableAmountSpin = nullptr;
     QLineEdit* m_toolFileWritePathEdit = nullptr;
     QComboBox* m_toolFileWriteModeCombo = nullptr;
     QCheckBox* m_toolFileWriteCreateDirsCheckBox = nullptr;

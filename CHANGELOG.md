@@ -12,7 +12,18 @@ Unterstuetzte Ueberschriften sind zum Beispiel:
 
 Wenn kein passender Abschnitt gefunden wird, faellt der Workflow automatisch auf GitHubs generierte Release-Notes zurueck.
 
-## [v0.1.2]
+## [ unreleased ]
+
+### Added
+
+- `variables.set` als Workflow-Tool fuer String- und Integer-Variablen, inklusive Inkrementen fuer Kapitel-, Szenen- und Retry-Zaehler
+
+### Changed
+
+- Decision-Schritte koennen jetzt auch numerisch vergleichen (`greater_than`, `greater_or_equal`, `less_than`, `less_or_equal`), sodass Workflow-Zaehler direkt nutzbar werden
+
+
+## [v0.1.2] - 2026-03-25
 
 ### Added
 
