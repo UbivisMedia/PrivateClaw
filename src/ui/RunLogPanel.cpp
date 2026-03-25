@@ -3,6 +3,7 @@
 #include <QFrame>
 #include <QLabel>
 #include <QPlainTextEdit>
+#include <QTextCursor>
 #include <QVBoxLayout>
 
 namespace privateclaw::ui {
@@ -20,7 +21,7 @@ RunLogPanel::RunLogPanel(QWidget* parent)
     title->setProperty("sectionTitle", true);
 
     auto* body = new QLabel(
-        "Dieser Bereich dient spaeter fuer Streaming-Ausgaben, Schrittstatus und Fehlerprotokolle.",
+        "Hier erscheinen Live-Streaming, Schrittstatus und Fehlerprotokolle laufender Workflow-Ausfuehrungen.",
         card
     );
     body->setProperty("sectionBody", true);
@@ -30,7 +31,7 @@ RunLogPanel::RunLogPanel(QWidget* parent)
     m_logView->setReadOnly(true);
     m_logView->setPlainText(
         "[bootstrap] UI-Grundgeruest initialisiert.\n"
-        "[todo] Workflow-Engine und Live-Logs anbinden."
+        "[ready] Live-Logs werden bei manuellen und geplanten Runs hier angehaengt."
     );
 
     cardLayout->addWidget(title);
@@ -44,12 +45,14 @@ void RunLogPanel::clearLog()
     if (m_logView != nullptr) {
         m_logView->clear();
         m_hasUserLog = false;
+        m_activeStreamId.clear();
     }
 }
 
 void RunLogPanel::appendLogLine(const QString& line)
 {
     if (m_logView != nullptr) {
+        finishActiveStream();
         if (!m_hasUserLog) {
             m_logView->clear();
             m_hasUserLog = true;
@@ -58,12 +61,60 @@ void RunLogPanel::appendLogLine(const QString& line)
     }
 }
 
+void RunLogPanel::appendStreamingChunk(const QString& streamId, const QString& prefix, const QString& chunk)
+{
+    if (m_logView == nullptr || streamId.trimmed().isEmpty() || chunk.isEmpty()) {
+        return;
+    }
+
+    if (!m_hasUserLog) {
+        m_logView->clear();
+        m_hasUserLog = true;
+    }
+
+    if (m_activeStreamId != streamId) {
+        finishActiveStream();
+        appendRawText(prefix);
+        m_activeStreamId = streamId;
+    }
+
+    appendRawText(chunk);
+}
+
 void RunLogPanel::setLogText(const QString& text)
 {
     if (m_logView != nullptr) {
         m_logView->setPlainText(text);
         m_hasUserLog = !text.trimmed().isEmpty();
+        m_activeStreamId.clear();
     }
+}
+
+void RunLogPanel::appendRawText(const QString& text)
+{
+    if (m_logView == nullptr || text.isEmpty()) {
+        return;
+    }
+
+    QTextCursor cursor = m_logView->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(text);
+    m_logView->setTextCursor(cursor);
+    m_logView->ensureCursorVisible();
+}
+
+void RunLogPanel::finishActiveStream()
+{
+    if (m_logView == nullptr || m_activeStreamId.isEmpty()) {
+        return;
+    }
+
+    const QString currentText = m_logView->toPlainText();
+    if (!currentText.isEmpty() && !currentText.endsWith('\n')) {
+        appendRawText("\n");
+    }
+
+    m_activeStreamId.clear();
 }
 
 } // namespace privateclaw::ui

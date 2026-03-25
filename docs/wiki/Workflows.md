@@ -87,6 +87,27 @@ Aktuell gibt es Buttons fuer:
 
 Die rechte Detailansicht ist scrollbar, damit auch umfangreiche Konfigurationen wie `ComfyUI` bequem bearbeitet werden koennen.
 
+## Workflow-Debugger
+
+Neben der normalen Ausfuehrung gibt es eine `Debug-Ausfuehrung`.
+Sie fuehrt den Workflow real aus, speichert aber zusaetzlich pro Schritt einen Trace.
+
+Der Debugger zeigt:
+
+- die Reihenfolge der ausgefuehrten Schritte
+- Status pro Schritt
+- Input- und Output-Vorschau
+- die Zielvariable des Schritts
+- den naechsten angesprungenen Schritt
+- Variablen-Snapshots nach jedem Schritt
+- schrittspezifische Logs
+
+Wichtig:
+
+- Secrets wie `{{secret.name}}` werden im Variablen-Snapshot maskiert angezeigt
+- die Debug-Ausfuehrung ist ein echter Lauf, kein reiner Trockenmodus
+- `save_memory` und Tool-Schritte verhalten sich dabei wie in normalen Runs
+
 ## Verfuegbare Platzhaltervariablen
 
 Workflows nutzen Platzhalter im Format `{{variable_name}}`.

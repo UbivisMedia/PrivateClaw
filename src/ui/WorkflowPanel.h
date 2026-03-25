@@ -23,6 +23,7 @@ class QPushButton;
 class QSpinBox;
 class QStackedWidget;
 class QTableWidget;
+class QTabWidget;
 class QTextEdit;
 class QTimer;
 
@@ -61,6 +62,9 @@ public:
     void setOnRunDataChanged(std::function<void()> callback);
     void setOnSettingsDataChanged(std::function<void()> callback);
     void setOnExecutionLogChanged(std::function<void(const QString&)> callback);
+    void setOnExecutionStreamChunk(
+        std::function<void(const QString& streamId, const QString& prefix, const QString& chunk)> callback
+    );
 
 private:
     void buildUi();
@@ -69,7 +73,7 @@ private:
     void refreshWorkflowList(qint64 workflowIdToSelect = -1);
     void loadWorkflowFromRow(int row);
     void saveWorkflow();
-    void executeWorkflow();
+    void executeWorkflow(bool debugRequested = false);
     void updateExecutionStatus();
     void updateVisualEditorVisibility();
     void startNewWorkflow();
@@ -106,6 +110,10 @@ private:
     QString selectedVisualStepId() const;
     QString generateVisualStepId(const QString& stepType) const;
     QString visualStepLabel(const QJsonObject& stepObject) const;
+    void resetDebugger(bool keepVisibilityState = true);
+    void updateDebuggerVisibility();
+    void rebuildDebugStepList();
+    void loadDebugStepFromRow(int row);
     void resetEditor(bool keepFeedback = false);
     int indexOfProject(qint64 projectId) const;
     qint64 currentProjectId() const;
@@ -130,17 +138,22 @@ private:
     int m_activeRunCount = 0;
     int m_nextExecutionId = 1;
     int m_executionStatusFrame = 0;
+    QString m_activeExecutionDetail;
     std::function<void()> m_onWorkflowDataChanged;
     std::function<void()> m_onRunDataChanged;
     std::function<void()> m_onSettingsDataChanged;
     std::function<void(const QString&)> m_onExecutionLogChanged;
+    std::function<void(const QString& streamId, const QString& prefix, const QString& chunk)>
+        m_onExecutionStreamChunk;
     bool m_isSyncingVisualEditor = false;
     bool m_visualEditorHasValidJson = false;
+    bool m_lastExecutionWasDebug = false;
     bool m_comfyMetadataLoaded = false;
     bool m_comfyMetadataLoading = false;
     QString m_comfyCatalogBaseUrl;
     QJsonObject m_visualDefinitionRoot;
     services::ComfyUiCatalog m_comfyCatalog;
+    QList<core::WorkflowDebugStep> m_lastDebugSteps;
 
     QListWidget* m_workflowList = nullptr;
     QLabel* m_workflowCountLabel = nullptr;
@@ -155,6 +168,14 @@ private:
     QLabel* m_templateDescriptionLabel = nullptr;
     QCheckBox* m_visualEditorToggle = nullptr;
     QFrame* m_visualEditorFrame = nullptr;
+    QCheckBox* m_debuggerToggle = nullptr;
+    QFrame* m_debuggerFrame = nullptr;
+    QLabel* m_debuggerStatusLabel = nullptr;
+    QListWidget* m_debugStepList = nullptr;
+    QTabWidget* m_debugDetailTabs = nullptr;
+    QPlainTextEdit* m_debugSummaryView = nullptr;
+    QPlainTextEdit* m_debugVariablesView = nullptr;
+    QPlainTextEdit* m_debugLogsView = nullptr;
     QLabel* m_visualEditorStatusLabel = nullptr;
     QListWidget* m_visualStepList = nullptr;
     QLineEdit* m_visualStepIdEdit = nullptr;

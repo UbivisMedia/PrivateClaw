@@ -7,6 +7,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QStringList>
 #include <QTimer>
 #include <QUrl>
 
@@ -55,6 +56,31 @@ QUrl chatEndpoint(const QString& baseUrl)
     return buildEndpoint(baseUrl, "/v1/chat/completions");
 }
 
+QJsonArray buildMessages(const ChatRequest& request)
+{
+    QJsonArray messages;
+    if (!request.systemPrompt.trimmed().isEmpty()) {
+        messages.append(QJsonObject{
+            { "role", "system" },
+            { "content", request.systemPrompt }
+        });
+    }
+    messages.append(QJsonObject{
+        { "role", "user" },
+        { "content", request.userPrompt }
+    });
+    return messages;
+}
+
+QJsonObject buildChatPayload(const ChatRequest& request, const bool stream)
+{
+    return QJsonObject{
+        { "model", request.model.trimmed() },
+        { "stream", stream },
+        { "messages", buildMessages(request) }
+    };
+}
+
 QString lmStudioErrorMessageFromPayload(const QByteArray& payload)
 {
     const QJsonDocument json = QJsonDocument::fromJson(payload);
@@ -75,31 +101,84 @@ QString lmStudioErrorMessageFromPayload(const QByteArray& payload)
     return root.value("message").toString().trimmed();
 }
 
-QString extractMessageText(const QJsonObject& messageObject)
+QString extractTextFromValue(const QJsonValue& value, const bool trimParts, const QString& separator)
 {
-    const QJsonValue contentValue = messageObject.value("content");
-    if (contentValue.isString()) {
-        return contentValue.toString().trimmed();
+    if (value.isString()) {
+        return trimParts ? value.toString().trimmed() : value.toString();
     }
 
-    if (!contentValue.isArray()) {
+    if (!value.isArray()) {
         return {};
     }
 
     QStringList parts;
-    const QJsonArray contentItems = contentValue.toArray();
+    const QJsonArray contentItems = value.toArray();
     for (const QJsonValue& itemValue : contentItems) {
         const QJsonObject itemObject = itemValue.toObject();
         const QString type = itemObject.value("type").toString().trimmed();
         if (type.compare("text", Qt::CaseInsensitive) == 0 || type.isEmpty()) {
-            const QString text = itemObject.value("text").toString().trimmed();
+            const QString text = trimParts
+                ? itemObject.value("text").toString().trimmed()
+                : itemObject.value("text").toString();
             if (!text.isEmpty()) {
                 parts.append(text);
             }
         }
     }
 
-    return parts.join("\n").trimmed();
+    return parts.join(separator);
+}
+
+QString extractMessageText(const QJsonObject& messageObject)
+{
+    return extractTextFromValue(messageObject.value("content"), true, "\n").trimmed();
+}
+
+QString extractMessageChunk(const QJsonObject& messageObject)
+{
+    return extractTextFromValue(messageObject.value("content"), false, QString());
+}
+
+QString firstNonEmptyString(const QJsonObject& object, const QStringList& keys)
+{
+    for (const QString& key : keys) {
+        const QString value = object.value(key).toString();
+        if (!value.isEmpty()) {
+            return value;
+        }
+    }
+
+    return {};
+}
+
+QString extractLmStudioResponseText(const QJsonObject& messageObject, bool* reasoningOpen)
+{
+    const QString reasoningFragment = firstNonEmptyString(
+        messageObject,
+        { "reasoning_content", "reasoning", "thinking", "analysis", "thought", "reflection" }
+    );
+    const QString contentFragment = messageObject.contains("content")
+        ? extractMessageChunk(messageObject)
+        : firstNonEmptyString(messageObject, { "text" });
+
+    QString chunk;
+    if (!reasoningFragment.isEmpty()) {
+        if (reasoningOpen != nullptr && !*reasoningOpen) {
+            chunk += "<think>";
+            *reasoningOpen = true;
+        }
+        chunk += reasoningFragment;
+    }
+
+    if (!contentFragment.isEmpty()) {
+        if (reasoningOpen != nullptr && *reasoningOpen) {
+            chunk += "</think>";
+            *reasoningOpen = false;
+        }
+        chunk += contentFragment;
+    }
+
+    return chunk;
 }
 
 } // namespace
@@ -122,6 +201,11 @@ QString LmStudioProvider::baseUrl() const
 bool LmStudioProvider::isConfigured() const
 {
     return !m_baseUrl.trimmed().isEmpty();
+}
+
+bool LmStudioProvider::supportsStreaming() const
+{
+    return true;
 }
 
 ProviderHealth LmStudioProvider::healthCheck()
@@ -198,24 +282,6 @@ ChatResponse LmStudioProvider::chat(const ChatRequest& request)
         return response;
     }
 
-    QJsonArray messages;
-    if (!request.systemPrompt.trimmed().isEmpty()) {
-        messages.append(QJsonObject{
-            { "role", "system" },
-            { "content", request.systemPrompt }
-        });
-    }
-    messages.append(QJsonObject{
-        { "role", "user" },
-        { "content", request.userPrompt }
-    });
-
-    const QJsonObject payload{
-        { "model", request.model.trimmed() },
-        { "stream", false },
-        { "messages", messages }
-    };
-
     QNetworkAccessManager networkManager;
     QNetworkRequest networkRequest(chatEndpoint(m_baseUrl));
     networkRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -223,7 +289,7 @@ ChatResponse LmStudioProvider::chat(const ChatRequest& request)
     QEventLoop loop;
     QNetworkReply* reply = networkManager.post(
         networkRequest,
-        QJsonDocument(payload).toJson(QJsonDocument::Compact)
+        QJsonDocument(buildChatPayload(request, false)).toJson(QJsonDocument::Compact)
     );
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     loop.exec();
@@ -250,9 +316,14 @@ ChatResponse LmStudioProvider::chat(const ChatRequest& request)
         return response;
     }
 
-    QString text = extractMessageText(choices.first().toObject().value("message").toObject());
+    const QJsonObject messageObject = choices.first().toObject().value("message").toObject();
+    bool reasoningOpen = false;
+    QString text = extractLmStudioResponseText(messageObject, &reasoningOpen).trimmed();
     if (text.isEmpty()) {
         text = choices.first().toObject().value("text").toString().trimmed();
+    }
+    if (reasoningOpen) {
+        text += "</think>";
     }
 
     if (text.isEmpty()) {
@@ -262,6 +333,128 @@ ChatResponse LmStudioProvider::chat(const ChatRequest& request)
 
     response.success = true;
     response.text = text;
+    return response;
+}
+
+ChatResponse LmStudioProvider::chatStream(const ChatRequest& request, const ChatStreamCallback& onChunk)
+{
+    ChatResponse response;
+    if (!isConfigured()) {
+        response.errorMessage = "Keine LM-Studio-URL konfiguriert.";
+        return response;
+    }
+
+    if (request.model.trimmed().isEmpty()) {
+        response.errorMessage = "Kein LM-Studio-Modell angegeben.";
+        return response;
+    }
+
+    QNetworkAccessManager networkManager;
+    QNetworkRequest networkRequest(chatEndpoint(m_baseUrl));
+    networkRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QEventLoop loop;
+    QNetworkReply* reply = networkManager.post(
+        networkRequest,
+        QJsonDocument(buildChatPayload(request, true)).toJson(QJsonDocument::Compact)
+    );
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+
+    QByteArray pendingBuffer;
+    QByteArray rawPayload;
+    QString accumulatedText;
+    QString parseError;
+    bool reasoningOpen = false;
+
+    const auto appendChunk = [&](const QString& chunk) {
+        if (chunk.isEmpty()) {
+            return;
+        }
+
+        accumulatedText += chunk;
+        if (onChunk) {
+            onChunk(chunk);
+        }
+    };
+
+    const auto processEventLine = [&](QByteArray line) {
+        line = line.trimmed();
+        if (line.isEmpty() || line.startsWith(':') || !parseError.isEmpty()) {
+            return;
+        }
+
+        if (!line.startsWith("data:")) {
+            return;
+        }
+
+        const QByteArray data = line.mid(5).trimmed();
+        if (data == "[DONE]") {
+            if (reasoningOpen) {
+                appendChunk("</think>");
+                reasoningOpen = false;
+            }
+            return;
+        }
+
+        QJsonParseError jsonError;
+        const QJsonDocument json = QJsonDocument::fromJson(data, &jsonError);
+        if (jsonError.error != QJsonParseError::NoError || !json.isObject()) {
+            parseError = QString("LM-Studio-Streaming lieferte ungueltiges JSON: %1").arg(jsonError.errorString());
+            return;
+        }
+
+        const QJsonArray choices = json.object().value("choices").toArray();
+        if (choices.isEmpty()) {
+            return;
+        }
+
+        appendChunk(extractLmStudioResponseText(choices.first().toObject().value("delta").toObject(), &reasoningOpen));
+    };
+
+    QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&]() {
+        const QByteArray incoming = reply->readAll();
+        rawPayload += incoming;
+        pendingBuffer += incoming;
+
+        int newlineIndex = pendingBuffer.indexOf('\n');
+        while (newlineIndex >= 0) {
+            processEventLine(pendingBuffer.left(newlineIndex));
+            pendingBuffer.remove(0, newlineIndex + 1);
+            newlineIndex = pendingBuffer.indexOf('\n');
+        }
+    });
+
+    loop.exec();
+
+    if (!pendingBuffer.trimmed().isEmpty()) {
+        processEventLine(pendingBuffer);
+    }
+
+    if (reply->error() != QNetworkReply::NoError) {
+        const QString serverError = lmStudioErrorMessageFromPayload(rawPayload);
+        response.errorMessage = serverError.isEmpty() ? reply->errorString() : serverError;
+        reply->deleteLater();
+        return response;
+    }
+
+    reply->deleteLater();
+
+    if (!parseError.isEmpty()) {
+        response.errorMessage = parseError;
+        return response;
+    }
+
+    if (reasoningOpen) {
+        appendChunk("</think>");
+    }
+
+    if (accumulatedText.trimmed().isEmpty()) {
+        response.errorMessage = "LM Studio hat keine auswertbare Streaming-Antwort geliefert.";
+        return response;
+    }
+
+    response.success = true;
+    response.text = accumulatedText.trimmed();
     return response;
 }
 

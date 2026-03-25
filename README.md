@@ -15,6 +15,7 @@ Zwischenergebnisse, Zusammenfassungen, Artefakte und Projektwissen lassen sich a
 - Verschluesselte Projekt-Secrets fuer API-Keys und Tokens
 - Unterstuetzung fuer `Ollama` und `LM Studio`
 - Visueller Workflow-Editor mit bidirektionaler JSON-Synchronisation
+- Workflow-Debugger mit Schritt-Trace, Variablen-Snapshots und Detailansicht
 - Workflow-Schrittarten:
   - `prompt`
   - `decision`

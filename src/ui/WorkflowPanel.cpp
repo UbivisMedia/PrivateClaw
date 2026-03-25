@@ -41,6 +41,7 @@
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTabWidget>
 #include <QTextEdit>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -324,19 +325,6 @@ const WorkflowTemplateDefinition* findWorkflowTemplate(const QString& templateId
     return nullptr;
 }
 
-QString prefixRunLog(const int runId, const QString& logText)
-{
-    const QStringList lines = logText.split('\n', Qt::SkipEmptyParts);
-    QStringList prefixed;
-    prefixed.reserve(lines.size());
-
-    for (const QString& line : lines) {
-        prefixed.append(QString("[run:%1] %2").arg(runId).arg(line));
-    }
-
-    return prefixed.join('\n');
-}
-
 QString formatMemorySnippet(const domain::MemoryEntry& entry)
 {
     QStringList parts;
@@ -407,6 +395,84 @@ QString summarizeRunText(QString text)
         text = text.left(217) + "...";
     }
     return text;
+}
+
+QString debugStepStatusLabel(const core::WorkflowDebugStep& debugStep)
+{
+    const QString status = debugStep.status.trimmed().isEmpty()
+        ? "unbekannt"
+        : debugStep.status.trimmed();
+    const QString stepName = debugStep.stepName.trimmed().isEmpty()
+        ? debugStep.stepId
+        : debugStep.stepName.trimmed();
+    return QString("[%1] %2 | %3").arg(status, debugStep.stepId, stepName);
+}
+
+QString formatDebugVariables(const QList<core::WorkflowDebugVariable>& variables)
+{
+    if (variables.isEmpty()) {
+        return "Keine Variablen fuer diesen Schritt gespeichert.";
+    }
+
+    QStringList lines;
+    lines.reserve(variables.size() * 2);
+    for (const core::WorkflowDebugVariable& variable : variables) {
+        lines.append(QString("[%1]").arg(variable.key));
+        lines.append(variable.value.isEmpty() ? "(leer)" : variable.value);
+        lines.append(QString());
+    }
+
+    if (!lines.isEmpty()) {
+        lines.removeLast();
+    }
+
+    return lines.join('\n');
+}
+
+QString formatDebugSummary(const core::WorkflowDebugStep& debugStep)
+{
+    QStringList lines;
+    lines.append(QString("Schritt-ID: %1").arg(debugStep.stepId));
+    lines.append(QString("Typ: %1").arg(debugStep.stepType));
+    lines.append(QString("Status: %1").arg(debugStep.status));
+    if (!debugStep.stepName.trimmed().isEmpty()) {
+        lines.append(QString("Name: %1").arg(debugStep.stepName.trimmed()));
+    }
+    if (!debugStep.summary.trimmed().isEmpty()) {
+        lines.append(QString("Zusammenfassung: %1").arg(debugStep.summary.trimmed()));
+    }
+    if (!debugStep.inputPreview.trimmed().isEmpty()) {
+        lines.append(QString("Input-Vorschau: %1").arg(debugStep.inputPreview.trimmed()));
+    }
+    if (!debugStep.outputKey.trimmed().isEmpty()) {
+        lines.append(QString("Output-Variable: %1").arg(debugStep.outputKey.trimmed()));
+    }
+    if (!debugStep.outputPreview.trimmed().isEmpty()) {
+        lines.append(QString("Output-Vorschau: %1").arg(debugStep.outputPreview.trimmed()));
+    }
+    if (!debugStep.reasoningText.trimmed().isEmpty()) {
+        lines.append(QString("Reasoning: %1").arg(debugStep.reasoningText.trimmed()));
+    }
+    if (!debugStep.nextStepId.trimmed().isEmpty()) {
+        lines.append(QString("Naechster Schritt: %1").arg(debugStep.nextStepId.trimmed()));
+    }
+    if (!debugStep.errorMessage.trimmed().isEmpty()) {
+        lines.append(QString("Fehler: %1").arg(debugStep.errorMessage.trimmed()));
+    }
+    lines.append(
+        QString("Memory-Kontext: %1 gesamt | %2 direkt | %3 komprimiert | %4 angepinnt")
+            .arg(debugStep.memoryEntryCount)
+            .arg(debugStep.directMemoryEntryCount)
+            .arg(debugStep.compressedMemoryEntryCount)
+            .arg(debugStep.totalPinnedMemoryEntryCount)
+    );
+    if (!debugStep.outputText.trimmed().isEmpty()) {
+        lines.append(QString());
+        lines.append("Vollstaendige Ausgabe:");
+        lines.append(debugStep.outputText);
+    }
+
+    return lines.join('\n');
 }
 
 QString normalizedStepType(QString type)
@@ -655,7 +721,8 @@ core::ExecutionResult executeWorkflowWithProvider(
     const QString& comfyUiBaseUrl,
     const QStringList& allowedToolPaths,
     const domain::Workflow& workflow,
-    const core::RunContext& runContext
+    const core::RunContext& runContext,
+    const core::ExecutionCallbacks& callbacks
 )
 {
     const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl, QString(), allowedToolPaths);
@@ -663,12 +730,12 @@ core::ExecutionResult executeWorkflowWithProvider(
 
     if (providerName.compare("Ollama", Qt::CaseInsensitive) == 0) {
         providers::OllamaProvider provider(providerBaseUrl);
-        return workflowEngine.executeWorkflow(workflow, runContext, provider);
+        return workflowEngine.executeWorkflow(workflow, runContext, provider, callbacks);
     }
 
     if (providerName.compare("LM Studio", Qt::CaseInsensitive) == 0) {
         providers::LmStudioProvider provider(providerBaseUrl);
-        return workflowEngine.executeWorkflow(workflow, runContext, provider);
+        return workflowEngine.executeWorkflow(workflow, runContext, provider, callbacks);
     }
 
     core::ExecutionResult result;
@@ -731,6 +798,13 @@ void WorkflowPanel::setOnSettingsDataChanged(std::function<void()> callback)
 void WorkflowPanel::setOnExecutionLogChanged(std::function<void(const QString&)> callback)
 {
     m_onExecutionLogChanged = std::move(callback);
+}
+
+void WorkflowPanel::setOnExecutionStreamChunk(
+    std::function<void(const QString& streamId, const QString& prefix, const QString& chunk)> callback
+)
+{
+    m_onExecutionStreamChunk = std::move(callback);
 }
 
 void WorkflowPanel::buildUi()
@@ -1547,11 +1621,47 @@ void WorkflowPanel::buildUi()
     auto* editorActions = new QHBoxLayout();
     auto* saveButton = new QPushButton("Workflow speichern", editorCard);
     auto* runButton = new QPushButton("Workflow ausfuehren", editorCard);
+    auto* debugRunButton = new QPushButton("Debug-Ausfuehrung", editorCard);
     auto* resetButton = new QPushButton("Editor zuruecksetzen", editorCard);
     editorActions->addWidget(saveButton);
     editorActions->addWidget(runButton);
+    editorActions->addWidget(debugRunButton);
     editorActions->addWidget(resetButton);
     editorActions->addStretch();
+
+    m_debuggerToggle = new QCheckBox("Debugger anzeigen", editorCard);
+
+    m_debuggerFrame = new QFrame(editorCard);
+    auto* debuggerLayout = new QVBoxLayout(m_debuggerFrame);
+    debuggerLayout->setContentsMargins(0, 0, 0, 0);
+
+    m_debuggerStatusLabel = new QLabel("Noch keine Debug-Ausfuehrung vorhanden.", m_debuggerFrame);
+    m_debuggerStatusLabel->setProperty("sectionBody", true);
+    m_debuggerStatusLabel->setWordWrap(true);
+
+    auto* debuggerSplitter = new QSplitter(Qt::Horizontal, m_debuggerFrame);
+    m_debugStepList = new QListWidget(debuggerSplitter);
+    m_debugStepList->setAlternatingRowColors(true);
+
+    auto* debuggerDetailFrame = new QFrame(debuggerSplitter);
+    auto* debuggerDetailLayout = new QVBoxLayout(debuggerDetailFrame);
+    debuggerDetailLayout->setContentsMargins(0, 0, 0, 0);
+    m_debugDetailTabs = new QTabWidget(debuggerDetailFrame);
+    m_debugSummaryView = new QPlainTextEdit(debuggerDetailFrame);
+    m_debugSummaryView->setReadOnly(true);
+    m_debugVariablesView = new QPlainTextEdit(debuggerDetailFrame);
+    m_debugVariablesView->setReadOnly(true);
+    m_debugLogsView = new QPlainTextEdit(debuggerDetailFrame);
+    m_debugLogsView->setReadOnly(true);
+    m_debugDetailTabs->addTab(m_debugSummaryView, "Schritt");
+    m_debugDetailTabs->addTab(m_debugVariablesView, "Variablen");
+    m_debugDetailTabs->addTab(m_debugLogsView, "Logs");
+    debuggerDetailLayout->addWidget(m_debugDetailTabs);
+
+    debuggerSplitter->setStretchFactor(0, 2);
+    debuggerSplitter->setStretchFactor(1, 3);
+    debuggerLayout->addWidget(m_debuggerStatusLabel);
+    debuggerLayout->addWidget(debuggerSplitter, 1);
 
     m_feedbackLabel = new QLabel(editorCard);
     m_feedbackLabel->setProperty("sectionBody", true);
@@ -1569,6 +1679,8 @@ void WorkflowPanel::buildUi()
     editorLayout->addWidget(outputLabel);
     editorLayout->addWidget(m_executionStatusLabel);
     editorLayout->addWidget(m_executionOutputView);
+    editorLayout->addWidget(m_debuggerToggle);
+    editorLayout->addWidget(m_debuggerFrame, 1);
     editorLayout->addWidget(m_feedbackLabel);
 
     contentSplitter->setStretchFactor(0, 3);
@@ -1593,6 +1705,10 @@ void WorkflowPanel::buildUi()
         executeWorkflow();
     });
 
+    connect(debugRunButton, &QPushButton::clicked, this, [this]() {
+        executeWorkflow(true);
+    });
+
     connect(resetButton, &QPushButton::clicked, this, [this]() {
         resetEditor();
     });
@@ -1603,6 +1719,10 @@ void WorkflowPanel::buildUi()
 
     connect(m_visualEditorToggle, &QCheckBox::toggled, this, [this]() {
         updateVisualEditorVisibility();
+    });
+
+    connect(m_debuggerToggle, &QCheckBox::toggled, this, [this]() {
+        updateDebuggerVisibility();
     });
 
     connect(m_templateCombo, &QComboBox::currentIndexChanged, this, [this]() {
@@ -1619,6 +1739,10 @@ void WorkflowPanel::buildUi()
 
     connect(m_visualStepList, &QListWidget::currentRowChanged, this, [this](const int row) {
         loadVisualStepFromRow(row);
+    });
+
+    connect(m_debugStepList, &QListWidget::currentRowChanged, this, [this](const int row) {
+        loadDebugStepFromRow(row);
     });
 
     connect(addPromptButton, &QPushButton::clicked, this, [this]() {
@@ -2087,6 +2211,8 @@ void WorkflowPanel::buildUi()
     });
 
     refreshTemplateLibrary();
+    updateDebuggerVisibility();
+    resetDebugger(true);
     updateVisualEditorVisibility();
     syncVisualEditorFromJson();
     applyComfyCatalogToUi();
@@ -2178,6 +2304,7 @@ void WorkflowPanel::loadWorkflowFromRow(const int row)
     }
 
     syncVisualEditorFromJson();
+    resetDebugger(true);
 }
 
 void WorkflowPanel::saveWorkflow()
@@ -2218,7 +2345,7 @@ void WorkflowPanel::saveWorkflow()
     }
 }
 
-void WorkflowPanel::executeWorkflow()
+void WorkflowPanel::executeWorkflow(const bool debugRequested)
 {
     const domain::Project* project = currentProject();
     if (project == nullptr) {
@@ -2266,6 +2393,19 @@ void WorkflowPanel::executeWorkflow()
     if (!ensureWorkflowDefinitionPathsAllowed(workflow.definitionJson, "Ausfuehrung")) {
         publishExecutionLog("[ui] Workflow-Ausfuehrung abgebrochen, weil ein externer Dateipfad nicht freigegeben wurde.");
         return;
+    }
+
+    m_lastExecutionWasDebug = debugRequested;
+    resetDebugger(true);
+    if (debugRequested && m_debuggerToggle != nullptr) {
+        m_debuggerToggle->setChecked(true);
+    }
+    if (m_debuggerStatusLabel != nullptr) {
+        m_debuggerStatusLabel->setText(
+            debugRequested
+                ? "Debug-Ausfuehrung gestartet. Schritt-Trace wird nach Abschluss geladen."
+                : "Letzter Debugger-Inhalt wurde geleert. Neue Trace-Daten folgen nach Abschluss des Laufs."
+        );
     }
 
     core::RunContext runContext;
@@ -2365,21 +2505,30 @@ void WorkflowPanel::executeWorkflow()
     const int runId = m_nextExecutionId++;
     ++m_activeRunCount;
     m_executionStatusFrame = 0;
+    m_activeExecutionDetail = debugRequested
+        ? QString("Debug-Lauf #%1 wird vorbereitet").arg(runId)
+        : QString("Lauf #%1 wird vorbereitet").arg(runId);
     updateExecutionStatus();
     if (!m_executionStatusTimer->isActive()) {
         m_executionStatusTimer->start();
     }
 
     m_executionOutputView->setPlainText(
-        QString("Lauf #%1 wurde gestartet. Die Ausgabe erscheint nach Abschluss hier.").arg(runId)
+        debugRequested
+            ? QString("Debug-Lauf #%1 wurde gestartet. Ausgabe und Schritt-Trace erscheinen nach Abschluss hier.")
+                  .arg(runId)
+            : QString("Lauf #%1 wurde gestartet. Die Ausgabe erscheint nach Abschluss hier.").arg(runId)
     );
     m_feedbackLabel->setStyleSheet("color: #5f5548;");
     m_feedbackLabel->setText(
-        QString("Workflow-Lauf #%1 wurde im Hintergrund gestartet. Die UI bleibt nutzbar.").arg(runId)
+        debugRequested
+            ? QString("Debug-Ausfuehrung #%1 wurde im Hintergrund gestartet. Die UI bleibt nutzbar.").arg(runId)
+            : QString("Workflow-Lauf #%1 wurde im Hintergrund gestartet. Die UI bleibt nutzbar.").arg(runId)
     );
     publishExecutionLog(
-        QString("[run:%1] Workflow '%2' wurde im Hintergrund ueber Provider '%3' gestartet.")
+        QString("[run:%1] %2 '%3' wurde im Hintergrund ueber Provider '%4' gestartet.")
             .arg(runId)
+            .arg(debugRequested ? "Debug-Ausfuehrung" : "Workflow")
             .arg(workflow.name)
             .arg(registeredProvider->name())
     );
@@ -2399,20 +2548,65 @@ void WorkflowPanel::executeWorkflow()
     const QString workspaceRoot = m_settingsService.workspaceRoot();
     const QString comfyUiBaseUrl = m_settingsService.comfyUiBaseUrl();
     const QStringList allowedToolPaths = m_settingsService.effectiveAllowedToolPaths();
+    core::ExecutionCallbacks executionCallbacks;
+    executionCallbacks.onLogLine = [this, runId](const QString& line) {
+        QMetaObject::invokeMethod(this, [this, runId, line]() {
+            publishExecutionLog(QString("[run:%1] %2").arg(runId).arg(line));
+        }, Qt::QueuedConnection);
+    };
+    executionCallbacks.onStepStatus = [this, runId](const QString& stepId, const QString& statusText) {
+        QMetaObject::invokeMethod(this, [this, runId, stepId, statusText]() {
+            Q_UNUSED(stepId);
+            m_activeExecutionDetail = QString("Lauf #%1 - %2").arg(runId).arg(statusText);
+            updateExecutionStatus();
+        }, Qt::QueuedConnection);
+    };
+    executionCallbacks.onPromptChunk = [this, runId](const QString& stepId, const QString& chunk) {
+        QMetaObject::invokeMethod(this, [this, runId, stepId, chunk]() {
+            m_activeExecutionDetail = QString("Lauf #%1 - Schritt '%2' streamt").arg(runId).arg(stepId);
+            updateExecutionStatus();
+            if (m_onExecutionStreamChunk) {
+                m_onExecutionStreamChunk(
+                    QString("run:%1:%2").arg(runId).arg(stepId),
+                    QString("[run:%1][step:%2][stream] ").arg(runId).arg(stepId),
+                    chunk
+                );
+                return;
+            }
+
+            publishExecutionLog(QString("[run:%1][step:%2][stream] %3").arg(runId).arg(stepId, chunk));
+        }, Qt::QueuedConnection);
+    };
 
     auto* watcher = new QFutureWatcher<core::ExecutionResult>(this);
-    connect(watcher, &QFutureWatcher<core::ExecutionResult>::finished, this, [this, watcher, runId, persistedRun]() mutable {
+    connect(watcher, &QFutureWatcher<core::ExecutionResult>::finished, this, [this, watcher, runId, persistedRun, debugRequested]() mutable {
         const core::ExecutionResult result = watcher->result();
         watcher->deleteLater();
 
         m_activeRunCount = qMax(0, m_activeRunCount - 1);
         if (m_activeRunCount == 0) {
             m_executionStatusTimer->stop();
+            m_activeExecutionDetail.clear();
+        } else {
+            m_activeExecutionDetail = QString("Letzter abgeschlossener Lauf: #%1").arg(runId);
         }
 
         updateExecutionStatus();
-        publishExecutionLog(prefixRunLog(runId, result.logs.join('\n')));
         m_executionOutputView->setPlainText(result.finalOutput);
+        m_lastDebugSteps = result.debugSteps;
+        rebuildDebugStepList();
+        if (m_debuggerStatusLabel != nullptr) {
+            m_debuggerStatusLabel->setText(
+                result.debugSteps.isEmpty()
+                    ? "Keine Schritt-Trace-Daten verfuegbar."
+                    : QString("%1 Schritt-Trace(s) aus Lauf #%2 geladen.")
+                          .arg(result.debugSteps.size())
+                          .arg(runId)
+            );
+        }
+        if (debugRequested && m_debuggerToggle != nullptr) {
+            m_debuggerToggle->setChecked(true);
+        }
 
         int savedMemoryCount = 0;
         bool memoryPersistenceFailed = false;
@@ -2475,7 +2669,8 @@ void WorkflowPanel::executeWorkflow()
         if (memoryPersistenceFailed && result.success) {
             m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
             m_feedbackLabel->setText(
-                QString("Workflow-Ausfuehrung #%1 abgeschlossen, aber Memory konnte nicht vollstaendig gespeichert werden: %2")
+                QString("%1 #%2 abgeschlossen, aber Memory konnte nicht vollstaendig gespeichert werden: %3")
+                    .arg(debugRequested ? "Debug-Ausfuehrung" : "Workflow-Ausfuehrung")
                     .arg(runId)
                     .arg(memoryPersistenceError)
             );
@@ -2485,21 +2680,32 @@ void WorkflowPanel::executeWorkflow()
         if (!result.success) {
             m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
             m_feedbackLabel->setText(
-                QString("Workflow-Ausfuehrung #%1 fehlgeschlagen: %2").arg(runId).arg(result.errorMessage)
+                QString("%1 #%2 fehlgeschlagen: %3")
+                    .arg(debugRequested ? "Debug-Ausfuehrung" : "Workflow-Ausfuehrung")
+                    .arg(runId)
+                    .arg(result.errorMessage)
             );
             return;
         }
 
         m_feedbackLabel->setStyleSheet("color: #2f6b3a;");
         m_feedbackLabel->setText(
-            QString("Workflow-Ausfuehrung #%1 erfolgreich abgeschlossen. Letzte Ausgabezeichen: %2 | Memory: %3")
+            QString("%1 #%2 erfolgreich abgeschlossen. Letzte Ausgabezeichen: %3 | Memory: %4")
+                .arg(debugRequested ? "Debug-Ausfuehrung" : "Workflow-Ausfuehrung")
                 .arg(runId)
                 .arg(result.finalOutput.size())
                 .arg(savedMemoryCount)
         );
     });
 
-    watcher->setFuture(QtConcurrent::run([workflow, runContext, providerBaseUrl, providerName, workspaceRoot, comfyUiBaseUrl, allowedToolPaths]() {
+    watcher->setFuture(QtConcurrent::run([workflow,
+                                          runContext,
+                                          providerBaseUrl,
+                                          providerName,
+                                          workspaceRoot,
+                                          comfyUiBaseUrl,
+                                          allowedToolPaths,
+                                          executionCallbacks]() {
         return executeWorkflowWithProvider(
             providerName,
             providerBaseUrl,
@@ -2507,7 +2713,8 @@ void WorkflowPanel::executeWorkflow()
             comfyUiBaseUrl,
             allowedToolPaths,
             workflow,
-            runContext
+            runContext,
+            executionCallbacks
         );
     }));
 }
@@ -2525,14 +2732,21 @@ void WorkflowPanel::updateExecutionStatus()
 
     const QString dots((m_executionStatusFrame % 4) + 1, '.');
     ++m_executionStatusFrame;
+    const QString detail = m_activeExecutionDetail.trimmed();
 
     if (m_activeRunCount == 1) {
-        m_executionStatusLabel->setText(QString("Status: 1 aktiver Lauf - Modell denkt%1").arg(dots));
+        m_executionStatusLabel->setText(
+            detail.isEmpty()
+                ? QString("Status: 1 aktiver Lauf - Modell denkt%1").arg(dots)
+                : QString("Status: 1 aktiver Lauf - %1%2").arg(detail, dots)
+        );
         return;
     }
 
     m_executionStatusLabel->setText(
-        QString("Status: %1 aktive Laeufe - Modelle denken%2").arg(m_activeRunCount).arg(dots)
+        detail.isEmpty()
+            ? QString("Status: %1 aktive Laeufe - Modelle denken%2").arg(m_activeRunCount).arg(dots)
+            : QString("Status: %1 aktive Laeufe - zuletzt: %2%3").arg(m_activeRunCount).arg(detail, dots)
     );
 }
 
@@ -2696,6 +2910,92 @@ void WorkflowPanel::updateVisualEditorVisibility()
 
     if (m_definitionEdit != nullptr) {
         m_definitionEdit->setVisible(!visualEditorEnabled);
+    }
+}
+
+void WorkflowPanel::resetDebugger(const bool keepVisibilityState)
+{
+    m_lastDebugSteps.clear();
+
+    if (m_debugStepList != nullptr) {
+        const QSignalBlocker blocker(m_debugStepList);
+        m_debugStepList->clear();
+    }
+    if (m_debugSummaryView != nullptr) {
+        m_debugSummaryView->clear();
+    }
+    if (m_debugVariablesView != nullptr) {
+        m_debugVariablesView->clear();
+    }
+    if (m_debugLogsView != nullptr) {
+        m_debugLogsView->clear();
+    }
+    if (m_debuggerStatusLabel != nullptr) {
+        m_debuggerStatusLabel->setText("Noch keine Debug-Ausfuehrung vorhanden.");
+    }
+
+    if (!keepVisibilityState && m_debuggerToggle != nullptr) {
+        m_debuggerToggle->setChecked(false);
+    }
+}
+
+void WorkflowPanel::updateDebuggerVisibility()
+{
+    if (m_debuggerFrame == nullptr || m_debuggerToggle == nullptr) {
+        return;
+    }
+
+    m_debuggerFrame->setVisible(m_debuggerToggle->isChecked());
+}
+
+void WorkflowPanel::rebuildDebugStepList()
+{
+    if (m_debugStepList == nullptr) {
+        return;
+    }
+
+    {
+        const QSignalBlocker blocker(m_debugStepList);
+        m_debugStepList->clear();
+        for (int index = 0; index < m_lastDebugSteps.size(); ++index) {
+            const core::WorkflowDebugStep& debugStep = m_lastDebugSteps.at(index);
+            auto* item = new QListWidgetItem(debugStepStatusLabel(debugStep), m_debugStepList);
+            item->setData(Qt::UserRole, index);
+            item->setToolTip(debugStep.summary);
+        }
+    }
+
+    if (!m_lastDebugSteps.isEmpty()) {
+        m_debugStepList->setCurrentRow(m_lastExecutionWasDebug ? 0 : m_lastDebugSteps.size() - 1);
+    } else {
+        loadDebugStepFromRow(-1);
+    }
+}
+
+void WorkflowPanel::loadDebugStepFromRow(const int row)
+{
+    if (row < 0 || row >= m_lastDebugSteps.size()) {
+        if (m_debugSummaryView != nullptr) {
+            m_debugSummaryView->setPlainText("Kein Debug-Schritt ausgewaehlt.");
+        }
+        if (m_debugVariablesView != nullptr) {
+            m_debugVariablesView->clear();
+        }
+        if (m_debugLogsView != nullptr) {
+            m_debugLogsView->clear();
+        }
+        return;
+    }
+
+    const core::WorkflowDebugStep& debugStep = m_lastDebugSteps.at(row);
+    if (m_debugSummaryView != nullptr) {
+        m_debugSummaryView->setPlainText(formatDebugSummary(debugStep));
+    }
+    if (m_debugVariablesView != nullptr) {
+        m_debugVariablesView->setPlainText(formatDebugVariables(debugStep.variablesAfterStep));
+    }
+    if (m_debugLogsView != nullptr) {
+        m_debugLogsView->setPlainText(debugStep.logs.join('\n'));
     }
 }
 
@@ -5131,6 +5431,7 @@ void WorkflowPanel::resetEditor(const bool keepFeedback)
     m_executionOutputView->clear();
     m_activeCheckBox->setChecked(true);
     syncVisualEditorFromJson();
+    resetDebugger(true);
 
     if (!keepFeedback) {
         m_feedbackLabel->clear();

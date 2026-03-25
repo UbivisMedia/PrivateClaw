@@ -11,7 +11,38 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 namespace privateclaw::core {
+
+struct WorkflowDebugVariable
+{
+    QString key;
+    QString value;
+};
+
+struct WorkflowDebugStep
+{
+    int executionIndex = 0;
+    QString stepId;
+    QString stepType;
+    QString stepName;
+    QString status;
+    QString summary;
+    QString inputPreview;
+    QString outputKey;
+    QString outputPreview;
+    QString outputText;
+    QString reasoningText;
+    QString nextStepId;
+    QString errorMessage;
+    int memoryEntryCount = 0;
+    int directMemoryEntryCount = 0;
+    int compressedMemoryEntryCount = 0;
+    int totalPinnedMemoryEntryCount = 0;
+    QList<WorkflowDebugVariable> variablesAfterStep;
+    QStringList logs;
+};
 
 struct ExecutionResult
 {
@@ -21,6 +52,14 @@ struct ExecutionResult
     QStringList logs;
     QHash<QString, QString> variables;
     QList<domain::MemoryEntry> memoryEntriesToPersist;
+    QList<WorkflowDebugStep> debugSteps;
+};
+
+struct ExecutionCallbacks
+{
+    std::function<void(const QString& line)> onLogLine;
+    std::function<void(const QString& stepId, const QString& statusText)> onStepStatus;
+    std::function<void(const QString& stepId, const QString& chunk)> onPromptChunk;
 };
 
 class WorkflowEngine
@@ -34,7 +73,8 @@ public:
     ExecutionResult executeWorkflow(
         const domain::Workflow& workflow,
         RunContext runContext,
-        providers::ILlmProvider& provider
+        providers::ILlmProvider& provider,
+        ExecutionCallbacks callbacks = {}
     ) const;
 
 private:

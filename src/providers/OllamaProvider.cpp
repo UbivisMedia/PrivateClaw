@@ -7,6 +7,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QStringList>
 #include <QTimer>
 #include <QUrl>
 
@@ -35,6 +36,31 @@ QUrl buildEndpoint(const QString& baseUrl, const QString& suffix)
 QUrl tagsEndpoint(const QString& baseUrl)
 {
     return buildEndpoint(baseUrl, "/api/tags");
+}
+
+QJsonArray buildMessages(const ChatRequest& request)
+{
+    QJsonArray messages;
+    if (!request.systemPrompt.trimmed().isEmpty()) {
+        messages.append(QJsonObject{
+            { "role", "system" },
+            { "content", request.systemPrompt }
+        });
+    }
+    messages.append(QJsonObject{
+        { "role", "user" },
+        { "content", request.userPrompt }
+    });
+    return messages;
+}
+
+QJsonObject buildChatPayload(const ChatRequest& request, const bool stream)
+{
+    return QJsonObject{
+        { "model", request.model.trimmed() },
+        { "stream", stream },
+        { "messages", buildMessages(request) }
+    };
 }
 
 ProviderHealth performHealthCheck(const QUrl& url, const QString& modelKey)
@@ -100,6 +126,54 @@ QString ollamaErrorMessageFromPayload(const QByteArray& payload)
     return json.object().value("error").toString().trimmed();
 }
 
+QString firstNonEmptyString(const QJsonObject& object, const QStringList& keys)
+{
+    for (const QString& key : keys) {
+        const QString value = object.value(key).toString();
+        if (!value.isEmpty()) {
+            return value;
+        }
+    }
+
+    return {};
+}
+
+QString extractOllamaResponseText(const QJsonObject& root, bool* reasoningOpen)
+{
+    const QJsonObject messageObject = root.value("message").toObject();
+    const QString reasoningFragment = firstNonEmptyString(
+        messageObject.isEmpty() ? root : messageObject,
+        { "thinking", "reasoning", "analysis", "thought", "reflection" }
+    );
+    const QString contentFragment = messageObject.isEmpty()
+        ? root.value("response").toString()
+        : firstNonEmptyString(messageObject, { "content", "response" });
+
+    QString chunk;
+    if (!reasoningFragment.isEmpty()) {
+        if (reasoningOpen != nullptr && !*reasoningOpen) {
+            chunk += "<think>";
+            *reasoningOpen = true;
+        }
+        chunk += reasoningFragment;
+    }
+
+    if (!contentFragment.isEmpty()) {
+        if (reasoningOpen != nullptr && *reasoningOpen) {
+            chunk += "</think>";
+            *reasoningOpen = false;
+        }
+        chunk += contentFragment;
+    }
+
+    if (root.value("done").toBool(false) && reasoningOpen != nullptr && *reasoningOpen) {
+        chunk += "</think>";
+        *reasoningOpen = false;
+    }
+
+    return chunk;
+}
+
 } // namespace
 
 OllamaProvider::OllamaProvider(QString baseUrl)
@@ -120,6 +194,11 @@ QString OllamaProvider::baseUrl() const
 bool OllamaProvider::isConfigured() const
 {
     return !m_baseUrl.trimmed().isEmpty();
+}
+
+bool OllamaProvider::supportsStreaming() const
+{
+    return true;
 }
 
 ProviderHealth OllamaProvider::healthCheck()
@@ -151,24 +230,6 @@ ChatResponse OllamaProvider::chat(const ChatRequest& request)
         return response;
     }
 
-    QJsonArray messages;
-    if (!request.systemPrompt.trimmed().isEmpty()) {
-        messages.append(QJsonObject{
-            { "role", "system" },
-            { "content", request.systemPrompt }
-        });
-    }
-    messages.append(QJsonObject{
-        { "role", "user" },
-        { "content", request.userPrompt }
-    });
-
-    const QJsonObject payload{
-        { "model", request.model.trimmed() },
-        { "stream", false },
-        { "messages", messages }
-    };
-
     QNetworkAccessManager networkManager;
     QNetworkRequest networkRequest(buildEndpoint(m_baseUrl, "/api/chat"));
     networkRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -177,7 +238,7 @@ ChatResponse OllamaProvider::chat(const ChatRequest& request)
 
     QNetworkReply* reply = networkManager.post(
         networkRequest,
-        QJsonDocument(payload).toJson(QJsonDocument::Compact)
+        QJsonDocument(buildChatPayload(request, false)).toJson(QJsonDocument::Compact)
     );
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     loop.exec();
@@ -194,10 +255,8 @@ ChatResponse OllamaProvider::chat(const ChatRequest& request)
 
     const QJsonDocument json = QJsonDocument::fromJson(payloadBytes);
     const QJsonObject root = json.object();
-    QString text = root.value("message").toObject().value("content").toString();
-    if (text.trimmed().isEmpty()) {
-        text = root.value("response").toString();
-    }
+    bool reasoningOpen = false;
+    const QString text = extractOllamaResponseText(root, &reasoningOpen).trimmed();
 
     if (text.trimmed().isEmpty()) {
         response.errorMessage = "Ollama hat keine auswertbare Antwort geliefert.";
@@ -206,6 +265,110 @@ ChatResponse OllamaProvider::chat(const ChatRequest& request)
 
     response.success = true;
     response.text = text.trimmed();
+    return response;
+}
+
+ChatResponse OllamaProvider::chatStream(const ChatRequest& request, const ChatStreamCallback& onChunk)
+{
+    ChatResponse response;
+    if (!isConfigured()) {
+        response.errorMessage = "Keine Ollama-URL konfiguriert.";
+        return response;
+    }
+
+    if (request.model.trimmed().isEmpty()) {
+        response.errorMessage = "Kein Ollama-Modell angegeben.";
+        return response;
+    }
+
+    QNetworkAccessManager networkManager;
+    QNetworkRequest networkRequest(buildEndpoint(m_baseUrl, "/api/chat"));
+    networkRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QEventLoop loop;
+    QNetworkReply* reply = networkManager.post(
+        networkRequest,
+        QJsonDocument(buildChatPayload(request, true)).toJson(QJsonDocument::Compact)
+    );
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+
+    QByteArray pendingBuffer;
+    QByteArray rawPayload;
+    QString accumulatedText;
+    QString parseError;
+    bool reasoningOpen = false;
+
+    const auto appendChunk = [&](const QString& chunk) {
+        if (chunk.isEmpty()) {
+            return;
+        }
+
+        accumulatedText += chunk;
+        if (onChunk) {
+            onChunk(chunk);
+        }
+    };
+
+    const auto processLine = [&](QByteArray line) {
+        line = line.trimmed();
+        if (line.isEmpty() || !parseError.isEmpty()) {
+            return;
+        }
+
+        QJsonParseError jsonError;
+        const QJsonDocument json = QJsonDocument::fromJson(line, &jsonError);
+        if (jsonError.error != QJsonParseError::NoError || !json.isObject()) {
+            parseError = QString("Ollama-Streaming lieferte ungueltiges JSON: %1").arg(jsonError.errorString());
+            return;
+        }
+
+        appendChunk(extractOllamaResponseText(json.object(), &reasoningOpen));
+    };
+
+    QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&]() {
+        const QByteArray incoming = reply->readAll();
+        rawPayload += incoming;
+        pendingBuffer += incoming;
+
+        int newlineIndex = pendingBuffer.indexOf('\n');
+        while (newlineIndex >= 0) {
+            processLine(pendingBuffer.left(newlineIndex));
+            pendingBuffer.remove(0, newlineIndex + 1);
+            newlineIndex = pendingBuffer.indexOf('\n');
+        }
+    });
+
+    loop.exec();
+
+    if (!pendingBuffer.trimmed().isEmpty()) {
+        processLine(pendingBuffer);
+    }
+
+    if (reply->error() != QNetworkReply::NoError) {
+        const QString serverError = ollamaErrorMessageFromPayload(rawPayload);
+        response.errorMessage = serverError.isEmpty() ? reply->errorString() : serverError;
+        reply->deleteLater();
+        return response;
+    }
+
+    reply->deleteLater();
+
+    if (!parseError.isEmpty()) {
+        response.errorMessage = parseError;
+        return response;
+    }
+
+    if (reasoningOpen) {
+        appendChunk("</think>");
+    }
+
+    if (accumulatedText.trimmed().isEmpty()) {
+        response.errorMessage = "Ollama hat keine auswertbare Streaming-Antwort geliefert.";
+        return response;
+    }
+
+    response.success = true;
+    response.text = accumulatedText.trimmed();
     return response;
 }
 

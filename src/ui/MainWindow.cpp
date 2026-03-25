@@ -119,19 +119,6 @@ services::PreparedMemoryContext prepareMemoryContext(services::MemoryService& me
     return memoryService.prepareRunContext(projectId);
 }
 
-QString prefixRunLog(const QString& prefix, const QStringList& lines)
-{
-    QStringList prefixed;
-    prefixed.reserve(lines.size());
-    for (const QString& line : lines) {
-        if (!line.trimmed().isEmpty()) {
-            prefixed.append(QString("%1 %2").arg(prefix, line));
-        }
-    }
-
-    return prefixed.join('\n');
-}
-
 QString summarizeRunText(QString text)
 {
     text = text.simplified();
@@ -148,7 +135,8 @@ core::ExecutionResult executeWorkflowWithProvider(
     const QString& comfyUiBaseUrl,
     const QStringList& allowedToolPaths,
     const domain::Workflow& workflow,
-    const core::RunContext& runContext
+    const core::RunContext& runContext,
+    const core::ExecutionCallbacks& callbacks
 )
 {
     const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl, QString(), allowedToolPaths);
@@ -156,12 +144,12 @@ core::ExecutionResult executeWorkflowWithProvider(
 
     if (providerName.compare("Ollama", Qt::CaseInsensitive) == 0) {
         providers::OllamaProvider provider(providerBaseUrl);
-        return workflowEngine.executeWorkflow(workflow, runContext, provider);
+        return workflowEngine.executeWorkflow(workflow, runContext, provider, callbacks);
     }
 
     if (providerName.compare("LM Studio", Qt::CaseInsensitive) == 0) {
         providers::LmStudioProvider provider(providerBaseUrl);
-        return workflowEngine.executeWorkflow(workflow, runContext, provider);
+        return workflowEngine.executeWorkflow(workflow, runContext, provider, callbacks);
     }
 
     core::ExecutionResult result;
@@ -316,6 +304,11 @@ void MainWindow::buildUi()
     });
     m_workflowPanel->setOnExecutionLogChanged([this](const QString& text) {
         m_runLogPanel->appendLogLine(text);
+    });
+    m_workflowPanel->setOnExecutionStreamChunk([this](const QString& streamId, const QString& prefix, const QString& chunk) {
+        if (m_runLogPanel != nullptr) {
+            m_runLogPanel->appendStreamingChunk(streamId, prefix, chunk);
+        }
     });
 
     m_pages->addWidget(m_projectPanel);
@@ -964,19 +957,31 @@ void MainWindow::executeSchedule(
     const QString workspaceRoot = m_settingsService.workspaceRoot();
     const QString comfyUiBaseUrl = m_settingsService.comfyUiBaseUrl();
     const QStringList allowedToolPaths = m_settingsService.effectiveAllowedToolPaths();
+    core::ExecutionCallbacks executionCallbacks;
+    executionCallbacks.onLogLine = [this, scheduleId = schedule.id](const QString& line) {
+        QMetaObject::invokeMethod(this, [this, scheduleId, line]() {
+            if (m_runLogPanel != nullptr) {
+                m_runLogPanel->appendLogLine(QString("[schedule:%1] %2").arg(scheduleId).arg(line));
+            }
+        }, Qt::QueuedConnection);
+    };
+    executionCallbacks.onPromptChunk = [this, scheduleId = schedule.id](const QString& stepId, const QString& chunk) {
+        QMetaObject::invokeMethod(this, [this, scheduleId, stepId, chunk]() {
+            if (m_runLogPanel != nullptr) {
+                m_runLogPanel->appendStreamingChunk(
+                    QString("schedule:%1:%2").arg(scheduleId).arg(stepId),
+                    QString("[schedule:%1][step:%2][stream] ").arg(scheduleId).arg(stepId),
+                    chunk
+                );
+            }
+        }, Qt::QueuedConnection);
+    };
     auto* watcher = new QFutureWatcher<core::ExecutionResult>(this);
     connect(watcher, &QFutureWatcher<core::ExecutionResult>::finished, this, [this, watcher, schedule, advanceScheduleAfterRun, persistedRun]() mutable {
         const core::ExecutionResult result = watcher->result();
         watcher->deleteLater();
 
         m_runningScheduleIds.remove(schedule.id);
-
-        if (m_runLogPanel != nullptr) {
-            const QString prefixedLogs = prefixRunLog(QString("[schedule:%1]").arg(schedule.id), result.logs);
-            if (!prefixedLogs.isEmpty()) {
-                m_runLogPanel->appendLogLine(prefixedLogs);
-            }
-        }
 
         int savedMemoryCount = 0;
         for (domain::MemoryEntry entry : result.memoryEntriesToPersist) {
@@ -1083,7 +1088,14 @@ void MainWindow::executeSchedule(
         updateStatusBar();
     });
 
-    watcher->setFuture(QtConcurrent::run([workflow, runContext, providerBaseUrl, providerName, workspaceRoot, comfyUiBaseUrl, allowedToolPaths]() {
+    watcher->setFuture(QtConcurrent::run([workflow,
+                                          runContext,
+                                          providerBaseUrl,
+                                          providerName,
+                                          workspaceRoot,
+                                          comfyUiBaseUrl,
+                                          allowedToolPaths,
+                                          executionCallbacks]() {
         return executeWorkflowWithProvider(
             providerName,
             providerBaseUrl,
@@ -1091,7 +1103,8 @@ void MainWindow::executeSchedule(
             comfyUiBaseUrl,
             allowedToolPaths,
             workflow,
-            runContext
+            runContext,
+            executionCallbacks
         );
     }));
 }

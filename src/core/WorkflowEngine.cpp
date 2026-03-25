@@ -6,6 +6,8 @@
 #include <QSet>
 #include <QtGlobal>
 
+#include <algorithm>
+
 namespace privateclaw::core {
 
 namespace {
@@ -191,6 +193,59 @@ QString memorySnippetFromEntry(const domain::MemoryEntry& entry)
 
     parts.append(QString("Inhalt: %1").arg(previewText(entry.content)));
     return QString("- %1").arg(parts.join(" | "));
+}
+
+QString debugVariableValueForDisplay(const QString& key, QString value)
+{
+    if (key.startsWith("secret.", Qt::CaseInsensitive)) {
+        return "[SECRET]";
+    }
+
+    if (value.size() > 6000) {
+        value = value.left(6000) + "\n...[gekuerzt]";
+    }
+    return value;
+}
+
+QList<WorkflowDebugVariable> snapshotDebugVariables(const QHash<QString, QString>& variables)
+{
+    QList<WorkflowDebugVariable> snapshot;
+    QStringList keys = variables.keys();
+    std::sort(keys.begin(), keys.end(), [](const QString& left, const QString& right) {
+        return left.toCaseFolded() < right.toCaseFolded();
+    });
+
+    snapshot.reserve(keys.size());
+    for (const QString& key : keys) {
+        WorkflowDebugVariable variable;
+        variable.key = key;
+        variable.value = debugVariableValueForDisplay(key, variables.value(key));
+        snapshot.append(variable);
+    }
+
+    return snapshot;
+}
+
+QString nextStepLabel(const QList<domain::WorkflowStep>& steps, const int stepIndex)
+{
+    if (stepIndex >= 0 && stepIndex < steps.size()) {
+        return steps.at(stepIndex).id.trimmed();
+    }
+
+    return "[ende]";
+}
+
+void captureDebugState(WorkflowDebugStep* debugStep, const RunContext& runContext)
+{
+    if (debugStep == nullptr) {
+        return;
+    }
+
+    debugStep->memoryEntryCount = runContext.memoryEntryCount;
+    debugStep->directMemoryEntryCount = runContext.directMemoryEntryCount;
+    debugStep->compressedMemoryEntryCount = runContext.compressedMemoryEntryCount;
+    debugStep->totalPinnedMemoryEntryCount = runContext.totalPinnedMemoryEntryCount;
+    debugStep->variablesAfterStep = snapshotDebugVariables(runContext.variables);
 }
 
 QString cleanupVisiblePromptText(QString text)
@@ -469,11 +524,29 @@ QString WorkflowEngine::previewExecution(const domain::Workflow& workflow, const
 ExecutionResult WorkflowEngine::executeWorkflow(
     const domain::Workflow& workflow,
     RunContext runContext,
-    providers::ILlmProvider& provider
+    providers::ILlmProvider& provider,
+    ExecutionCallbacks callbacks
 ) const
 {
     ExecutionResult result;
-    result.logs.append(
+    const auto appendLog = [&](const QString& line) {
+        result.logs.append(line);
+        if (callbacks.onLogLine) {
+            callbacks.onLogLine(line);
+        }
+    };
+    const auto updateStepStatus = [&](const QString& stepId, const QString& statusText) {
+        if (callbacks.onStepStatus) {
+            callbacks.onStepStatus(stepId, statusText);
+        }
+    };
+    const auto appendPromptChunk = [&](const QString& stepId, const QString& chunk) {
+        if (!chunk.isEmpty() && callbacks.onPromptChunk) {
+            callbacks.onPromptChunk(stepId, chunk);
+        }
+    };
+
+    appendLog(
         QString("[engine] Starte Workflow '%1' fuer Projekt '%2' ueber Provider '%3'.")
             .arg(workflow.name, runContext.projectName, provider.name())
     );
@@ -481,13 +554,13 @@ ExecutionResult WorkflowEngine::executeWorkflow(
     const QString validationError = validateWorkflow(workflow);
     if (!validationError.isEmpty()) {
         result.errorMessage = validationError;
-        result.logs.append(QString("[engine] Abbruch: %1").arg(validationError));
+        appendLog(QString("[engine] Abbruch: %1").arg(validationError));
         return result;
     }
 
     if (runContext.selectedModel.trimmed().isEmpty()) {
         result.errorMessage = "Kein Modell fuer die Workflow-Ausfuehrung konfiguriert.";
-        result.logs.append(QString("[engine] Abbruch: %1").arg(result.errorMessage));
+        appendLog(QString("[engine] Abbruch: %1").arg(result.errorMessage));
         return result;
     }
 
@@ -507,7 +580,7 @@ ExecutionResult WorkflowEngine::executeWorkflow(
     while (currentStepIndex >= 0 && currentStepIndex < workflow.steps.size()) {
         if (++executedStepCount > maxStepExecutions) {
             result.errorMessage = "Workflow wurde wegen zu vieler Schritt-Ausfuehrungen abgebrochen. Pruefe Decision-Spruenge.";
-            result.logs.append(QString("[engine] Abbruch: %1").arg(result.errorMessage));
+            appendLog(QString("[engine] Abbruch: %1").arg(result.errorMessage));
             result.variables = runContext.variables;
             return result;
         }
@@ -515,6 +588,27 @@ ExecutionResult WorkflowEngine::executeWorkflow(
         const domain::WorkflowStep& step = workflow.steps.at(currentStepIndex);
         const int sequentialNextIndex = currentStepIndex + 1;
         const QString stepType = normalizedStepType(step.type);
+        const int stepLogStartIndex = result.logs.size();
+        WorkflowDebugStep debugStep;
+        debugStep.executionIndex = executedStepCount;
+        debugStep.stepId = step.id;
+        debugStep.stepType = stepType;
+        debugStep.stepName = step.name;
+        updateStepStatus(
+            step.id,
+            QString("Schritt '%1' (%2) wird ausgefuehrt").arg(step.id, stepType)
+        );
+        auto finalizeDebugStep = [&](const QString& status, const QString& summary) {
+            debugStep.status = status;
+            debugStep.summary = summary;
+            captureDebugState(&debugStep, runContext);
+            for (int logIndex = stepLogStartIndex; logIndex < result.logs.size(); ++logIndex) {
+                debugStep.logs.append(result.logs.at(logIndex));
+            }
+            result.debugSteps.append(debugStep);
+            updateStepStatus(step.id, QString("Schritt '%1': %2").arg(step.id, summary));
+        };
+
         if (stepType == "save_memory") {
             QString contentTemplate = configString(step.config, "content");
             if (contentTemplate.isEmpty()) {
@@ -522,11 +616,15 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             }
 
             const QString content = renderTemplate(contentTemplate, runContext).trimmed();
+            debugStep.inputPreview = previewText(content);
             if (content.isEmpty()) {
                 result.errorMessage = QString(
                     "Schritt '%1' konnte keinen Memory-Inhalt erzeugen."
                 ).arg(step.id);
-                result.logs.append(QString("[step:%1] Fehler: %2").arg(step.id, result.errorMessage));
+                appendLog(QString("[step:%1] Fehler: %2").arg(step.id, result.errorMessage));
+                debugStep.errorMessage = result.errorMessage;
+                debugStep.nextStepId = "[abbruch]";
+                finalizeDebugStep("failed", "Kein Memory-Inhalt erzeugt.");
                 result.variables = runContext.variables;
                 return result;
             }
@@ -569,14 +667,19 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             runContext.variables.insert("project_memory_pinned_count", QString::number(runContext.pinnedMemoryEntryCount));
             runContext.variables.insert("project_memory_total_pinned_count", QString::number(runContext.totalPinnedMemoryEntryCount));
 
-            result.logs.append(QString("[step:%1] Typ: save_memory").arg(step.id));
-            result.logs.append(QString("[step:%1] Memory-Typ: %2").arg(step.id, entry.type));
-            result.logs.append(QString("[step:%1] Memory-Quelle: %2").arg(step.id, entry.source));
+            appendLog(QString("[step:%1] Typ: save_memory").arg(step.id));
+            appendLog(QString("[step:%1] Memory-Typ: %2").arg(step.id, entry.type));
+            appendLog(QString("[step:%1] Memory-Quelle: %2").arg(step.id, entry.source));
             if (entry.pinned) {
-                result.logs.append(QString("[step:%1] Memory wird angepinnt gespeichert.").arg(step.id));
+                appendLog(QString("[step:%1] Memory wird angepinnt gespeichert.").arg(step.id));
             }
-            result.logs.append(QString("[step:%1] Memory gespeichert vorgemerkt.").arg(step.id));
-            result.logs.append(QString("[step:%1] Inhalt: %2").arg(step.id, previewText(entry.content)));
+            appendLog(QString("[step:%1] Memory gespeichert vorgemerkt.").arg(step.id));
+            appendLog(QString("[step:%1] Inhalt: %2").arg(step.id, previewText(entry.content)));
+            debugStep.outputKey = "last_memory_content";
+            debugStep.outputPreview = previewText(entry.content);
+            debugStep.outputText = debugVariableValueForDisplay({}, entry.content);
+            debugStep.nextStepId = nextStepLabel(workflow.steps, sequentialNextIndex);
+            finalizeDebugStep("completed", QString("Memory-Eintrag vom Typ '%1' vorgemerkt.").arg(entry.type));
             currentStepIndex = sequentialNextIndex;
             continue;
         }
@@ -586,13 +689,14 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                 ? "{{last_response}}"
                 : configString(step.config, "input");
             const QString inputValue = renderTemplate(inputTemplate, runContext);
+            debugStep.inputPreview = previewText(inputValue);
             const QString outputKey = configString(step.config, "output").isEmpty()
                 ? step.id
                 : configString(step.config, "output");
             const bool caseSensitive = configBool(step.config, "case_sensitive", false);
 
-            result.logs.append(QString("[step:%1] Typ: decision").arg(step.id));
-            result.logs.append(QString("[step:%1] Input: %2").arg(step.id, previewText(inputValue)));
+            appendLog(QString("[step:%1] Typ: decision").arg(step.id));
+            appendLog(QString("[step:%1] Input: %2").arg(step.id, previewText(inputValue)));
 
             bool matched = false;
             QString decisionValue;
@@ -617,7 +721,11 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                             &evaluationError
                         )) {
                         result.errorMessage = QString("Schritt '%1' fehlgeschlagen: %2").arg(step.id, evaluationError);
-                        result.logs.append(QString("[step:%1] Fehler: %2").arg(step.id, evaluationError));
+                        appendLog(QString("[step:%1] Fehler: %2").arg(step.id, evaluationError));
+                        debugStep.errorMessage = result.errorMessage;
+                        debugStep.outputKey = outputKey;
+                        debugStep.nextStepId = "[abbruch]";
+                        finalizeDebugStep("failed", "Decision-Auswertung fehlgeschlagen.");
                         result.variables = runContext.variables;
                         return result;
                     }
@@ -632,7 +740,7 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                         decisionValue = QString("rule_%1").arg(index + 1);
                     }
                     targetStepId = configString(rule, "next_step");
-                    result.logs.append(
+                    appendLog(
                         QString("[step:%1] Regel %2 getroffen (%3).")
                             .arg(step.id)
                             .arg(index + 1)
@@ -647,7 +755,7 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                         decisionValue = "no_match";
                     }
                     targetStepId = configString(step.config, "default_next");
-                    result.logs.append(QString("[step:%1] Keine Regel getroffen.").arg(step.id));
+                    appendLog(QString("[step:%1] Keine Regel getroffen.").arg(step.id));
                 }
             } else {
                 const QString operatorName = configString(step.config, "operator");
@@ -661,7 +769,11 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                         &evaluationError
                     )) {
                     result.errorMessage = QString("Schritt '%1' fehlgeschlagen: %2").arg(step.id, evaluationError);
-                    result.logs.append(QString("[step:%1] Fehler: %2").arg(step.id, evaluationError));
+                    appendLog(QString("[step:%1] Fehler: %2").arg(step.id, evaluationError));
+                    debugStep.errorMessage = result.errorMessage;
+                    debugStep.outputKey = outputKey;
+                    debugStep.nextStepId = "[abbruch]";
+                    finalizeDebugStep("failed", "Decision-Auswertung fehlgeschlagen.");
                     result.variables = runContext.variables;
                     return result;
                 }
@@ -680,7 +792,7 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                     targetStepId = configString(step.config, "if_false");
                 }
 
-                result.logs.append(
+                appendLog(
                     QString("[step:%1] Entscheidung: %2")
                         .arg(step.id, matched ? "true" : "false")
                 );
@@ -688,7 +800,7 @@ ExecutionResult WorkflowEngine::executeWorkflow(
 
             runContext.variables.insert(outputKey, decisionValue);
             runContext.variables.insert("last_decision", decisionValue);
-            result.logs.append(QString("[step:%1] Ergebnisvariable '%2' = %3").arg(step.id, outputKey, decisionValue));
+            appendLog(QString("[step:%1] Ergebnisvariable '%2' = %3").arg(step.id, outputKey, decisionValue));
 
             QString targetError;
             const int resolvedIndex = resolveNextStepIndex(
@@ -699,17 +811,34 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             );
             if (resolvedIndex < 0) {
                 result.errorMessage = QString("Schritt '%1' fehlgeschlagen: %2").arg(step.id, targetError);
-                result.logs.append(QString("[step:%1] Fehler: %2").arg(step.id, targetError));
+                appendLog(QString("[step:%1] Fehler: %2").arg(step.id, targetError));
+                debugStep.errorMessage = result.errorMessage;
+                debugStep.outputKey = outputKey;
+                debugStep.outputPreview = previewText(decisionValue);
+                debugStep.outputText = debugVariableValueForDisplay({}, decisionValue);
+                debugStep.nextStepId = targetStepId.trimmed().isEmpty() ? "[abbruch]" : targetStepId.trimmed();
+                finalizeDebugStep("failed", "Decision-Zielsprung ungueltig.");
                 result.variables = runContext.variables;
                 return result;
             }
 
             if (targetStepId.trimmed().isEmpty()) {
-                result.logs.append(QString("[step:%1] Weiter mit naechstem Schritt.").arg(step.id));
+                appendLog(QString("[step:%1] Weiter mit naechstem Schritt.").arg(step.id));
             } else {
-                result.logs.append(QString("[step:%1] Springe zu '%2'.").arg(step.id, targetStepId));
+                appendLog(QString("[step:%1] Springe zu '%2'.").arg(step.id, targetStepId));
             }
 
+            debugStep.outputKey = outputKey;
+            debugStep.outputPreview = previewText(decisionValue);
+            debugStep.outputText = debugVariableValueForDisplay({}, decisionValue);
+            debugStep.nextStepId = targetStepId.trimmed().isEmpty()
+                ? nextStepLabel(workflow.steps, resolvedIndex)
+                : targetStepId.trimmed();
+            finalizeDebugStep(
+                "completed",
+                QString("Decision-Ergebnis '%1' mit Folge '%2'.")
+                    .arg(decisionValue, debugStep.nextStepId)
+            );
             currentStepIndex = resolvedIndex;
             continue;
         }
@@ -717,19 +846,23 @@ ExecutionResult WorkflowEngine::executeWorkflow(
         if (stepType == "tool") {
             if (m_toolExecutor == nullptr) {
                 result.errorMessage = QString("Schritt '%1' fehlgeschlagen: Kein ToolExecutor konfiguriert.").arg(step.id);
-                result.logs.append(QString("[step:%1] Fehler: %2").arg(step.id, result.errorMessage));
+                appendLog(QString("[step:%1] Fehler: %2").arg(step.id, result.errorMessage));
+                debugStep.errorMessage = result.errorMessage;
+                debugStep.nextStepId = "[abbruch]";
+                finalizeDebugStep("failed", "Kein ToolExecutor konfiguriert.");
                 result.variables = runContext.variables;
                 return result;
             }
 
             const QJsonObject renderedConfig = renderJsonValue(step.config, runContext).toObject();
             const QString toolName = configString(renderedConfig, "tool");
+            debugStep.inputPreview = toolName;
             const QString outputKey = configString(renderedConfig, "output").isEmpty()
                 ? step.id
                 : configString(renderedConfig, "output");
 
-            result.logs.append(QString("[step:%1] Typ: tool").arg(step.id));
-            result.logs.append(QString("[step:%1] Tool: %2").arg(step.id, toolName));
+            appendLog(QString("[step:%1] Typ: tool").arg(step.id));
+            appendLog(QString("[step:%1] Tool: %2").arg(step.id, toolName));
 
             tools::ToolExecutionRequest request;
             request.toolName = toolName;
@@ -747,12 +880,16 @@ ExecutionResult WorkflowEngine::executeWorkflow(
 
             const tools::ToolExecutionResult toolResult = m_toolExecutor->execute(request);
             for (const QString& logLine : toolResult.logs) {
-                result.logs.append(QString("[step:%1] %2").arg(step.id, logLine));
+                appendLog(QString("[step:%1] %2").arg(step.id, logLine));
             }
 
             if (!toolResult.success) {
                 result.errorMessage = QString("Schritt '%1' fehlgeschlagen: %2").arg(step.id, toolResult.errorMessage);
-                result.logs.append(QString("[step:%1] Fehler: %2").arg(step.id, toolResult.errorMessage));
+                appendLog(QString("[step:%1] Fehler: %2").arg(step.id, toolResult.errorMessage));
+                debugStep.errorMessage = result.errorMessage;
+                debugStep.outputKey = outputKey;
+                debugStep.nextStepId = "[abbruch]";
+                finalizeDebugStep("failed", QString("Tool '%1' fehlgeschlagen.").arg(toolName));
                 result.variables = runContext.variables;
                 return result;
             }
@@ -782,17 +919,29 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                 runContext.variables.insert("project_memory_compressed_count", QString::number(runContext.compressedMemoryEntryCount));
                 runContext.variables.insert("project_memory_pinned_count", QString::number(runContext.pinnedMemoryEntryCount));
                 runContext.variables.insert("project_memory_total_pinned_count", QString::number(runContext.totalPinnedMemoryEntryCount));
-                result.logs.append(
+                appendLog(
                     QString("[step:%1] Tool hat %2 Memory-Eintrag(e) vorgemerkt.")
                         .arg(step.id)
                         .arg(toolResult.memoryEntriesToPersist.size())
                 );
             }
 
-            result.logs.append(
+            appendLog(
                 QString("[step:%1] Tool-Ausgabe gespeichert in Variable '%2'.").arg(step.id, outputKey)
             );
-            result.logs.append(QString("[step:%1] Ausgabe: %2").arg(step.id, previewText(toolResult.outputText)));
+            appendLog(QString("[step:%1] Ausgabe: %2").arg(step.id, previewText(toolResult.outputText)));
+            debugStep.outputKey = outputKey;
+            debugStep.outputPreview = previewText(toolResult.outputText);
+            debugStep.outputText = debugVariableValueForDisplay({}, toolResult.outputText);
+            debugStep.nextStepId = nextStepLabel(workflow.steps, sequentialNextIndex);
+            finalizeDebugStep(
+                "completed",
+                toolResult.memoryEntriesToPersist.isEmpty()
+                    ? QString("Tool '%1' erfolgreich ausgefuehrt.").arg(toolName)
+                    : QString("Tool '%1' erfolgreich, %2 Memory-Eintraege vorgemerkt.")
+                          .arg(toolName)
+                          .arg(toolResult.memoryEntriesToPersist.size())
+            );
             currentStepIndex = sequentialNextIndex;
             continue;
         }
@@ -816,6 +965,7 @@ ExecutionResult WorkflowEngine::executeWorkflow(
         const bool promptUsesExplicitMemory = promptTemplate.contains("{{project_memory}}")
             || systemPrompt.contains("{{project_memory}}");
         const QString renderedPrompt = renderTemplate(promptTemplate, runContext);
+        debugStep.inputPreview = previewText(renderedPrompt);
         systemPrompt = renderTemplate(systemPrompt, runContext);
         if (!promptUsesExplicitMemory) {
             const QString memoryBlock = memoryContextBlock(runContext.memorySnippets);
@@ -824,10 +974,10 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             }
         }
 
-        result.logs.append(QString("[step:%1] Typ: prompt").arg(step.id));
-        result.logs.append(QString("[step:%1] Modell: %2").arg(step.id, model));
+        appendLog(QString("[step:%1] Typ: prompt").arg(step.id));
+        appendLog(QString("[step:%1] Modell: %2").arg(step.id, model));
         if (!runContext.memorySnippets.isEmpty()) {
-            result.logs.append(
+            appendLog(
                 QString("[step:%1] Memory-Kontext: %2 Eintraege verfuegbar (%3 direkte Snippets, %4 komprimiert).")
                     .arg(step.id)
                     .arg(runContext.memoryEntryCount)
@@ -835,17 +985,31 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                     .arg(runContext.compressedMemoryEntryCount)
             );
         }
-        result.logs.append(QString("[step:%1] Prompt: %2").arg(step.id, previewText(renderedPrompt)));
+        appendLog(QString("[step:%1] Prompt: %2").arg(step.id, previewText(renderedPrompt)));
 
         providers::ChatRequest request;
         request.model = model;
         request.systemPrompt = systemPrompt;
         request.userPrompt = renderedPrompt;
 
-        const providers::ChatResponse response = provider.chat(request);
+        providers::ChatResponse response;
+        const bool shouldStreamPrompt = provider.supportsStreaming() && static_cast<bool>(callbacks.onPromptChunk);
+        if (shouldStreamPrompt) {
+            appendLog(QString("[step:%1] Live-Streaming aktiviert.").arg(step.id));
+            updateStepStatus(step.id, QString("Schritt '%1' streamt Modellausgabe").arg(step.id));
+            response = provider.chatStream(request, [&](const QString& chunk) {
+                appendPromptChunk(step.id, chunk);
+            });
+        } else {
+            response = provider.chat(request);
+        }
         if (!response.success) {
             result.errorMessage = QString("Schritt '%1' fehlgeschlagen: %2").arg(step.id, response.errorMessage);
-            result.logs.append(QString("[step:%1] Fehler: %2").arg(step.id, response.errorMessage));
+            appendLog(QString("[step:%1] Fehler: %2").arg(step.id, response.errorMessage));
+            debugStep.errorMessage = result.errorMessage;
+            debugStep.outputKey = outputKey;
+            debugStep.nextStepId = "[abbruch]";
+            finalizeDebugStep("failed", QString("Prompt-Schritt mit Modell '%1' fehlgeschlagen.").arg(model));
             result.variables = runContext.variables;
             return result;
         }
@@ -862,12 +1026,12 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             runContext.variables.insert(outputKey + "_reasoning", sanitizedResponse.reasoningText);
             runContext.variables.insert("last_reasoning", sanitizedResponse.reasoningText);
             runContext.variables.insert("last_response_reasoning", sanitizedResponse.reasoningText);
-            result.logs.append(
+            appendLog(
                 QString("[step:%1] Reasoning-Tags erkannt und aus der sichtbaren Ausgabe entfernt.")
                     .arg(step.id)
             );
             if (!sanitizedResponse.reasoningText.isEmpty()) {
-                result.logs.append(
+                appendLog(
                     QString("[step:%1] Reasoning gespeichert in '%2_reasoning' und 'last_reasoning'.")
                         .arg(step.id, outputKey)
                 );
@@ -878,16 +1042,27 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             runContext.variables.remove("last_response_reasoning");
         }
 
-        result.logs.append(
+        appendLog(
             QString("[step:%1] Antwort gespeichert in Variable '%2'.").arg(step.id, outputKey)
         );
-        result.logs.append(QString("[step:%1] Ausgabe: %2").arg(step.id, previewText(sanitizedResponse.visibleText)));
+        appendLog(QString("[step:%1] Ausgabe: %2").arg(step.id, previewText(sanitizedResponse.visibleText)));
+        debugStep.outputKey = outputKey;
+        debugStep.outputPreview = previewText(sanitizedResponse.visibleText);
+        debugStep.outputText = debugVariableValueForDisplay({}, sanitizedResponse.visibleText);
+        debugStep.reasoningText = debugVariableValueForDisplay({}, sanitizedResponse.reasoningText);
+        debugStep.nextStepId = nextStepLabel(workflow.steps, sequentialNextIndex);
+        finalizeDebugStep(
+            "completed",
+            sanitizedResponse.hadReasoningTags
+                ? QString("Prompt-Schritt mit Modell '%1' erfolgreich. Reasoning wurde getrennt gespeichert.").arg(model)
+                : QString("Prompt-Schritt mit Modell '%1' erfolgreich.").arg(model)
+        );
         currentStepIndex = sequentialNextIndex;
     }
 
     result.success = true;
     result.variables = runContext.variables;
-    result.logs.append(
+    appendLog(
         QString("[engine] Workflow erfolgreich abgeschlossen. Letzte Ausgabezeichen: %1")
             .arg(result.finalOutput.size())
     );

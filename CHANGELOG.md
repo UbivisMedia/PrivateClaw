@@ -12,13 +12,15 @@ Unterstuetzte Ueberschriften sind zum Beispiel:
 
 Wenn kein passender Abschnitt gefunden wird, faellt der Workflow automatisch auf GitHubs generierte Release-Notes zurueck.
 
-## [unreleased]
+## [v0.1.2]
 
 ### Added
 
 - System-Tray mit GitHub-Update-Check, blinkendem Update-Hinweis und Direktsprung zur Release-Seite per Doppelklick
 - Template-Bibliothek im Workflow-Editor mit importierbaren Vorlagen fuer Status, Ingest, Memory-Pflege, Zeitplaene und ComfyUI
 - Verschluesselte Projekt-Secrets mit Nutzung ueber `{{secret.name}}` in Workflow-Prompts und Tool-Konfigurationen
+- Workflow-Debugger-MVP mit Debug-Ausfuehrung, Schritt-Trace, Variablen-Snapshots und Detailansicht im Workflow-Editor
+- Live-Streaming fuer Prompt-Schritte im Run-Protokoll bei manuellen und geplanten Workflow-Laeufen, inklusive sichtbarer modellseitiger Reasoning-Bloecke waehrend der Ausgabe
 
 ### Changed
 
@@ -27,6 +29,7 @@ Wenn kein passender Abschnitt gefunden wird, faellt der Workflow automatisch auf
 - Projekt-Memory priorisiert jetzt angepinnte Eintraege und verdichtet Restkontext fuer Workflow-Runs automatisch
 - Projekte haben jetzt Sicherheitsrichtlinien fuer `shell.run`, `file.edit_diff` und `http.request`, inklusive optionaler Freigabe fuer unbeaufsichtigte Zeitplaene
 - Neue Workflows fragen jetzt zwischen leerem Start und Template-Auswahl, und die Template-Bibliothek laesst sich platzsparend ein- und ausklappen
+- Die finale Prompt-Ausgabe bleibt weiterhin von `<think>`- und aehnlichen Reasoning-Tags bereinigt, waehrend die Roh-Ausgabe live im Run-Protokoll sichtbar wird
 
 ### Fixed
 
