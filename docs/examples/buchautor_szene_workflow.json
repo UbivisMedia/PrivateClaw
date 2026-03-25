@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "id": "lade_figuren_kontext",
+      "type": "tool",
+      "name": "Figuren- und Plotkontext laden",
+      "config": {
+        "tool": "memory.search",
+        "query": "Figuren Charaktere Plot Schauplatz Weltenregeln Konflikte",
+        "tags": "roman,figuren,plot",
+        "limit": 10,
+        "max_chars": 16000,
+        "format": "full",
+        "output": "figuren_kontext"
+      }
+    },
+    {
+      "id": "schreibe_szene",
+      "type": "prompt",
+      "name": "Neue Szene schreiben",
+      "config": {
+        "prompt": "Hier ist der aktuelle Projektkontext aus dem Gedaechtnis:\n\n{{figuren_kontext}}\n\nSchreibe jetzt die naechste Szene des Romans. Beachte dabei:\n- Konsistenz mit bereits definierten Figuren, Schaupltzen und Weltenregeln\n- Innere und aeussere Konflikte der handelnden Figuren\n- Atmosphaerische Dichte und aktive statt erklaerende Darstellung\n- Glaubwuerdige Dialoge mit Subtext\n- Klare Ziel-, Hindernis- und Veraenderungsdynamik\n\nLiefere nur den Romantext ohne Vorrede oder Erklaerung.",
+        "output": "neue_szene"
+      }
+    },
+    {
+      "id": "speichere_szene_memory",
+      "type": "save_memory",
+      "name": "Szene im Projektgedaechtnis sichern",
+      "config": {
+        "content": "{{neue_szene}}",
+        "entry_type": "artifact",
+        "source": "workflow:buchautor_szene/szene",
+        "tags": "roman,szene,kapitel",
+        "relevance": 90,
+        "pinned": false
+      }
+    },
+    {
+      "id": "exportiere_szene_datei",
+      "type": "tool",
+      "name": "Szene als Datei exportieren",
+      "config": {
+        "tool": "file.write_text",
+        "path": "artifacts/roman/szenen/szene_neu.md",
+        "mode": "overwrite",
+        "create_dirs": true,
+        "content": "{{neue_szene}}",
+        "return_content": false,
+        "output": "export_ergebnis"
+      }
+    },
+    {
+      "id": "erstelle_lektorat",
+      "type": "prompt",
+      "name": "Lektorats-Feedback generieren",
+      "config": {
+        "prompt": "Analysiere die folgende Szene als erfahrener Lektor. Gib ein strukturiertes Feedback mit:\n\n**Staerken:** Was funktioniert gut dramaturgisch, sprachlich, charakterlich?\n**Schwaechen:** Was schwaecht die Szene ab oder wirkt unstimmig?\n**Konkrete Verbesserungsvorschlaege:** Mindestens zwei praezise Ansatzpunkte.\n**Offene Baustellen:** Welche Plotfaeden, Figurenfragen oder Widersprueche muessen spaeter aufgeloest werden?\n\nSzene:\n\n{{neue_szene}}",
+        "output": "lektorat_feedback"
+      }
+    },
+    {
+      "id": "speichere_lektorat",
+      "type": "save_memory",
+      "name": "Lektorats-Feedback speichern",
+      "config": {
+        "content": "Lektorats-Feedback zur letzten Szene:\n\n{{lektorat_feedback}}",
+        "entry_type": "note",
+        "source": "workflow:buchautor_szene/lektorat",
+        "tags": "roman,lektorat,feedback",
+        "relevance": 70
+      }
+    },
+    {
+      "id": "speichere_offene_baustellen",
+      "type": "save_memory",
+      "name": "Offene Baustellen festhalten",
+      "config": {
+        "content": "Offene Baustellen nach letzter Schreibsession:\n\n{{lektorat_feedback}}",
+        "entry_type": "note",
+        "source": "workflow:buchautor_szene/baustellen",
+        "tags": "roman,todo,baustellen",
+        "relevance": 85,
+        "pinned": true
+      }
+    }
+  ]
+}
