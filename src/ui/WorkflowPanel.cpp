@@ -1317,9 +1317,6 @@ void WorkflowPanel::buildUi()
     templateLayout->addLayout(templateHeaderLayout);
     templateLayout->addWidget(m_templateBodyFrame);
 
-    m_visualEditorToggle = new QCheckBox("Visuellen Editor anzeigen", editorCard);
-    m_visualEditorToggle->setChecked(true);
-
     m_visualEditorFrame = new QFrame(editorCard);
     auto* visualEditorLayout = new QVBoxLayout(m_visualEditorFrame);
     visualEditorLayout->setContentsMargins(0, 0, 0, 0);
@@ -2228,10 +2225,9 @@ void WorkflowPanel::buildUi()
     );
     workflowMetaSectionLayout->addLayout(formLayout);
 
-    // Checkboxen als unsichtbare Sentinel-Objekte – Guards in Methoden bleiben erhalten
-    m_visualEditorToggle->setChecked(true);
+    // Sentinel-Objekt – Guard in Methoden bleibt erhalten
     m_debuggerToggle->setChecked(true);
-    // Beide werden NICHT in ein Layout eingefügt
+    // Wird NICHT in ein Layout eingefügt
 
     m_editorTabs = new QTabWidget(editorCard);
 

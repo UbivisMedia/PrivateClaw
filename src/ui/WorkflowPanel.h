@@ -173,7 +173,6 @@ private:
     QPushButton* m_templateToggleButton = nullptr;
     QComboBox* m_templateCombo = nullptr;
     QLabel* m_templateDescriptionLabel = nullptr;
-    QCheckBox* m_visualEditorToggle = nullptr;
     QFrame* m_visualEditorFrame = nullptr;
     QCheckBox* m_debuggerToggle = nullptr;
     QFrame* m_debuggerFrame = nullptr;
