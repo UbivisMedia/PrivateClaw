@@ -178,6 +178,15 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
         "next_run_at TEXT,"
         "last_run_at TEXT,"
         "enabled INTEGER NOT NULL DEFAULT 1"
+        ")",
+        "CREATE TABLE IF NOT EXISTS project_variables ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "project_id INTEGER NOT NULL,"
+        "name TEXT NOT NULL,"
+        "value_type TEXT NOT NULL DEFAULT 'string',"
+        "value_text TEXT NOT NULL DEFAULT '',"
+        "created_at TEXT NOT NULL,"
+        "updated_at TEXT NOT NULL"
         ")"
     };
 
@@ -189,6 +198,16 @@ bool DatabaseManager::executeSchema(QString* errorMessage)
             }
             return false;
         }
+    }
+
+    if (!query.exec(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_variables_project_name "
+            "ON project_variables(project_id, name)"
+        )) {
+        if (errorMessage != nullptr) {
+            *errorMessage = query.lastError().text();
+        }
+        return false;
     }
 
     if (!ensureColumnExists(

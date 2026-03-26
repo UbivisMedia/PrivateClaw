@@ -1,5 +1,6 @@
 #include "ui/RunPanel.h"
 
+#include "ui/CollapsibleCard.h"
 #include "services/ProjectService.h"
 #include "services/RunService.h"
 #include "services/WorkflowService.h"
@@ -68,82 +69,68 @@ void RunPanel::buildUi()
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
 
-    auto* infoCard = new QFrame(this);
-    infoCard->setProperty("panelCard", true);
-    auto* infoLayout = new QVBoxLayout(infoCard);
-    auto* title = new QLabel("Run-Historie", infoCard);
-    title->setProperty("sectionTitle", true);
-
+    const CollapsibleCardParts infoCard = createCollapsibleCard(this, "Run-Historie", true);
+    auto* infoLayout = infoCard.bodyLayout;
     auto* body = new QLabel(
         "Hier findest du gespeicherte manuelle und geplante Workflow-Laeufe inklusive Status, Ausgabe, Logs und Metadaten.",
-        infoCard
+        infoCard.bodyFrame
     );
     body->setProperty("sectionBody", true);
     body->setWordWrap(true);
 
-    infoLayout->addWidget(title);
     infoLayout->addWidget(body);
 
     auto* contentSplitter = new QSplitter(Qt::Horizontal, this);
 
-    auto* listCard = new QFrame(contentSplitter);
-    listCard->setProperty("panelCard", true);
-    auto* listLayout = new QVBoxLayout(listCard);
-    auto* listTitle = new QLabel("Gespeicherte Runs", listCard);
-    listTitle->setProperty("sectionTitle", true);
-
+    const CollapsibleCardParts listCard = createCollapsibleCard(contentSplitter, "Gespeicherte Runs", true);
+    auto* listLayout = listCard.bodyLayout;
     auto* listBody = new QLabel(
         "Gefiltert wird projektbezogen. Die neuesten Laeufe stehen oben und koennen direkt im Detailbereich geprueft werden.",
-        listCard
+        listCard.bodyFrame
     );
     listBody->setProperty("sectionBody", true);
     listBody->setWordWrap(true);
 
-    m_projectCombo = new QComboBox(listCard);
-    m_runCountLabel = new QLabel("0 Runs", listCard);
+    m_projectCombo = new QComboBox(listCard.bodyFrame);
+    m_runCountLabel = new QLabel("0 Runs", listCard.bodyFrame);
     m_runCountLabel->setProperty("sectionBody", true);
-    m_runList = new QListWidget(listCard);
+    m_runList = new QListWidget(listCard.bodyFrame);
     m_runList->setAlternatingRowColors(true);
 
     auto* listActions = new QHBoxLayout();
-    auto* refreshButton = new QPushButton("Liste aktualisieren", listCard);
+    auto* refreshButton = new QPushButton("Liste aktualisieren", listCard.bodyFrame);
     listActions->addWidget(refreshButton);
     listActions->addStretch();
 
-    listLayout->addWidget(listTitle);
     listLayout->addWidget(listBody);
-    listLayout->addWidget(new QLabel("Projekt", listCard));
+    listLayout->addWidget(new QLabel("Projekt", listCard.bodyFrame));
     listLayout->addWidget(m_projectCombo);
     listLayout->addWidget(m_runCountLabel);
     listLayout->addWidget(m_runList, 1);
     listLayout->addLayout(listActions);
 
-    auto* detailCard = new QFrame(contentSplitter);
-    detailCard->setProperty("panelCard", true);
-    auto* detailLayout = new QVBoxLayout(detailCard);
-    auto* detailTitle = new QLabel("Run-Details", detailCard);
-    detailTitle->setProperty("sectionTitle", true);
-
+    const CollapsibleCardParts detailCard = createCollapsibleCard(contentSplitter, "Run-Details", true);
+    auto* detailLayout = detailCard.bodyLayout;
     auto* detailBody = new QLabel(
         "Die Details zeigen den gespeicherten Laufzustand. Live-Streaming bleibt weiterhin im unteren Run-Protokoll sichtbar.",
-        detailCard
+        detailCard.bodyFrame
     );
     detailBody->setProperty("sectionBody", true);
     detailBody->setWordWrap(true);
 
     auto* formLayout = new QFormLayout();
     formLayout->setLabelAlignment(Qt::AlignLeft);
-    m_statusValueLabel = new QLabel(detailCard);
-    m_originValueLabel = new QLabel(detailCard);
-    m_projectValueLabel = new QLabel(detailCard);
-    m_workflowValueLabel = new QLabel(detailCard);
-    m_providerValueLabel = new QLabel(detailCard);
-    m_modelValueLabel = new QLabel(detailCard);
-    m_startedAtValueLabel = new QLabel(detailCard);
-    m_finishedAtValueLabel = new QLabel(detailCard);
-    m_memoryCountValueLabel = new QLabel(detailCard);
-    m_summaryValueLabel = new QLabel(detailCard);
-    m_errorValueLabel = new QLabel(detailCard);
+    m_statusValueLabel = new QLabel(detailCard.bodyFrame);
+    m_originValueLabel = new QLabel(detailCard.bodyFrame);
+    m_projectValueLabel = new QLabel(detailCard.bodyFrame);
+    m_workflowValueLabel = new QLabel(detailCard.bodyFrame);
+    m_providerValueLabel = new QLabel(detailCard.bodyFrame);
+    m_modelValueLabel = new QLabel(detailCard.bodyFrame);
+    m_startedAtValueLabel = new QLabel(detailCard.bodyFrame);
+    m_finishedAtValueLabel = new QLabel(detailCard.bodyFrame);
+    m_memoryCountValueLabel = new QLabel(detailCard.bodyFrame);
+    m_summaryValueLabel = new QLabel(detailCard.bodyFrame);
+    m_errorValueLabel = new QLabel(detailCard.bodyFrame);
     m_summaryValueLabel->setWordWrap(true);
     m_errorValueLabel->setWordWrap(true);
 
@@ -159,7 +146,7 @@ void RunPanel::buildUi()
     formLayout->addRow("Zusammenfassung", m_summaryValueLabel);
     formLayout->addRow("Fehler", m_errorValueLabel);
 
-    auto* tabs = new QTabWidget(detailCard);
+    auto* tabs = new QTabWidget(detailCard.bodyFrame);
     m_outputView = new QPlainTextEdit(tabs);
     m_outputView->setReadOnly(true);
     m_outputView->setPlaceholderText("Hier erscheint die gespeicherte Workflow-Ausgabe.");
@@ -169,7 +156,6 @@ void RunPanel::buildUi()
     tabs->addTab(m_outputView, "Ausgabe");
     tabs->addTab(m_logView, "Logs");
 
-    detailLayout->addWidget(detailTitle);
     detailLayout->addWidget(detailBody);
     detailLayout->addLayout(formLayout);
     detailLayout->addWidget(tabs, 1);
@@ -177,7 +163,7 @@ void RunPanel::buildUi()
     contentSplitter->setStretchFactor(0, 3);
     contentSplitter->setStretchFactor(1, 5);
 
-    layout->addWidget(infoCard);
+    layout->addWidget(infoCard.frame);
     layout->addWidget(contentSplitter, 1);
 
     connect(refreshButton, &QPushButton::clicked, this, [this]() {

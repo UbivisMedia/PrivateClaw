@@ -181,6 +181,53 @@ QString extractLmStudioResponseText(const QJsonObject& messageObject, bool* reas
     return chunk;
 }
 
+bool parseLmStudioChatPayload(const QByteArray& payload, QString* text, QString* errorMessage = nullptr)
+{
+    if (text == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "Interner Fehler: Zielpuffer fuer LM-Studio-Antwort fehlt.";
+        }
+        return false;
+    }
+
+    const QJsonDocument json = QJsonDocument::fromJson(payload);
+    if (!json.isObject()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "LM Studio hat keine gueltige JSON-Antwort geliefert.";
+        }
+        return false;
+    }
+
+    const QJsonArray choices = json.object().value("choices").toArray();
+    if (choices.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "LM Studio hat keine Antwortauswahl geliefert.";
+        }
+        return false;
+    }
+
+    const QJsonObject choiceObject = choices.first().toObject();
+    const QJsonObject messageObject = choiceObject.value("message").toObject();
+    bool reasoningOpen = false;
+    QString parsedText = extractLmStudioResponseText(messageObject, &reasoningOpen).trimmed();
+    if (parsedText.isEmpty()) {
+        parsedText = choiceObject.value("text").toString().trimmed();
+    }
+    if (reasoningOpen) {
+        parsedText += "</think>";
+    }
+
+    if (parsedText.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "LM Studio hat keine auswertbare Antwort geliefert.";
+        }
+        return false;
+    }
+
+    *text = parsedText;
+    return true;
+}
+
 } // namespace
 
 LmStudioProvider::LmStudioProvider(QString baseUrl)
@@ -304,30 +351,10 @@ ChatResponse LmStudioProvider::chat(const ChatRequest& request)
 
     reply->deleteLater();
 
-    const QJsonDocument json = QJsonDocument::fromJson(payloadBytes);
-    if (!json.isObject()) {
-        response.errorMessage = "LM Studio hat keine gueltige JSON-Antwort geliefert.";
-        return response;
-    }
-
-    const QJsonArray choices = json.object().value("choices").toArray();
-    if (choices.isEmpty()) {
-        response.errorMessage = "LM Studio hat keine Antwortauswahl geliefert.";
-        return response;
-    }
-
-    const QJsonObject messageObject = choices.first().toObject().value("message").toObject();
-    bool reasoningOpen = false;
-    QString text = extractLmStudioResponseText(messageObject, &reasoningOpen).trimmed();
-    if (text.isEmpty()) {
-        text = choices.first().toObject().value("text").toString().trimmed();
-    }
-    if (reasoningOpen) {
-        text += "</think>";
-    }
-
-    if (text.isEmpty()) {
-        response.errorMessage = "LM Studio hat keine auswertbare Antwort geliefert.";
+    QString text;
+    QString parseError;
+    if (!parseLmStudioChatPayload(payloadBytes, &text, &parseError)) {
+        response.errorMessage = parseError;
         return response;
     }
 
@@ -439,7 +466,23 @@ ChatResponse LmStudioProvider::chatStream(const ChatRequest& request, const Chat
 
     reply->deleteLater();
 
-    if (!parseError.isEmpty()) {
+    if (!parseError.isEmpty() && accumulatedText.trimmed().isEmpty()) {
+        QString fallbackText;
+        if (parseLmStudioChatPayload(rawPayload, &fallbackText, nullptr)) {
+            appendChunk(fallbackText);
+            parseError.clear();
+        }
+    }
+
+    if (!parseError.isEmpty() && accumulatedText.trimmed().isEmpty()) {
+        const ChatResponse fallbackResponse = chat(request);
+        if (fallbackResponse.success) {
+            appendChunk(fallbackResponse.text);
+            parseError.clear();
+        }
+    }
+
+    if (!parseError.isEmpty() && accumulatedText.trimmed().isEmpty()) {
         response.errorMessage = parseError;
         return response;
     }
@@ -449,8 +492,18 @@ ChatResponse LmStudioProvider::chatStream(const ChatRequest& request, const Chat
     }
 
     if (accumulatedText.trimmed().isEmpty()) {
-        response.errorMessage = "LM Studio hat keine auswertbare Streaming-Antwort geliefert.";
-        return response;
+        QString fallbackText;
+        if (parseLmStudioChatPayload(rawPayload, &fallbackText, nullptr)) {
+            appendChunk(fallbackText);
+        } else {
+            const ChatResponse fallbackResponse = chat(request);
+            if (fallbackResponse.success) {
+                appendChunk(fallbackResponse.text);
+            } else {
+                response.errorMessage = "LM Studio hat keine auswertbare Streaming-Antwort geliefert.";
+                return response;
+            }
+        }
     }
 
     response.success = true;

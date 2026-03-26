@@ -21,6 +21,7 @@ class ProviderManager;
 namespace privateclaw::services {
 class MemoryService;
 class ProjectService;
+class ProjectVariableService;
 class RunService;
 class ScheduleService;
 class SecretsService;
@@ -36,6 +37,7 @@ class DatabaseManager;
 namespace privateclaw::ui {
 
 class ProjectPanel;
+class ProjectVariablePanel;
 class WorkflowPanel;
 class MemoryPanel;
 class RunPanel;
@@ -52,6 +54,7 @@ public:
         storage::DatabaseManager& databaseManager,
         services::SettingsService& settingsService,
         services::ProjectService& projectService,
+        services::ProjectVariableService& projectVariableService,
         services::MemoryService& memoryService,
         services::SecretsService& secretsService,
         services::WorkflowService& workflowService,
@@ -68,6 +71,7 @@ private:
     void buildSystemTray();
     void recoverInterruptedRuns();
     void hideToBackground();
+    void prepareForQuit(const QString& logMessage);
     void requestApplicationQuit();
     void startUpdateChecks();
     void updateStatusBar();
@@ -95,6 +99,7 @@ private:
     storage::DatabaseManager& m_databaseManager;
     services::SettingsService& m_settingsService;
     services::ProjectService& m_projectService;
+    services::ProjectVariableService& m_projectVariableService;
     services::MemoryService& m_memoryService;
     services::SecretsService& m_secretsService;
     services::WorkflowService& m_workflowService;
@@ -106,6 +111,7 @@ private:
     QListWidget* m_navigation = nullptr;
     QStackedWidget* m_pages = nullptr;
     ProjectPanel* m_projectPanel = nullptr;
+    ProjectVariablePanel* m_projectVariablePanel = nullptr;
     WorkflowPanel* m_workflowPanel = nullptr;
     MemoryPanel* m_memoryPanel = nullptr;
     RunPanel* m_runPanel = nullptr;
@@ -114,6 +120,7 @@ private:
     services::UpdateChecker* m_updateChecker = nullptr;
     QSystemTrayIcon* m_trayIcon = nullptr;
     QMenu* m_trayMenu = nullptr;
+    QAction* m_minimizeToTrayAction = nullptr;
     QAction* m_hideToTrayAction = nullptr;
     QAction* m_openWindowAction = nullptr;
     QAction* m_checkUpdatesAction = nullptr;

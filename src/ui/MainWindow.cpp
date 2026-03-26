@@ -7,6 +7,7 @@
 #include "providers/ProviderManager.h"
 #include "services/MemoryService.h"
 #include "services/ProjectService.h"
+#include "services/ProjectVariableService.h"
 #include "services/RunService.h"
 #include "services/ScheduleService.h"
 #include "services/SecretsService.h"
@@ -18,6 +19,7 @@
 #include "ui/ExecutionApproval.h"
 #include "ui/MemoryPanel.h"
 #include "ui/ProjectPanel.h"
+#include "ui/ProjectVariablePanel.h"
 #include "ui/RunPanel.h"
 #include "ui/RunLogPanel.h"
 #include "ui/SchedulePanel.h"
@@ -28,16 +30,26 @@
 #include <QCloseEvent>
 #include <QDesktopServices>
 #include <QFont>
+#include <QHBoxLayout>
 #include <QIcon>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLabel>
 #include <QListWidget>
+#include <QListWidgetItem>
 #include <QMenu>
 #include <QPainter>
 #include <QPixmap>
+#include <QSize>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QStyle>
 #include <QSystemTrayIcon>
 #include <QTimer>
+#include <QToolButton>
+#include <QToolBar>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -128,18 +140,63 @@ QString summarizeRunText(QString text)
     return text;
 }
 
+void appendProjectVariableContext(
+    services::ProjectVariableService& projectVariableService,
+    core::RunContext* runContext
+)
+{
+    if (runContext == nullptr || runContext->projectId <= 0) {
+        return;
+    }
+
+    const QList<domain::ProjectVariable> variables = projectVariableService.listVariables(runContext->projectId);
+    QJsonArray variableArray;
+    QStringList variableNames;
+    int directVariableCount = 0;
+
+    for (const domain::ProjectVariable& variable : variables) {
+        const QString trimmedName = variable.name.trimmed();
+        if (!services::ProjectVariableService::isValidVariableName(trimmedName)) {
+            continue;
+        }
+
+        runContext->variables.insert(QString("project_var.%1").arg(trimmedName), variable.valueText);
+        runContext->variables.insert(QString("project_var_type.%1").arg(trimmedName), variable.valueType);
+        if (!runContext->variables.contains(trimmedName)) {
+            runContext->variables.insert(trimmedName, variable.valueText);
+            ++directVariableCount;
+        }
+
+        variableNames.append(trimmedName);
+        QJsonObject variableObject;
+        variableObject.insert("name", trimmedName);
+        variableObject.insert("value", variable.valueText);
+        variableObject.insert("value_type", variable.valueType);
+        variableArray.append(variableObject);
+    }
+
+    runContext->variables.insert("project_variables_count", QString::number(variableArray.size()));
+    runContext->variables.insert("project_variables_direct_count", QString::number(directVariableCount));
+    runContext->variables.insert("project_variable_names", variableNames.join(", "));
+    runContext->variables.insert(
+        "project_variables_json",
+        QString::fromUtf8(QJsonDocument(variableArray).toJson(QJsonDocument::Compact))
+    );
+}
+
 core::ExecutionResult executeWorkflowWithProvider(
     const QString& providerName,
     const QString& providerBaseUrl,
     const QString& workspaceRoot,
     const QString& comfyUiBaseUrl,
+    const QString& databasePath,
     const QStringList& allowedToolPaths,
     const domain::Workflow& workflow,
     const core::RunContext& runContext,
     const core::ExecutionCallbacks& callbacks
 )
 {
-    const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl, QString(), allowedToolPaths);
+    const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl, databasePath, allowedToolPaths);
     core::WorkflowEngine workflowEngine(&toolExecutor);
 
     if (providerName.compare("Ollama", Qt::CaseInsensitive) == 0) {
@@ -198,6 +255,7 @@ MainWindow::MainWindow(
     storage::DatabaseManager& databaseManager,
     services::SettingsService& settingsService,
     services::ProjectService& projectService,
+    services::ProjectVariableService& projectVariableService,
     services::MemoryService& memoryService,
     services::SecretsService& secretsService,
     services::WorkflowService& workflowService,
@@ -210,6 +268,7 @@ MainWindow::MainWindow(
     , m_databaseManager(databaseManager)
     , m_settingsService(settingsService)
     , m_projectService(projectService)
+    , m_projectVariableService(projectVariableService)
     , m_memoryService(memoryService)
     , m_secretsService(secretsService)
     , m_workflowService(workflowService)
@@ -231,16 +290,55 @@ void MainWindow::buildUi()
 {
     auto* rootSplitter = new QSplitter(Qt::Vertical, this);
     auto* topSplitter = new QSplitter(Qt::Horizontal, rootSplitter);
+    topSplitter->setChildrenCollapsible(false);
+    rootSplitter->setChildrenCollapsible(false);
 
-    m_navigation = new QListWidget(topSplitter);
-    m_navigation->addItems({
-        "Projekte",
-        "Workflows",
-        "Erinnerung",
-        "Runs",
-        "Zeitplaene"
-    });
-    m_navigation->setFixedWidth(220);
+    auto* navigationPane = new QWidget(topSplitter);
+    auto* navigationLayout = new QVBoxLayout(navigationPane);
+    navigationLayout->setContentsMargins(8, 8, 8, 8);
+    navigationLayout->setSpacing(8);
+
+    auto* navigationHeaderLayout = new QHBoxLayout();
+    navigationHeaderLayout->setContentsMargins(0, 0, 0, 0);
+    auto* navigationTitle = new QLabel("Bereiche", navigationPane);
+    navigationTitle->setProperty("sectionBody", true);
+    auto* navigationToggleButton = new QToolButton(navigationPane);
+    navigationToggleButton->setCheckable(true);
+    navigationToggleButton->setChecked(false);
+    navigationToggleButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    navigationToggleButton->setCursor(Qt::PointingHandCursor);
+    navigationHeaderLayout->addWidget(navigationTitle);
+    navigationHeaderLayout->addStretch();
+    navigationHeaderLayout->addWidget(navigationToggleButton);
+
+    m_navigation = new QListWidget(navigationPane);
+    m_navigation->setAlternatingRowColors(false);
+    m_navigation->setIconSize(QSize(18, 18));
+    m_navigation->setSpacing(4);
+    m_navigation->setUniformItemSizes(false);
+
+    struct NavigationEntry
+    {
+        QString label;
+        QStyle::StandardPixmap icon;
+    };
+
+    const QList<NavigationEntry> navigationEntries = {
+        { "Projekte", QStyle::SP_DirHomeIcon },
+        { "Variablen", QStyle::SP_FileDialogContentsView },
+        { "Workflows", QStyle::SP_FileDialogDetailedView },
+        { "Erinnerung", QStyle::SP_FileIcon },
+        { "Runs", QStyle::SP_MediaPlay },
+        { "Zeitplaene", QStyle::SP_BrowserReload }
+    };
+    for (const NavigationEntry& entry : navigationEntries) {
+        auto* item = new QListWidgetItem(style()->standardIcon(entry.icon), entry.label, m_navigation);
+        item->setData(Qt::UserRole, entry.label);
+        item->setToolTip(entry.label);
+    }
+
+    navigationLayout->addLayout(navigationHeaderLayout);
+    navigationLayout->addWidget(m_navigation, 1);
 
     m_pages = new QStackedWidget(topSplitter);
     m_projectPanel = new ProjectPanel(
@@ -252,6 +350,14 @@ void MainWindow::buildUi()
     );
     m_projectPanel->setOnProjectDataChanged([this]() {
         refreshProjectDependentViews();
+    });
+    m_projectVariablePanel = new ProjectVariablePanel(
+        m_projectService,
+        m_projectVariableService,
+        m_pages
+    );
+    m_projectVariablePanel->setOnVariableDataChanged([this]() {
+        updateStatusBar();
     });
     m_memoryPanel = new MemoryPanel(m_projectService, m_memoryService, m_pages);
     m_memoryPanel->setOnMemoryDataChanged([this]() {
@@ -277,6 +383,7 @@ void MainWindow::buildUi()
     m_workflowPanel = new WorkflowPanel(
         m_projectService,
         m_settingsService,
+        m_projectVariableService,
         m_memoryService,
         m_secretsService,
         m_runService,
@@ -289,6 +396,9 @@ void MainWindow::buildUi()
     });
     m_workflowPanel->setOnRunDataChanged([this]() {
         updateStatusBar();
+        if (m_projectVariablePanel != nullptr) {
+            m_projectVariablePanel->reloadData();
+        }
         if (m_memoryPanel != nullptr) {
             m_memoryPanel->reloadData();
         }
@@ -312,17 +422,55 @@ void MainWindow::buildUi()
     });
 
     m_pages->addWidget(m_projectPanel);
+    m_pages->addWidget(m_projectVariablePanel);
     m_pages->addWidget(m_workflowPanel);
     m_pages->addWidget(m_memoryPanel);
     m_pages->addWidget(m_runPanel);
     m_pages->addWidget(m_schedulePanel);
 
+    const auto updateNavigationPresentation = [this, navigationPane, navigationTitle, navigationToggleButton]() {
+        const bool compact = navigationToggleButton->isChecked();
+        navigationPane->setFixedWidth(compact ? 72 : 220);
+        navigationTitle->setVisible(!compact);
+        navigationToggleButton->setArrowType(compact ? Qt::RightArrow : Qt::LeftArrow);
+        navigationToggleButton->setToolTip(
+            compact ? "Navigation verbreitern" : "Navigation als kompakte Icon-Leiste anzeigen"
+        );
+        m_navigation->setIconSize(QSize(compact ? 20 : 18, compact ? 20 : 18));
+
+        for (int row = 0; row < m_navigation->count(); ++row) {
+            if (QListWidgetItem* item = m_navigation->item(row); item != nullptr) {
+                const QString label = item->data(Qt::UserRole).toString();
+                item->setText(compact ? QString() : label);
+                item->setTextAlignment(compact ? Qt::AlignCenter : (Qt::AlignLeft | Qt::AlignVCenter));
+                item->setSizeHint(QSize(compact ? 44 : 188, compact ? 42 : 34));
+                item->setToolTip(label);
+            }
+        }
+    };
+
     topSplitter->setStretchFactor(0, 0);
     topSplitter->setStretchFactor(1, 1);
     rootSplitter->setStretchFactor(0, 5);
     rootSplitter->setStretchFactor(1, 2);
+    topSplitter->setSizes(QList<int>{220, 1120});
 
     setCentralWidget(rootSplitter);
+
+    auto* windowToolBar = addToolBar("Fenster");
+    windowToolBar->setObjectName("window_toolbar");
+    windowToolBar->setMovable(false);
+    windowToolBar->setFloatable(false);
+    windowToolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    windowToolBar->setIconSize(QSize(16, 16));
+    m_minimizeToTrayAction = windowToolBar->addAction(
+        style()->standardIcon(QStyle::SP_TitleBarMinButton),
+        "In Tray minimieren"
+    );
+    m_minimizeToTrayAction->setToolTip(
+        "Fenster ausblenden und PrivateClaw im System-Tray weiterlaufen lassen"
+    );
+    m_minimizeToTrayAction->setEnabled(false);
 
     connect(m_navigation, &QListWidget::currentRowChanged, this, [this](const int row) {
         if (row >= 0 && row < m_pages->count()) {
@@ -330,9 +478,19 @@ void MainWindow::buildUi()
             if (row == 0 && m_projectPanel != nullptr) {
                 m_projectPanel->reloadData();
             }
+            if (row == 1 && m_projectVariablePanel != nullptr) {
+                m_projectVariablePanel->reloadData();
+            }
         }
     });
+    connect(navigationToggleButton, &QToolButton::toggled, this, [updateNavigationPresentation](const bool) {
+        updateNavigationPresentation();
+    });
+    connect(m_minimizeToTrayAction, &QAction::triggered, this, [this]() {
+        hideToBackground();
+    });
 
+    updateNavigationPresentation();
     m_navigation->setCurrentRow(0);
 }
 
@@ -365,6 +523,9 @@ void MainWindow::buildSystemTray()
     );
 
     if (!QSystemTrayIcon::isSystemTrayAvailable()) {
+        if (m_minimizeToTrayAction != nullptr) {
+            m_minimizeToTrayAction->setVisible(false);
+        }
         return;
     }
 
@@ -375,7 +536,7 @@ void MainWindow::buildSystemTray()
     m_trayIcon->setToolTip(QString("PrivateClaw v%1").arg(services::UpdateChecker::currentVersion()));
 
     m_trayMenu = new QMenu(this);
-    m_hideToTrayAction = m_trayMenu->addAction("Im Hintergrund weiterlaufen");
+    m_hideToTrayAction = m_trayMenu->addAction("In Tray minimieren");
     m_openWindowAction = m_trayMenu->addAction("Fenster anzeigen");
     m_checkUpdatesAction = m_trayMenu->addAction("Nach Updates suchen");
     m_openReleasePageAction = m_trayMenu->addAction("Release-Seite oeffnen");
@@ -419,6 +580,11 @@ void MainWindow::buildSystemTray()
 
     m_trayIcon->setContextMenu(m_trayMenu);
     m_trayIcon->show();
+
+    if (m_minimizeToTrayAction != nullptr) {
+        m_minimizeToTrayAction->setEnabled(true);
+        m_minimizeToTrayAction->setVisible(true);
+    }
 }
 
 void MainWindow::refreshProjectDependentViews()
@@ -426,6 +592,9 @@ void MainWindow::refreshProjectDependentViews()
     updateStatusBar();
     if (m_workflowPanel != nullptr) {
         m_workflowPanel->reloadData();
+    }
+    if (m_projectVariablePanel != nullptr) {
+        m_projectVariablePanel->reloadData();
     }
     if (m_memoryPanel != nullptr) {
         m_memoryPanel->reloadData();
@@ -490,8 +659,12 @@ void MainWindow::hideToBackground()
     }
 }
 
-void MainWindow::requestApplicationQuit()
+void MainWindow::prepareForQuit(const QString& logMessage)
 {
+    if (m_forceQuitRequested) {
+        return;
+    }
+
     m_forceQuitRequested = true;
     QApplication::setQuitOnLastWindowClosed(true);
 
@@ -511,11 +684,18 @@ void MainWindow::requestApplicationQuit()
     if (m_trayIcon != nullptr) {
         m_trayIcon->hide();
     }
-
-    if (m_runLogPanel != nullptr) {
-        m_runLogPanel->appendLogLine("[app] Anwendung wird ueber das Tray-Menue beendet.");
+    if (m_minimizeToTrayAction != nullptr) {
+        m_minimizeToTrayAction->setEnabled(false);
     }
 
+    if (m_runLogPanel != nullptr && !logMessage.trimmed().isEmpty()) {
+        m_runLogPanel->appendLogLine(logMessage);
+    }
+}
+
+void MainWindow::requestApplicationQuit()
+{
+    prepareForQuit("[app] Anwendung wird ueber das Tray-Menue beendet.");
     close();
     QTimer::singleShot(0, qApp, &QCoreApplication::quit);
 }
@@ -686,25 +866,12 @@ void MainWindow::showOrRaiseWindow()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    if (!m_forceQuitRequested && m_trayIcon != nullptr && m_trayIcon->isVisible()) {
-        event->ignore();
-        hideToBackground();
-        return;
+    if (!m_forceQuitRequested) {
+        prepareForQuit("[app] Anwendung wird ueber das Schliessen des Fensters beendet.");
+        QTimer::singleShot(0, qApp, &QCoreApplication::quit);
     }
 
-    if (m_trayIcon != nullptr) {
-        m_trayIcon->hide();
-    }
-    if (m_schedulePollTimer != nullptr) {
-        m_schedulePollTimer->stop();
-    }
-    if (m_updateCheckTimer != nullptr) {
-        m_updateCheckTimer->stop();
-    }
-    if (m_trayBlinkTimer != nullptr) {
-        m_trayBlinkTimer->stop();
-    }
-
+    event->accept();
     QMainWindow::closeEvent(event);
 }
 
@@ -845,6 +1012,7 @@ void MainWindow::executeSchedule(
     runContext.variables.insert("schedule_trigger_type", schedule.triggerType);
     runContext.variables.insert("schedule_trigger_expression", schedule.triggerExpression);
     runContext.variables.insert("schedule_origin", originLabel);
+    appendProjectVariableContext(m_projectVariableService, &runContext);
 
     const services::PreparedMemoryContext memoryContext = prepareMemoryContext(m_memoryService, project->id);
     runContext.memorySnippets = memoryContext.snippets;
@@ -956,6 +1124,7 @@ void MainWindow::executeSchedule(
 
     const QString workspaceRoot = m_settingsService.workspaceRoot();
     const QString comfyUiBaseUrl = m_settingsService.comfyUiBaseUrl();
+    const QString databasePath = m_databaseManager.databasePath();
     const QStringList allowedToolPaths = m_settingsService.effectiveAllowedToolPaths();
     core::ExecutionCallbacks executionCallbacks;
     executionCallbacks.onLogLine = [this, scheduleId = schedule.id](const QString& line) {
@@ -1054,6 +1223,9 @@ void MainWindow::executeSchedule(
                         .arg(result.errorMessage)
                 );
             }
+            if (m_projectVariablePanel != nullptr) {
+                m_projectVariablePanel->reloadData();
+            }
             if (m_memoryPanel != nullptr) {
                 m_memoryPanel->reloadData();
             }
@@ -1076,6 +1248,9 @@ void MainWindow::executeSchedule(
             );
         }
 
+        if (m_projectVariablePanel != nullptr) {
+            m_projectVariablePanel->reloadData();
+        }
         if (m_memoryPanel != nullptr) {
             m_memoryPanel->reloadData();
         }
@@ -1094,6 +1269,7 @@ void MainWindow::executeSchedule(
                                           providerName,
                                           workspaceRoot,
                                           comfyUiBaseUrl,
+                                          databasePath,
                                           allowedToolPaths,
                                           executionCallbacks]() {
         return executeWorkflowWithProvider(
@@ -1101,6 +1277,7 @@ void MainWindow::executeSchedule(
             providerBaseUrl,
             workspaceRoot,
             comfyUiBaseUrl,
+            databasePath,
             allowedToolPaths,
             workflow,
             runContext,

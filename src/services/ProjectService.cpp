@@ -142,6 +142,7 @@ bool ProjectService::deleteProject(const qint64 projectId, QString* errorMessage
         "DELETE FROM schedules WHERE project_id = ?",
         "DELETE FROM runs WHERE project_id = ?",
         "DELETE FROM memory_entries WHERE project_id = ?",
+        "DELETE FROM project_variables WHERE project_id = ?",
         "DELETE FROM workflows WHERE project_id = ?",
         "DELETE FROM projects WHERE id = ?"
     };

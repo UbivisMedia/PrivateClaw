@@ -54,76 +54,56 @@
       }
     },
     {
-      "id": "lade_fortschritt_memory",
-      "type": "tool",
-      "name": "Letzten Schreibfortschritt laden",
+      "id": "pruefe_kapitelvariable",
+      "type": "decision",
+      "name": "Kapitelnummer bereits als Projektvariable vorhanden?",
       "config": {
-        "tool": "memory.search",
-        "query": "Workflow Fortschritt Kapitel Szene {{roman_titel}}",
-        "entry_type": "note",
-        "tags": "roman,{{roman_slug}},fortschritt,workflow",
-        "limit": 1,
-        "max_chars": 4000,
-        "format": "full",
-        "output": "fortschritt_memory"
+        "input": "{{project_var.kapitel_nummer}}",
+        "operator": "not_empty",
+        "output": "kapitel_nummer_status",
+        "true_result": "vorhanden",
+        "false_result": "initialisieren",
+        "if_true": "pruefe_szenenvariable"
       }
     },
     {
-      "id": "normalisiere_fortschritt",
-      "type": "prompt",
-      "name": "Fortschritt als JSON normalisieren",
-      "config": {
-        "prompt": "Du bekommst den zuletzt gespeicherten Workflow-Fortschritt fuer einen Roman. Extrahiere die beiden Integerwerte fuer Kapitel und Szene. Falls kein brauchbarer Fortschritt vorhanden ist, setze beide Werte auf 1.\n\nGib ausschliesslich JSON im Format {\"kapitel_nummer\":1,\"szenen_nummer\":1} zurueck.\n\nRoman: {{roman_titel}}\nMemory:\n{{fortschritt_memory}}",
-        "output": "fortschritt_json"
-      }
-    },
-    {
-      "id": "extrahiere_kapitel_nummer",
+      "id": "initialisiere_kapitelvariable",
       "type": "tool",
-      "name": "Kapitelnummer aus JSON lesen",
-      "config": {
-        "tool": "json.extract",
-        "input": "{{fortschritt_json}}",
-        "path": "kapitel_nummer",
-        "pretty": false,
-        "output": "fortschritt_kapitel_nummer"
-      }
-    },
-    {
-      "id": "speichere_kapitel_nummer",
-      "type": "tool",
-      "name": "Kapitelnummer als Integer setzen",
+      "name": "Kapitelnummer projektweit initialisieren",
       "config": {
         "tool": "variables.set",
+        "scope": "project",
         "name": "kapitel_nummer",
         "value_type": "int",
         "operation": "set",
-        "value": "{{fortschritt_kapitel_nummer}}",
+        "value": "1",
         "output": "kapitel_nummer_status"
       }
     },
     {
-      "id": "extrahiere_szenen_nummer",
-      "type": "tool",
-      "name": "Szenennummer aus JSON lesen",
+      "id": "pruefe_szenenvariable",
+      "type": "decision",
+      "name": "Szenennummer bereits als Projektvariable vorhanden?",
       "config": {
-        "tool": "json.extract",
-        "input": "{{fortschritt_json}}",
-        "path": "szenen_nummer",
-        "pretty": false,
-        "output": "fortschritt_szenen_nummer"
+        "input": "{{project_var.szenen_nummer}}",
+        "operator": "not_empty",
+        "output": "szenen_nummer_status",
+        "true_result": "vorhanden",
+        "false_result": "initialisieren",
+        "if_true": "suche_hauptcharakter_memory"
       }
     },
     {
-      "id": "speichere_szenen_nummer",
+      "id": "initialisiere_szenenvariable",
       "type": "tool",
-      "name": "Szenennummer als Integer setzen",
+      "name": "Szenennummer projektweit initialisieren",
       "config": {
         "tool": "variables.set",
+        "scope": "project",
         "name": "szenen_nummer",
         "value_type": "int",
         "operation": "set",
-        "value": "{{fortschritt_szenen_nummer}}",
+        "value": "1",
         "output": "szenen_nummer_status"
       }
     },
@@ -133,11 +113,11 @@
       "name": "Vorhandene Hauptcharaktere suchen",
       "config": {
         "tool": "memory.search",
-        "query": "Hauptcharaktere Protagonisten Ensemble {{roman_titel}}",
+        "query": "",
         "entry_type": "character",
         "tags": "roman,{{roman_slug}},figuren,hauptcharaktere",
-        "limit": 3,
-        "max_chars": 6000,
+        "limit": 6,
+        "max_chars": 8000,
         "format": "full",
         "output": "hauptcharaktere_memory"
       }
@@ -156,25 +136,53 @@
       }
     },
     {
-      "id": "erstelle_hauptcharaktere",
+      "id": "plane_hauptcharaktere_json",
       "type": "prompt",
-      "name": "Hauptcharaktere fuer Neustart anlegen",
+      "name": "Hauptcharaktere fuer Neustart planen",
       "config": {
-        "prompt": "Erstelle eine kompakte, aber belastbare Charakterbibel fuer die Hauptcharaktere des Romans \"{{roman_titel}}\".\n\nPraemisse:\n{{roman_praemisse}}\n\nLiefere fuer jede Hauptfigur diese Felder:\n- Name\n- Rolle in der Geschichte\n- Inneres Ziel\n- Aeusseres Ziel\n- Zentraler Konflikt\n- Praegende Stimme oder Haltung\n- Geheimnis oder Verletzlichkeit\n- Beziehung zu den anderen Hauptfiguren\n\nMaximal 6 Figuren. Schreibe praezise und spaeter gut zitierbar.",
-        "output": "hauptcharaktere_dossier"
+        "prompt": "Erstelle fuer den Roman \"{{roman_titel}}\" eine belastbare Startliste der Hauptfiguren.\n\nPraemisse:\n{{roman_praemisse}}\n\nGib ausschliesslich JSON als Array zurueck. Maximal 6 Eintraege. Jeder Eintrag braucht diese String-Felder:\n- name\n- rolle\n- inneres_ziel\n- aeusseres_ziel\n- konflikt\n- stimme\n- geheimnis\n\nKein Markdown. Kein ```json. Kein Begleittext.\n\nBeispiel:\n[\n  {\n    \"name\": \"Mira\",\n    \"rolle\": \"Linguistin\",\n    \"inneres_ziel\": \"...\",\n    \"aeusseres_ziel\": \"...\",\n    \"konflikt\": \"...\",\n    \"stimme\": \"...\",\n    \"geheimnis\": \"...\"\n  }\n]",
+        "output": "hauptcharaktere_seed_json"
       }
     },
     {
-      "id": "speichere_hauptcharaktere_memory",
-      "type": "save_memory",
-      "name": "Hauptcharaktere persistent sichern",
+      "id": "erzeuge_hauptcharaktere",
+      "type": "tool",
+      "name": "Hauptcharaktere einzeln ausarbeiten",
       "config": {
-        "content": "Hauptcharaktere fuer {{roman_titel}}:\n\n{{hauptcharaktere_dossier}}",
-        "entry_type": "character",
-        "source": "workflow:buchautor_szene/hauptcharaktere",
-        "tags": "roman,{{roman_slug}},figuren,hauptcharaktere",
-        "relevance": 95,
-        "pinned": true
+        "tool": "workflow.foreach",
+        "items": "{{hauptcharaktere_seed_json}}",
+        "item_var": "figur",
+        "index_var": "figur_index",
+        "result_mode": "text_joined",
+        "result_source": "{{figur_steckbrief}}",
+        "join_with": "\n\n---\n\n",
+        "max_iterations": 6,
+        "on_error": "abort",
+        "output": "hauptcharaktere_dossier",
+        "steps": [
+          {
+            "id": "arbeite_figur_aus",
+            "type": "prompt",
+            "name": "Hauptfigur ausarbeiten",
+            "config": {
+              "prompt": "Arbeite die Hauptfigur fuer den Roman \"{{roman_titel}}\" praezise aus.\n\nStartdaten:\n- Name: {{figur.name}}\n- Rolle: {{figur.rolle}}\n- Inneres Ziel: {{figur.inneres_ziel}}\n- Aeusseres Ziel: {{figur.aeusseres_ziel}}\n- Konflikt: {{figur.konflikt}}\n- Stimme: {{figur.stimme}}\n- Geheimnis: {{figur.geheimnis}}\n\nLiefere eine kompakte, aber spaeter gut zitierbare Charakterkarte mit diesen Feldern:\n- Name\n- Rolle in der Geschichte\n- Inneres Ziel\n- Aeusseres Ziel\n- Zentraler Konflikt\n- Praegende Stimme oder Haltung\n- Geheimnis oder Verletzlichkeit\n- Beziehungspotenzial zu den anderen Hauptfiguren",
+              "output": "figur_steckbrief"
+            }
+          },
+          {
+            "id": "speichere_figur_memory",
+            "type": "save_memory",
+            "name": "Hauptfigur sichern",
+            "config": {
+              "content": "Hauptfigur fuer {{roman_titel}}:\n\n{{figur_steckbrief}}",
+              "entry_type": "character",
+              "source": "workflow:buchautor_szene/hauptcharaktere",
+              "tags": "roman,{{roman_slug}},figuren,hauptcharaktere,{{figur.name}}",
+              "relevance": 95,
+              "pinned": true
+            }
+          }
+        ]
       }
     },
     {
@@ -183,10 +191,10 @@
       "name": "Figuren-, Orts- und Plotkontext laden",
       "config": {
         "tool": "memory.search",
-        "query": "{{roman_titel}} Hauptcharaktere Nebencharaktere Orte Ereignisse Konflikte Baustellen",
+        "query": "",
         "tags": "roman,{{roman_slug}}",
-        "limit": 12,
-        "max_chars": 18000,
+        "limit": 18,
+        "max_chars": 22000,
         "format": "full",
         "output": "story_kontext"
       }
@@ -218,12 +226,40 @@
       }
     },
     {
-      "id": "schreibe_szene",
+      "id": "plane_szenenbeats_json",
       "type": "prompt",
-      "name": "Naechste Szene schreiben",
+      "name": "Szenenbeats planen",
       "config": {
-        "prompt": "Projekt: {{roman_titel}}\nPraemisse: {{roman_praemisse}}\nAktueller Abschnitt: {{kapitel_szene_label}}\n\nBisheriger Kontext aus dem Gedaechtnis:\n{{story_kontext}}\n\nSchreibe jetzt die naechste Roman-Szene. Achte auf:\n- Konsistenz mit bereits bekannten Figuren, Orten und Konflikten\n- klare Ziel-, Hindernis- und Veraenderungsdynamik innerhalb der Szene\n- aktive Darstellung statt Erklaertext\n- glaubwuerdige Dialoge mit Subtext\n- eine konkrete Entwicklung, die spaeter als Memory festgehalten werden kann\n\nWenn neue Nebenfiguren, Orte oder plotrelevante Ereignisse auftauchen, fuehre sie so klar ein, dass sie spaeter separat extrahiert werden koennen.\n\nLiefere nur den Romantext ohne Vorrede.",
-        "output": "neue_szene"
+        "prompt": "Projekt: {{roman_titel}}\nPraemisse: {{roman_praemisse}}\nAktueller Abschnitt: {{kapitel_szene_label}}\n\nBisheriger Kontext aus dem Gedaechtnis:\n{{story_kontext}}\n\nPlane die naechste Szene in 3 bis 5 klaren Beats. Gib ausschliesslich JSON als Array zurueck. Jeder Beat braucht diese String-Felder:\n- beat_titel\n- ziel\n- konflikt\n- wendung\n- fokusfigur\n- ort\n\nKein Markdown. Kein ```json. Kein Begleittext.\nDie Szene soll auf spaetere Extraktionen fuer Figuren, Orte und Ereignisse optimiert sein.",
+        "output": "szenenbeats_json"
+      }
+    },
+    {
+      "id": "schreibe_szene_absatzweise",
+      "type": "tool",
+      "name": "Szene beatweise schreiben",
+      "config": {
+        "tool": "workflow.foreach",
+        "items": "{{szenenbeats_json}}",
+        "item_var": "beat",
+        "index_var": "beat_index",
+        "result_mode": "text_joined",
+        "result_source": "{{beat_abschnitt}}",
+        "join_with": "\n\n",
+        "max_iterations": 8,
+        "on_error": "abort",
+        "output": "neue_szene",
+        "steps": [
+          {
+            "id": "schreibe_beat_abschnitt",
+            "type": "prompt",
+            "name": "Beat in Romantext umsetzen",
+            "config": {
+              "prompt": "Schreibe den naechsten Abschnitt fuer die Szene \"{{kapitel_szene_label}}\".\n\nGesamtkontext:\n{{story_kontext}}\n\nAktueller Beat:\n- Titel: {{beat.beat_titel}}\n- Ziel: {{beat.ziel}}\n- Konflikt: {{beat.konflikt}}\n- Wendung: {{beat.wendung}}\n- Fokusfigur: {{beat.fokusfigur}}\n- Ort: {{beat.ort}}\n\nVorheriger direkt geschriebener Absatz:\n{{loop_prev_output}}\n\nRegeln:\n- schreibe nur den naechsten zusammenhaengenden Abschnitt fuer diesen Beat\n- aktive Darstellung statt Erklaertext\n- glaubwuerdige Dialoge mit Subtext, falls passend\n- fuehre neue Figuren, Orte oder plotrelevante Ereignisse klar benennbar ein\n- keine Ueberschriften, keine Vorrede",
+              "output": "beat_abschnitt"
+            }
+          }
+        ]
       }
     },
     {
@@ -253,111 +289,123 @@
       }
     },
     {
-      "id": "analysiere_nebencharaktere",
+      "id": "analysiere_nebencharaktere_json",
       "type": "prompt",
-      "name": "Neue Nebencharaktere extrahieren",
+      "name": "Nebencharaktere als JSON extrahieren",
       "config": {
-        "prompt": "Vergleiche die neue Szene mit dem bisherigen Story-Kontext.\n\nKontext:\n{{story_kontext}}\n\nSzene:\n{{neue_szene}}\n\nFalls neue oder deutlich veraenderte Nebencharaktere auftauchen, liefere fuer jede Figur einen eigenen Block mit:\n- Name\n- Rolle\n- erster Eindruck\n- Motivation oder Konflikt\n- Beziehung zu Hauptfiguren\n- Story-Relevanz\n\nWenn nichts Neues oder Relevantes dabei ist, antworte exakt mit NONE.",
-        "output": "nebencharaktere_update"
+        "prompt": "Vergleiche die neue Szene mit dem bisherigen Story-Kontext.\n\nKontext:\n{{story_kontext}}\n\nSzene:\n{{neue_szene}}\n\nGib ausschliesslich JSON als Array zurueck. Liefere nur neue oder deutlich veraenderte Nebencharaktere. Jeder Eintrag braucht diese String-Felder:\n- name\n- rolle\n- erster_eindruck\n- motivation\n- beziehung\n- story_relevanz\n\nWenn nichts Relevantes auftaucht, gib [] zurueck.\nKein Markdown. Kein ```json. Kein Begleittext.",
+        "output": "nebencharaktere_json"
       }
     },
     {
-      "id": "sind_nebencharaktere_relevant",
-      "type": "decision",
-      "name": "Nebencharaktere nur bei Bedarf speichern",
+      "id": "speichere_nebencharaktere_geziehlt",
+      "type": "tool",
+      "name": "Nebencharaktere einzeln sichern",
       "config": {
-        "input": "{{nebencharaktere_update}}",
-        "operator": "not_equals",
-        "value": "NONE",
-        "output": "nebencharaktere_status",
-        "true_result": "speichern",
-        "false_result": "ueberspringen",
-        "if_true": "speichere_nebencharaktere_memory",
-        "if_false": "analysiere_orte"
+        "tool": "workflow.foreach",
+        "items": "{{nebencharaktere_json}}",
+        "item_var": "nebenfigur",
+        "index_var": "nebenfigur_index",
+        "result_mode": "text_joined",
+        "result_source": "{{last_memory_content}}",
+        "join_with": "\n\n",
+        "max_iterations": 10,
+        "on_error": "continue",
+        "output": "nebencharaktere_resultat",
+        "steps": [
+          {
+            "id": "speichere_nebenfigur_memory",
+            "type": "save_memory",
+            "name": "Nebencharakter speichern",
+            "config": {
+              "content": "Nebencharakter in {{kapitel_szene_label}}:\n- Name: {{nebenfigur.name}}\n- Rolle: {{nebenfigur.rolle}}\n- Erster Eindruck: {{nebenfigur.erster_eindruck}}\n- Motivation oder Konflikt: {{nebenfigur.motivation}}\n- Beziehung zu Hauptfiguren: {{nebenfigur.beziehung}}\n- Story-Relevanz: {{nebenfigur.story_relevanz}}",
+              "entry_type": "character",
+              "source": "workflow:buchautor_szene/nebencharaktere",
+              "tags": "roman,{{roman_slug}},figuren,nebencharaktere,{{nebenfigur.name}}",
+              "relevance": 84
+            }
+          }
+        ]
       }
     },
     {
-      "id": "speichere_nebencharaktere_memory",
-      "type": "save_memory",
-      "name": "Nebencharaktere sichern",
-      "config": {
-        "content": "Neue oder veraenderte Nebencharaktere in {{kapitel_szene_label}}:\n\n{{nebencharaktere_update}}",
-        "entry_type": "character",
-        "source": "workflow:buchautor_szene/nebencharaktere",
-        "tags": "roman,{{roman_slug}},figuren,nebencharaktere",
-        "relevance": 84
-      }
-    },
-    {
-      "id": "analysiere_orte",
+      "id": "analysiere_orte_json",
       "type": "prompt",
-      "name": "Neue Orte extrahieren",
+      "name": "Orte als JSON extrahieren",
       "config": {
-        "prompt": "Vergleiche die neue Szene mit dem bisherigen Story-Kontext.\n\nKontext:\n{{story_kontext}}\n\nSzene:\n{{neue_szene}}\n\nFalls neue oder deutlich weiterentwickelte Orte, Raeumlichkeiten oder Schauplaetze auftauchen, liefere fuer jeden Ort einen eigenen Block mit:\n- Name oder Bezeichnung\n- Funktion in der Szene\n- Atmosphaere\n- relevante Details\n- moegliche Konsequenzen fuer spaetere Szenen\n\nWenn nichts Neues oder Relevantes dabei ist, antworte exakt mit NONE.",
-        "output": "orte_update"
+        "prompt": "Vergleiche die neue Szene mit dem bisherigen Story-Kontext.\n\nKontext:\n{{story_kontext}}\n\nSzene:\n{{neue_szene}}\n\nGib ausschliesslich JSON als Array zurueck. Liefere nur neue oder deutlich weiterentwickelte Orte. Jeder Eintrag braucht diese String-Felder:\n- name\n- funktion\n- atmosphaere\n- details\n- konsequenzen\n\nWenn nichts Relevantes auftaucht, gib [] zurueck.\nKein Markdown. Kein ```json. Kein Begleittext.",
+        "output": "orte_json"
       }
     },
     {
-      "id": "sind_orte_relevant",
-      "type": "decision",
-      "name": "Orte nur bei Bedarf speichern",
+      "id": "speichere_orte_geziehlt",
+      "type": "tool",
+      "name": "Orte einzeln sichern",
       "config": {
-        "input": "{{orte_update}}",
-        "operator": "not_equals",
-        "value": "NONE",
-        "output": "orte_status",
-        "true_result": "speichern",
-        "false_result": "ueberspringen",
-        "if_true": "speichere_orte_memory",
-        "if_false": "analysiere_ereignisse"
+        "tool": "workflow.foreach",
+        "items": "{{orte_json}}",
+        "item_var": "ort",
+        "index_var": "ort_index",
+        "result_mode": "text_joined",
+        "result_source": "{{last_memory_content}}",
+        "join_with": "\n\n",
+        "max_iterations": 10,
+        "on_error": "continue",
+        "output": "orte_resultat",
+        "steps": [
+          {
+            "id": "speichere_ort_memory",
+            "type": "save_memory",
+            "name": "Ort speichern",
+            "config": {
+              "content": "Ort in {{kapitel_szene_label}}:\n- Name oder Bezeichnung: {{ort.name}}\n- Funktion in der Szene: {{ort.funktion}}\n- Atmosphaere: {{ort.atmosphaere}}\n- Relevante Details: {{ort.details}}\n- Moegliche Konsequenzen fuer spaetere Szenen: {{ort.konsequenzen}}",
+              "entry_type": "location",
+              "source": "workflow:buchautor_szene/orte",
+              "tags": "roman,{{roman_slug}},orte,schauplaetze,{{ort.name}}",
+              "relevance": 82
+            }
+          }
+        ]
       }
     },
     {
-      "id": "speichere_orte_memory",
-      "type": "save_memory",
-      "name": "Orte sichern",
-      "config": {
-        "content": "Neue oder veraenderte Orte in {{kapitel_szene_label}}:\n\n{{orte_update}}",
-        "entry_type": "location",
-        "source": "workflow:buchautor_szene/orte",
-        "tags": "roman,{{roman_slug}},orte,schauplaetze",
-        "relevance": 82
-      }
-    },
-    {
-      "id": "analysiere_ereignisse",
+      "id": "analysiere_ereignisse_json",
       "type": "prompt",
-      "name": "Plotrelevante Ereignisse extrahieren",
+      "name": "Plotrelevante Ereignisse als JSON extrahieren",
       "config": {
-        "prompt": "Vergleiche die neue Szene mit dem bisherigen Story-Kontext.\n\nKontext:\n{{story_kontext}}\n\nSzene:\n{{neue_szene}}\n\nFalls die Szene neue plotrelevante Ereignisse, Enthuellungen, Entscheidungen, Verluste, Versprechen oder Konfliktverschiebungen enthaelt, liefere fuer jedes Ereignis einen eigenen Block mit:\n- Ereignis\n- direkte Auswirkung\n- betroffene Figuren\n- moegliche spaetere Folgen\n\nWenn nichts Neues oder Relevantes dabei ist, antworte exakt mit NONE.",
-        "output": "ereignisse_update"
+        "prompt": "Vergleiche die neue Szene mit dem bisherigen Story-Kontext.\n\nKontext:\n{{story_kontext}}\n\nSzene:\n{{neue_szene}}\n\nGib ausschliesslich JSON als Array zurueck. Liefere nur neue plotrelevante Ereignisse. Jeder Eintrag braucht diese String-Felder:\n- ereignis\n- direkte_auswirkung\n- betroffene_figuren\n- spaetere_folgen\n\nWenn nichts Relevantes auftaucht, gib [] zurueck.\nKein Markdown. Kein ```json. Kein Begleittext.",
+        "output": "ereignisse_json"
       }
     },
     {
-      "id": "sind_ereignisse_relevant",
-      "type": "decision",
-      "name": "Ereignisse nur bei Bedarf speichern",
+      "id": "speichere_ereignisse_geziehlt",
+      "type": "tool",
+      "name": "Ereignisse einzeln sichern",
       "config": {
-        "input": "{{ereignisse_update}}",
-        "operator": "not_equals",
-        "value": "NONE",
-        "output": "ereignisse_status",
-        "true_result": "speichern",
-        "false_result": "ueberspringen",
-        "if_true": "speichere_ereignisse_memory",
-        "if_false": "erstelle_lektorat"
-      }
-    },
-    {
-      "id": "speichere_ereignisse_memory",
-      "type": "save_memory",
-      "name": "Ereignisse sichern",
-      "config": {
-        "content": "Neue plotrelevante Ereignisse in {{kapitel_szene_label}}:\n\n{{ereignisse_update}}",
-        "entry_type": "event",
-        "source": "workflow:buchautor_szene/ereignisse",
-        "tags": "roman,{{roman_slug}},ereignisse,plot",
-        "relevance": 88
+        "tool": "workflow.foreach",
+        "items": "{{ereignisse_json}}",
+        "item_var": "ereignis",
+        "index_var": "ereignis_index",
+        "result_mode": "text_joined",
+        "result_source": "{{last_memory_content}}",
+        "join_with": "\n\n",
+        "max_iterations": 10,
+        "on_error": "continue",
+        "output": "ereignisse_resultat",
+        "steps": [
+          {
+            "id": "speichere_ereignis_memory",
+            "type": "save_memory",
+            "name": "Ereignis speichern",
+            "config": {
+              "content": "Plotrelevantes Ereignis in {{kapitel_szene_label}}:\n- Ereignis: {{ereignis.ereignis}}\n- Direkte Auswirkung: {{ereignis.direkte_auswirkung}}\n- Betroffene Figuren: {{ereignis.betroffene_figuren}}\n- Moegliche spaetere Folgen: {{ereignis.spaetere_folgen}}",
+              "entry_type": "event",
+              "source": "workflow:buchautor_szene/ereignisse",
+              "tags": "roman,{{roman_slug}},ereignisse,plot",
+              "relevance": 88
+            }
+          }
+        ]
       }
     },
     {
@@ -409,6 +457,7 @@
       "name": "Szenenzaehler fuer den naechsten Lauf erhoehen",
       "config": {
         "tool": "variables.set",
+        "scope": "project",
         "name": "szenen_nummer",
         "value_type": "int",
         "operation": "increment",
@@ -429,7 +478,7 @@
         "true_result": "neues_kapitel",
         "false_result": "gleiches_kapitel",
         "if_true": "erhoehe_kapitel_nummer",
-        "if_false": "speichere_fortschritt_memory"
+        "if_false": "setze_fortschritt_status"
       }
     },
     {
@@ -438,6 +487,7 @@
       "name": "Kapitelzaehler erhoehen",
       "config": {
         "tool": "variables.set",
+        "scope": "project",
         "name": "kapitel_nummer",
         "value_type": "int",
         "operation": "increment",
@@ -452,6 +502,7 @@
       "name": "Szenennummer fuer neues Kapitel resetten",
       "config": {
         "tool": "variables.set",
+        "scope": "project",
         "name": "szenen_nummer",
         "value_type": "int",
         "operation": "set",
@@ -460,16 +511,16 @@
       }
     },
     {
-      "id": "speichere_fortschritt_memory",
-      "type": "save_memory",
-      "name": "Fortschritt fuer den naechsten Lauf speichern",
+      "id": "setze_fortschritt_status",
+      "type": "tool",
+      "name": "Naechsten Fortschritt als Laufvariable zusammenfassen",
       "config": {
-        "content": "{\n  \"roman_titel\": \"{{roman_titel}}\",\n  \"kapitel_nummer\": {{kapitel_nummer}},\n  \"szenen_nummer\": {{szenen_nummer}},\n  \"szenen_pro_kapitel\": {{szenen_pro_kapitel}},\n  \"letzte_szene_label\": \"{{kapitel_szene_label}}\",\n  \"letzte_szene_datei\": \"{{szene_dateipfad}}\"\n}",
-        "entry_type": "note",
-        "source": "workflow:buchautor_szene/fortschritt",
-        "tags": "roman,{{roman_slug}},fortschritt,workflow",
-        "relevance": 96,
-        "pinned": true
+        "tool": "variables.set",
+        "name": "fortschritt_status",
+        "value_type": "string",
+        "operation": "set",
+        "value": "Naechster Lauf startet mit Kapitel {{kapitel_nummer}}, Szene {{szenen_nummer}}.",
+        "output": "fortschritt_status"
       }
     }
   ]

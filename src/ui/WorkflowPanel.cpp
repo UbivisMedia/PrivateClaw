@@ -6,6 +6,7 @@
 #include "providers/ProviderManager.h"
 #include "services/MemoryService.h"
 #include "services/ProjectService.h"
+#include "services/ProjectVariableService.h"
 #include "services/RunService.h"
 #include "services/SecretsService.h"
 #include "services/SettingsService.h"
@@ -16,11 +17,17 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QFutureWatcher>
 #include <QFrame>
+#include <QGraphicsPathItem>
+#include <QGraphicsRectItem>
+#include <QGraphicsScene>
+#include <QGraphicsTextItem>
+#include <QGraphicsView>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -32,12 +39,17 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMessageBox>
+#include <QPainterPath>
 #include <QPlainTextEdit>
+#include <QPolygonF>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QStandardPaths>
+#include <QToolButton>
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -77,6 +89,15 @@ struct WorkflowTemplateDefinition
     QString workflowName;
     QString workflowDescription;
     QString definitionJson;
+};
+
+struct WorkflowGraphEdge
+{
+    QString sourceId;
+    QString targetId;
+    QString label;
+    QColor color;
+    qreal bendOffset = 0.0;
 };
 
 QString defaultWorkflowJson()
@@ -397,6 +418,50 @@ QString summarizeRunText(QString text)
     return text;
 }
 
+void appendProjectVariableContext(
+    services::ProjectVariableService& projectVariableService,
+    core::RunContext* runContext
+)
+{
+    if (runContext == nullptr || runContext->projectId <= 0) {
+        return;
+    }
+
+    const QList<domain::ProjectVariable> variables = projectVariableService.listVariables(runContext->projectId);
+    QJsonArray variableArray;
+    QStringList variableNames;
+    int directVariableCount = 0;
+
+    for (const domain::ProjectVariable& variable : variables) {
+        const QString trimmedName = variable.name.trimmed();
+        if (!services::ProjectVariableService::isValidVariableName(trimmedName)) {
+            continue;
+        }
+
+        runContext->variables.insert(QString("project_var.%1").arg(trimmedName), variable.valueText);
+        runContext->variables.insert(QString("project_var_type.%1").arg(trimmedName), variable.valueType);
+        if (!runContext->variables.contains(trimmedName)) {
+            runContext->variables.insert(trimmedName, variable.valueText);
+            ++directVariableCount;
+        }
+
+        variableNames.append(trimmedName);
+        QJsonObject variableObject;
+        variableObject.insert("name", trimmedName);
+        variableObject.insert("value", variable.valueText);
+        variableObject.insert("value_type", variable.valueType);
+        variableArray.append(variableObject);
+    }
+
+    runContext->variables.insert("project_variables_count", QString::number(variableArray.size()));
+    runContext->variables.insert("project_variables_direct_count", QString::number(directVariableCount));
+    runContext->variables.insert("project_variable_names", variableNames.join(", "));
+    runContext->variables.insert(
+        "project_variables_json",
+        QString::fromUtf8(QJsonDocument(variableArray).toJson(QJsonDocument::Compact))
+    );
+}
+
 QString debugStepStatusLabel(const core::WorkflowDebugStep& debugStep)
 {
     const QString status = debugStep.status.trimmed().isEmpty()
@@ -478,6 +543,202 @@ QString formatDebugSummary(const core::WorkflowDebugStep& debugStep)
 QString normalizedStepType(QString type)
 {
     return type.trimmed().toLower();
+}
+
+QColor workflowStepAccentColor(const QString& stepType)
+{
+    if (stepType == "prompt") {
+        return QColor("#2f6f98");
+    }
+    if (stepType == "save_memory") {
+        return QColor("#2f7d57");
+    }
+    if (stepType == "decision") {
+        return QColor("#a45d1c");
+    }
+    if (stepType == "tool") {
+        return QColor("#6a4c93");
+    }
+
+    return QColor("#5f5548");
+}
+
+QColor workflowStepFillColor(const QString& stepType)
+{
+    if (stepType == "prompt") {
+        return QColor("#f2f7fb");
+    }
+    if (stepType == "save_memory") {
+        return QColor("#f0f8f4");
+    }
+    if (stepType == "decision") {
+        return QColor("#fff6ec");
+    }
+    if (stepType == "tool") {
+        return QColor("#f6f2fb");
+    }
+
+    return QColor("#faf7f2");
+}
+
+QString workflowGraphNodeSubtitle(const QJsonObject& stepObject)
+{
+    const QString stepType = normalizedStepType(stepObject.value("type").toString());
+    const QJsonObject config = stepObject.value("config").toObject();
+    if (stepType == "prompt") {
+        const QString output = config.value("output").toString().trimmed();
+        return output.isEmpty() ? "LLM-Prompt" : QString("Output: %1").arg(output);
+    }
+    if (stepType == "save_memory") {
+        const QString memoryType = config.value("entry_type").toString().trimmed().isEmpty()
+            ? config.value("memory_type").toString().trimmed()
+            : config.value("entry_type").toString().trimmed();
+        return memoryType.isEmpty() ? "Memory speichern" : QString("Memory: %1").arg(memoryType);
+    }
+    if (stepType == "decision") {
+        if (config.value("rules").isArray() && !config.value("rules").toArray().isEmpty()) {
+            return QString("Regeln: %1").arg(config.value("rules").toArray().size());
+        }
+        const QString operatorName = config.value("operator").toString().trimmed();
+        return operatorName.isEmpty() ? "Decision" : QString("Operator: %1").arg(operatorName);
+    }
+    if (stepType == "tool") {
+        const QString toolName = config.value("tool").toString().trimmed();
+        return toolName.isEmpty() ? "Tool" : QString("Tool: %1").arg(toolName);
+    }
+
+    return stepType;
+}
+
+QString workflowGraphEdgeLabel(const QString& preferredLabel, const QString& fallbackLabel)
+{
+    const QString rawLabel = preferredLabel.trimmed().isEmpty() ? fallbackLabel.trimmed() : preferredLabel.trimmed();
+    if (rawLabel.size() <= 18) {
+        return rawLabel;
+    }
+
+    return rawLabel.left(15) + "...";
+}
+
+void appendWorkflowGraphEdge(
+    QList<WorkflowGraphEdge>* edges,
+    const QString& sourceId,
+    const QString& targetId,
+    const QString& label,
+    const QColor& color,
+    const qreal bendOffset = 0.0
+)
+{
+    if (edges == nullptr || sourceId.trimmed().isEmpty() || targetId.trimmed().isEmpty()) {
+        return;
+    }
+
+    edges->append(WorkflowGraphEdge{ sourceId.trimmed(), targetId.trimmed(), label.trimmed(), color, bendOffset });
+}
+
+QList<WorkflowGraphEdge> collectWorkflowGraphEdges(const QJsonArray& steps)
+{
+    QList<WorkflowGraphEdge> edges;
+    QHash<QString, QString> nextStepById;
+    QSet<QString> validStepIds;
+    validStepIds.reserve(steps.size());
+
+    for (int index = 0; index < steps.size(); ++index) {
+        const QString stepId = steps.at(index).toObject().value("id").toString().trimmed();
+        if (!stepId.isEmpty()) {
+            validStepIds.insert(stepId);
+            if (index + 1 < steps.size()) {
+                nextStepById.insert(stepId, steps.at(index + 1).toObject().value("id").toString().trimmed());
+            }
+        }
+    }
+
+    for (int index = 0; index < steps.size(); ++index) {
+        const QJsonObject stepObject = steps.at(index).toObject();
+        const QString stepId = stepObject.value("id").toString().trimmed();
+        if (stepId.isEmpty()) {
+            continue;
+        }
+
+        const QString stepType = normalizedStepType(stepObject.value("type").toString());
+        const QJsonObject config = stepObject.value("config").toObject();
+        const QString sequentialNextId = nextStepById.value(stepId);
+        if (stepType != "decision") {
+            if (!sequentialNextId.isEmpty()) {
+                appendWorkflowGraphEdge(&edges, stepId, sequentialNextId, QString(), QColor("#a9b3bd"));
+            }
+            continue;
+        }
+
+        const QJsonArray rules = config.value("rules").toArray();
+        if (!rules.isEmpty()) {
+            for (int ruleIndex = 0; ruleIndex < rules.size(); ++ruleIndex) {
+                if (!rules.at(ruleIndex).isObject()) {
+                    continue;
+                }
+
+                const QJsonObject ruleObject = rules.at(ruleIndex).toObject();
+                QString targetId = ruleObject.value("next_step").toString().trimmed();
+                if (targetId.isEmpty()) {
+                    targetId = sequentialNextId;
+                }
+                if (!validStepIds.contains(targetId)) {
+                    continue;
+                }
+
+                const qreal bendOffset = (ruleIndex % 2 == 0 ? 120.0 : -120.0);
+                appendWorkflowGraphEdge(
+                    &edges,
+                    stepId,
+                    targetId,
+                    workflowGraphEdgeLabel(ruleObject.value("result").toString(), QString("rule %1").arg(ruleIndex + 1)),
+                    QColor("#a45d1c"),
+                    bendOffset
+                );
+            }
+
+            QString defaultTargetId = config.value("default_next").toString().trimmed();
+            if (defaultTargetId.isEmpty()) {
+                defaultTargetId = sequentialNextId;
+            }
+            if (validStepIds.contains(defaultTargetId)) {
+                appendWorkflowGraphEdge(
+                    &edges,
+                    stepId,
+                    defaultTargetId,
+                    workflowGraphEdgeLabel(config.value("default_result").toString(), "default"),
+                    QColor("#5f5548"),
+                    0.0
+                );
+            }
+            continue;
+        }
+
+        QString trueTargetId = config.value("if_true").toString().trimmed();
+        if (trueTargetId.isEmpty()) {
+            trueTargetId = sequentialNextId;
+        }
+        QString falseTargetId = config.value("if_false").toString().trimmed();
+        if (falseTargetId.isEmpty()) {
+            falseTargetId = sequentialNextId;
+        }
+
+        if (!trueTargetId.isEmpty()
+            && trueTargetId == falseTargetId
+            && validStepIds.contains(trueTargetId)) {
+            appendWorkflowGraphEdge(&edges, stepId, trueTargetId, "true | false", QColor("#486581"), 0.0);
+            continue;
+        }
+
+        if (validStepIds.contains(trueTargetId)) {
+            appendWorkflowGraphEdge(&edges, stepId, trueTargetId, "true", QColor("#2f7d57"), 120.0);
+        }
+        if (validStepIds.contains(falseTargetId)) {
+            appendWorkflowGraphEdge(&edges, stepId, falseTargetId, "false", QColor("#b44335"), -120.0);
+        }
+    }
+
+    return edges;
 }
 
 QString effectiveProviderBaseUrl(
@@ -638,6 +899,51 @@ void setJsonTextValue(QJsonObject* object, const QString& key, const QString& va
     object->insert(key, normalizedValue);
 }
 
+QString jsonValueToEditorText(const QJsonValue& value)
+{
+    if (value.isArray()) {
+        return QString::fromUtf8(QJsonDocument(value.toArray()).toJson(QJsonDocument::Indented)).trimmed();
+    }
+    if (value.isObject()) {
+        return QString::fromUtf8(QJsonDocument(value.toObject()).toJson(QJsonDocument::Indented)).trimmed();
+    }
+    return value.toString();
+}
+
+bool tryParseJsonValueText(const QString& text, QJsonValue* parsedValue, QString* errorMessage)
+{
+    if (parsedValue == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "Interner Fehler: JSON-Ziel fehlt.";
+        }
+        return false;
+    }
+
+    const QString trimmedText = text.trimmed();
+    if (trimmedText.isEmpty()) {
+        *parsedValue = QJsonValue();
+        return true;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(trimmedText.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || document.isNull()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = parseError.errorString();
+        }
+        return false;
+    }
+
+    if (document.isArray()) {
+        *parsedValue = document.array();
+    } else if (document.isObject()) {
+        *parsedValue = document.object();
+    } else {
+        *parsedValue = QJsonValue();
+    }
+    return true;
+}
+
 void setComboItemsWithEditableText(
     QComboBox* comboBox,
     const QStringList& items,
@@ -719,13 +1025,14 @@ core::ExecutionResult executeWorkflowWithProvider(
     const QString& providerBaseUrl,
     const QString& workspaceRoot,
     const QString& comfyUiBaseUrl,
+    const QString& databasePath,
     const QStringList& allowedToolPaths,
     const domain::Workflow& workflow,
     const core::RunContext& runContext,
     const core::ExecutionCallbacks& callbacks
 )
 {
-    const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl, QString(), allowedToolPaths);
+    const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl, databasePath, allowedToolPaths);
     core::WorkflowEngine workflowEngine(&toolExecutor);
 
     if (providerName.compare("Ollama", Qt::CaseInsensitive) == 0) {
@@ -749,6 +1056,7 @@ core::ExecutionResult executeWorkflowWithProvider(
 WorkflowPanel::WorkflowPanel(
     services::ProjectService& projectService,
     services::SettingsService& settingsService,
+    services::ProjectVariableService& projectVariableService,
     services::MemoryService& memoryService,
     services::SecretsService& secretsService,
     services::RunService& runService,
@@ -759,6 +1067,7 @@ WorkflowPanel::WorkflowPanel(
     : QWidget(parent)
     , m_projectService(projectService)
     , m_settingsService(settingsService)
+    , m_projectVariableService(projectVariableService)
     , m_memoryService(memoryService)
     , m_secretsService(secretsService)
     , m_runService(runService)
@@ -812,23 +1121,99 @@ void WorkflowPanel::buildUi()
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
 
-    auto* infoCard = new QFrame(this);
-    infoCard->setProperty("panelCard", true);
-    auto* infoLayout = new QVBoxLayout(infoCard);
-    auto* infoTitle = new QLabel("Workflow-Editor", infoCard);
-    infoTitle->setProperty("sectionTitle", true);
+    auto createCollapsibleSection =
+        [](QWidget* parent,
+           QVBoxLayout* targetLayout,
+           const QString& title,
+           const bool expanded,
+           QToolButton** toggleOut = nullptr,
+           QFrame** bodyOut = nullptr,
+           QFrame** sectionOut = nullptr) -> QVBoxLayout* {
+            auto* sectionFrame = new QFrame(parent);
+            sectionFrame->setProperty("panelCard", true);
 
+            auto* sectionLayout = new QVBoxLayout(sectionFrame);
+            sectionLayout->setContentsMargins(12, 10, 12, 10);
+            sectionLayout->setSpacing(8);
+
+            auto* toggleButton = new QToolButton(sectionFrame);
+            toggleButton->setCheckable(true);
+            toggleButton->setChecked(expanded);
+            toggleButton->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+            toggleButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+            toggleButton->setText(title);
+            toggleButton->setCursor(Qt::PointingHandCursor);
+            toggleButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            toggleButton->setStyleSheet(
+                "QToolButton {"
+                " border: none;"
+                " font-weight: 600;"
+                " padding: 2px 0;"
+                " text-align: left;"
+                "}"
+            );
+
+            auto* bodyFrame = new QFrame(sectionFrame);
+            auto* bodyLayout = new QVBoxLayout(bodyFrame);
+            bodyLayout->setContentsMargins(0, 0, 0, 0);
+            bodyLayout->setSpacing(8);
+            bodyFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+
+            const auto applyExpandedState = [sectionFrame, sectionLayout, toggleButton, bodyFrame](const bool checked) {
+                bodyFrame->setVisible(checked);
+                toggleButton->setArrowType(checked ? Qt::DownArrow : Qt::RightArrow);
+                sectionFrame->setSizePolicy(
+                    QSizePolicy::Preferred,
+                    checked ? QSizePolicy::Expanding : QSizePolicy::Fixed
+                );
+                const QMargins margins = sectionLayout->contentsMargins();
+                const int collapsedHeight = toggleButton->sizeHint().height()
+                    + margins.top()
+                    + margins.bottom()
+                    + sectionLayout->spacing();
+                sectionFrame->setMinimumHeight(0);
+                sectionFrame->setMaximumHeight(checked ? QWIDGETSIZE_MAX : collapsedHeight);
+                sectionFrame->updateGeometry();
+                if (QWidget* parentWidget = sectionFrame->parentWidget(); parentWidget != nullptr) {
+                    if (QLayout* parentLayout = parentWidget->layout(); parentLayout != nullptr) {
+                        parentLayout->invalidate();
+                        parentLayout->activate();
+                    }
+                }
+            };
+
+            QObject::connect(toggleButton, &QToolButton::toggled, sectionFrame, [applyExpandedState](const bool checked) {
+                applyExpandedState(checked);
+            });
+            applyExpandedState(expanded);
+
+            sectionLayout->addWidget(toggleButton);
+            sectionLayout->addWidget(bodyFrame);
+            targetLayout->addWidget(sectionFrame);
+
+            if (toggleOut != nullptr) {
+                *toggleOut = toggleButton;
+            }
+            if (bodyOut != nullptr) {
+                *bodyOut = bodyFrame;
+            }
+            if (sectionOut != nullptr) {
+                *sectionOut = sectionFrame;
+            }
+
+            return bodyLayout;
+        };
+
+    auto* infoLayout = createCollapsibleSection(this, layout, "Workflow-Editor", true);
     auto* infoBody = new QLabel(
         "Workflows werden als JSON gespeichert. Erwartet wird ein Objekt mit einem Array 'steps'. "
         "Jeder Schritt braucht mindestens 'id' und 'type'. "
         "Aktuell werden 'prompt', 'save_memory', 'decision' und 'tool' unterstuetzt. "
         "Optional hilft ein visueller Editor beim Bearbeiten und haelt das JSON live synchron.",
-        infoCard
+        this
     );
     infoBody->setProperty("sectionBody", true);
     infoBody->setWordWrap(true);
-
-    infoLayout->addWidget(infoTitle);
     infoLayout->addWidget(infoBody);
 
     auto* contentSplitter = new QSplitter(Qt::Horizontal, this);
@@ -954,8 +1339,33 @@ void WorkflowPanel::buildUi()
     auto* visualListCard = new QFrame(visualSplitter);
     auto* visualListLayout = new QVBoxLayout(visualListCard);
     visualListLayout->setContentsMargins(0, 0, 0, 0);
-    auto* visualListTitle = new QLabel("Schritte", visualListCard);
+    auto* visualListTitle = new QLabel("Canvas und Schritte", visualListCard);
     visualListTitle->setProperty("sectionBody", true);
+
+    auto* visualLead = new QLabel(
+        "Klick auf einen Node oder einen Schritt springt direkt in die passende Konfiguration.",
+        visualListCard
+    );
+    visualLead->setProperty("sectionBody", true);
+    visualLead->setWordWrap(true);
+
+    auto* visualGraphHint = new QLabel(
+        "Klick auf einen Node waehlt den Schritt. Farben markieren Prompt, Memory, Decision und Tool.",
+        visualListCard
+    );
+    visualGraphHint->setProperty("sectionBody", true);
+    visualGraphHint->setWordWrap(true);
+
+    m_visualGraphView = new QGraphicsView(visualListCard);
+    m_visualGraphScene = new QGraphicsScene(m_visualGraphView);
+    m_visualGraphView->setScene(m_visualGraphScene);
+    m_visualGraphView->setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
+    m_visualGraphView->setFrameShape(QFrame::StyledPanel);
+    m_visualGraphView->setMinimumHeight(280);
+    m_visualGraphView->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_visualGraphView->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_visualGraphView->setBackgroundBrush(QColor("#fbf8f2"));
+    m_visualGraphView->setDragMode(QGraphicsView::NoDrag);
 
     m_visualStepList = new QListWidget(visualListCard);
     m_visualStepList->setAlternatingRowColors(true);
@@ -979,9 +1389,42 @@ void WorkflowPanel::buildUi()
     visualMoveLayout->addWidget(removeStepButton);
 
     visualListLayout->addWidget(visualListTitle);
-    visualListLayout->addWidget(m_visualStepList, 1);
-    visualListLayout->addLayout(visualAddLayout);
-    visualListLayout->addLayout(visualMoveLayout);
+    visualListLayout->addWidget(visualLead);
+
+    QFrame* visualGraphSectionFrame = nullptr;
+    auto* visualGraphSectionLayout = createCollapsibleSection(
+        visualListCard,
+        visualListLayout,
+        "Ablaufgraph",
+        true,
+        nullptr,
+        nullptr,
+        &visualGraphSectionFrame
+    );
+    visualGraphSectionLayout->addWidget(visualGraphHint);
+    visualGraphSectionLayout->addWidget(m_visualGraphView, 1);
+
+    QFrame* visualStepsSectionFrame = nullptr;
+    auto* visualStepsSectionLayout = createCollapsibleSection(
+        visualListCard,
+        visualListLayout,
+        "Schritte",
+        true,
+        nullptr,
+        nullptr,
+        &visualStepsSectionFrame
+    );
+    visualStepsSectionLayout->addWidget(m_visualStepList, 1);
+    visualStepsSectionLayout->addLayout(visualAddLayout);
+    visualStepsSectionLayout->addLayout(visualMoveLayout);
+    visualListLayout->setStretch(2, 3);
+    visualListLayout->setStretch(3, 2);
+    if (visualGraphSectionFrame != nullptr) {
+        visualGraphSectionFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    }
+    if (visualStepsSectionFrame != nullptr) {
+        visualStepsSectionFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    }
 
     auto* visualDetailScrollArea = new QScrollArea(visualSplitter);
     visualDetailScrollArea->setWidgetResizable(true);
@@ -1105,6 +1548,7 @@ void WorkflowPanel::buildUi()
         "memory.delete_old",
         "memory.ingest_directory",
         "variables.set",
+        "workflow.foreach",
         "file.write_text",
         "file.edit_diff",
         "http.request",
@@ -1334,21 +1778,28 @@ void WorkflowPanel::buildUi()
     auto* variableToolPage = new QWidget(m_toolConfigStack);
     auto* variableToolLayout = new QFormLayout(variableToolPage);
     variableToolLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolVariableScopeCombo = new QComboBox(variableToolPage);
+    m_toolVariableScopeCombo->addItem("Nur aktueller Run", "run");
+    m_toolVariableScopeCombo->addItem("Projektweit speichern", "project");
     m_toolVariableNameEdit = new QLineEdit(variableToolPage);
     m_toolVariableNameEdit->setPlaceholderText("kapitel_nummer");
     m_toolVariableTypeCombo = new QComboBox(variableToolPage);
     m_toolVariableTypeCombo->addItem("String", "string");
     m_toolVariableTypeCombo->addItem("Integer", "int");
+    m_toolVariableTypeCombo->addItem("Float", "float");
     m_toolVariableOperationCombo = new QComboBox(variableToolPage);
     m_toolVariableOperationCombo->addItem("Setzen / ueberschreiben", "set");
-    m_toolVariableOperationCombo->addItem("Integer erhoehen", "increment");
+    m_toolVariableOperationCombo->addItem("Numerisch erhoehen", "increment");
     m_toolVariableValueEdit = new QLineEdit(variableToolPage);
     m_toolVariableValueEdit->setPlaceholderText("{{last_response}} oder Roman ohne Morgen");
     m_toolVariableCurrentValueEdit = new QLineEdit(variableToolPage);
     m_toolVariableCurrentValueEdit->setPlaceholderText("{{kapitel_nummer}}");
-    m_toolVariableAmountSpin = new QSpinBox(variableToolPage);
-    m_toolVariableAmountSpin->setRange(-1000000, 1000000);
-    m_toolVariableAmountSpin->setValue(1);
+    m_toolVariableAmountSpin = new QDoubleSpinBox(variableToolPage);
+    m_toolVariableAmountSpin->setRange(-1000000.0, 1000000.0);
+    m_toolVariableAmountSpin->setDecimals(6);
+    m_toolVariableAmountSpin->setSingleStep(0.1);
+    m_toolVariableAmountSpin->setValue(1.0);
+    variableToolLayout->addRow("Scope", m_toolVariableScopeCombo);
     variableToolLayout->addRow("Variablenname", m_toolVariableNameEdit);
     variableToolLayout->addRow("Typ", m_toolVariableTypeCombo);
     variableToolLayout->addRow("Operation", m_toolVariableOperationCombo);
@@ -1356,6 +1807,57 @@ void WorkflowPanel::buildUi()
     variableToolLayout->addRow("Aktueller Wert (increment)", m_toolVariableCurrentValueEdit);
     variableToolLayout->addRow("Delta (increment)", m_toolVariableAmountSpin);
     m_toolConfigStack->addWidget(variableToolPage);
+
+    auto* foreachToolPage = new QWidget(m_toolConfigStack);
+    auto* foreachToolLayout = new QFormLayout(foreachToolPage);
+    foreachToolLayout->setLabelAlignment(Qt::AlignLeft);
+    m_toolForeachItemsEdit = new QPlainTextEdit(foreachToolPage);
+    m_toolForeachItemsEdit->setMinimumHeight(90);
+    m_toolForeachItemsEdit->setPlaceholderText("{{charaktere_json}} oder [\"A\", \"B\"]");
+    m_toolForeachItemVarEdit = new QLineEdit(foreachToolPage);
+    m_toolForeachItemVarEdit->setPlaceholderText("loop_item");
+    m_toolForeachIndexVarEdit = new QLineEdit(foreachToolPage);
+    m_toolForeachIndexVarEdit->setPlaceholderText("loop_index");
+    m_toolForeachResultModeCombo = new QComboBox(foreachToolPage);
+    m_toolForeachResultModeCombo->addItem("Text zusammenfuehren", "text_joined");
+    m_toolForeachResultModeCombo->addItem("JSON-Array sammeln", "json_array");
+    m_toolForeachResultSourceEdit = new QLineEdit(foreachToolPage);
+    m_toolForeachResultSourceEdit->setPlaceholderText("{{last_response}}");
+    m_toolForeachResultVarEdit = new QLineEdit(foreachToolPage);
+    m_toolForeachResultVarEdit->setPlaceholderText("Optionaler Alias");
+    m_toolForeachJoinWithEdit = new QLineEdit(foreachToolPage);
+    m_toolForeachJoinWithEdit->setPlaceholderText("Leer lassen fuer Absatzabstand");
+    m_toolForeachOnErrorCombo = new QComboBox(foreachToolPage);
+    m_toolForeachOnErrorCombo->addItem("Abbrechen", "abort");
+    m_toolForeachOnErrorCombo->addItem("Iteration ueberspringen", "continue");
+    m_toolForeachMaxIterationsSpin = new QSpinBox(foreachToolPage);
+    m_toolForeachMaxIterationsSpin->setRange(1, 100000);
+    m_toolForeachMaxIterationsSpin->setValue(100);
+    m_toolForeachStepsEdit = new QPlainTextEdit(foreachToolPage);
+    m_toolForeachStepsEdit->setMinimumHeight(180);
+    m_toolForeachStepsEdit->setPlaceholderText(
+        "[\n"
+        "  {\n"
+        "    \"id\": \"detail_prompt\",\n"
+        "    \"type\": \"prompt\",\n"
+        "    \"config\": {\n"
+        "      \"prompt\": \"Arbeite {{loop_item}} aus.\",\n"
+        "      \"output\": \"detail\"\n"
+        "    }\n"
+        "  }\n"
+        "]"
+    );
+    foreachToolLayout->addRow("Items", m_toolForeachItemsEdit);
+    foreachToolLayout->addRow("Item-Variable", m_toolForeachItemVarEdit);
+    foreachToolLayout->addRow("Index-Variable", m_toolForeachIndexVarEdit);
+    foreachToolLayout->addRow("Result-Mode", m_toolForeachResultModeCombo);
+    foreachToolLayout->addRow("Result-Quelle", m_toolForeachResultSourceEdit);
+    foreachToolLayout->addRow("Result-Variable", m_toolForeachResultVarEdit);
+    foreachToolLayout->addRow("Join-With", m_toolForeachJoinWithEdit);
+    foreachToolLayout->addRow("on_error", m_toolForeachOnErrorCombo);
+    foreachToolLayout->addRow("Max. Iterationen", m_toolForeachMaxIterationsSpin);
+    foreachToolLayout->addRow("Unter-Schritte", m_toolForeachStepsEdit);
+    m_toolConfigStack->addWidget(foreachToolPage);
 
     auto* fileWritePage = new QWidget(m_toolConfigStack);
     auto* fileWriteLayout = new QFormLayout(fileWritePage);
@@ -1617,14 +2119,36 @@ void WorkflowPanel::buildUi()
     m_visualEditorStatusLabel->setProperty("sectionBody", true);
     m_visualEditorStatusLabel->setWordWrap(true);
 
-    visualDetailLayout->addLayout(visualFormLayout);
-    visualDetailLayout->addWidget(m_visualStepConfigStack, 1);
-    visualDetailLayout->addWidget(m_visualEditorStatusLabel);
-    visualDetailLayout->addStretch();
+    auto* visualDetailLead = new QLabel(
+        "Jede Sektion laesst sich zuklappen, damit du bei langen Workflows gezielt Platz freimachst.",
+        visualDetailCard
+    );
+    visualDetailLead->setProperty("sectionBody", true);
+    visualDetailLead->setWordWrap(true);
+    visualDetailLayout->addWidget(visualDetailLead);
+
+    QFrame* visualDetailSectionFrame = nullptr;
+    auto* visualDetailSectionLayout = createCollapsibleSection(
+        visualDetailCard,
+        visualDetailLayout,
+        "Schrittdetails",
+        true,
+        nullptr,
+        nullptr,
+        &visualDetailSectionFrame
+    );
+    visualDetailSectionLayout->addLayout(visualFormLayout);
+    visualDetailSectionLayout->addWidget(m_visualStepConfigStack, 1);
+    visualDetailSectionLayout->addWidget(m_visualEditorStatusLabel);
+    visualDetailLayout->setStretch(1, 1);
+    if (visualDetailSectionFrame != nullptr) {
+        visualDetailSectionFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    }
     visualDetailScrollArea->setWidget(visualDetailCard);
 
     visualSplitter->setStretchFactor(0, 2);
     visualSplitter->setStretchFactor(1, 3);
+    visualSplitter->setSizes(QList<int>{420, 760});
 
     visualEditorLayout->addWidget(visualEditorTitle);
     visualEditorLayout->addWidget(visualEditorBody);
@@ -1636,9 +2160,6 @@ void WorkflowPanel::buildUi()
     m_definitionEdit = new QPlainTextEdit(editorCard);
     m_definitionEdit->setMinimumHeight(320);
     m_definitionEdit->setPlainText(defaultWorkflowJson());
-
-    auto* outputLabel = new QLabel("Letzte Ausfuehrung", editorCard);
-    outputLabel->setProperty("sectionBody", true);
 
     m_executionOutputView = new QPlainTextEdit(editorCard);
     m_executionOutputView->setReadOnly(true);
@@ -1700,24 +2221,68 @@ void WorkflowPanel::buildUi()
 
     editorLayout->addWidget(editorTitle);
     editorLayout->addWidget(editorBody);
-    editorLayout->addLayout(formLayout);
+
+    QFrame* workflowMetaSectionFrame = nullptr;
+    auto* workflowMetaSectionLayout = createCollapsibleSection(
+        editorCard,
+        editorLayout,
+        "Workflow-Metadaten",
+        true,
+        nullptr,
+        nullptr,
+        &workflowMetaSectionFrame
+    );
+    workflowMetaSectionLayout->addLayout(formLayout);
+
     editorLayout->addWidget(m_templateFrame);
     editorLayout->addWidget(m_visualEditorToggle);
     editorLayout->addWidget(m_visualEditorFrame);
-    editorLayout->addWidget(m_jsonDefinitionLabel);
-    editorLayout->addWidget(m_definitionEdit, 1);
+
+    auto* jsonSectionLayout = createCollapsibleSection(
+        editorCard,
+        editorLayout,
+        "JSON-Definition",
+        true,
+        nullptr,
+        nullptr,
+        &m_jsonDefinitionFrame
+    );
+    jsonSectionLayout->addWidget(m_jsonDefinitionLabel);
+    jsonSectionLayout->addWidget(m_definitionEdit, 1);
+
     editorLayout->addLayout(editorActions);
-    editorLayout->addWidget(outputLabel);
-    editorLayout->addWidget(m_executionStatusLabel);
-    editorLayout->addWidget(m_executionOutputView);
+
+    QFrame* outputSectionFrame = nullptr;
+    auto* outputSectionLayout = createCollapsibleSection(
+        editorCard,
+        editorLayout,
+        "Letzte Ausfuehrung",
+        true,
+        nullptr,
+        nullptr,
+        &outputSectionFrame
+    );
+    outputSectionLayout->addWidget(m_executionStatusLabel);
+    outputSectionLayout->addWidget(m_executionOutputView);
+
     editorLayout->addWidget(m_debuggerToggle);
     editorLayout->addWidget(m_debuggerFrame, 1);
     editorLayout->addWidget(m_feedbackLabel);
+    editorLayout->setStretch(5, 5);
+    editorLayout->setStretch(6, 3);
+    editorLayout->setStretch(8, 2);
+    editorLayout->setStretch(10, 3);
+    if (workflowMetaSectionFrame != nullptr) {
+        workflowMetaSectionFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    }
+    if (outputSectionFrame != nullptr) {
+        outputSectionFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    }
 
     contentSplitter->setStretchFactor(0, 3);
     contentSplitter->setStretchFactor(1, 5);
+    contentSplitter->setSizes(QList<int>{300, 980});
 
-    layout->addWidget(infoCard);
     layout->addWidget(contentSplitter, 1);
 
     connect(refreshButton, &QPushButton::clicked, this, [this]() {
@@ -1770,6 +2335,48 @@ void WorkflowPanel::buildUi()
 
     connect(m_visualStepList, &QListWidget::currentRowChanged, this, [this](const int row) {
         loadVisualStepFromRow(row);
+    });
+    connect(m_visualGraphScene, &QGraphicsScene::selectionChanged, this, [this]() {
+        if (m_isSyncingVisualGraph || m_visualGraphScene == nullptr || m_visualStepList == nullptr) {
+            return;
+        }
+
+        const QList<QGraphicsItem*> selectedItems = m_visualGraphScene->selectedItems();
+        if (selectedItems.isEmpty()) {
+            return;
+        }
+
+        QString stepId;
+        for (QGraphicsItem* item : selectedItems) {
+            if (item == nullptr) {
+                continue;
+            }
+
+            const QString candidateId = item->data(0).toString().trimmed();
+            if (!candidateId.isEmpty()) {
+                stepId = candidateId;
+                break;
+            }
+        }
+        if (stepId.isEmpty()) {
+            return;
+        }
+
+        QMetaObject::invokeMethod(this, [this, stepId]() {
+            if (m_visualStepList == nullptr) {
+                return;
+            }
+
+            for (int row = 0; row < m_visualStepList->count(); ++row) {
+                if (QListWidgetItem* item = m_visualStepList->item(row);
+                    item != nullptr && item->data(Qt::UserRole).toString() == stepId) {
+                    if (m_visualStepList->currentRow() != row) {
+                        m_visualStepList->setCurrentRow(row);
+                    }
+                    break;
+                }
+            }
+        }, Qt::QueuedConnection);
     });
 
     connect(m_debugStepList, &QListWidget::currentRowChanged, this, [this](const int row) {
@@ -1879,6 +2486,9 @@ void WorkflowPanel::buildUi()
     connect(m_toolOutputEdit, &QLineEdit::textEdited, this, [this]() {
         scheduleVisualStepApply();
     });
+    connect(m_toolVariableScopeCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
     connect(m_toolVariableNameEdit, &QLineEdit::textEdited, this, [this]() {
         scheduleVisualStepApply();
     });
@@ -1895,7 +2505,38 @@ void WorkflowPanel::buildUi()
     connect(m_toolVariableCurrentValueEdit, &QLineEdit::textEdited, this, [this]() {
         scheduleVisualStepApply();
     });
-    connect(m_toolVariableAmountSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+    connect(m_toolVariableAmountSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolForeachItemsEdit, &QPlainTextEdit::textChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolForeachItemVarEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolForeachIndexVarEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolForeachResultModeCombo, &QComboBox::currentTextChanged, this, [this]() {
+        updateVisualToolConfigPage();
+        scheduleVisualStepApply();
+    });
+    connect(m_toolForeachResultSourceEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolForeachResultVarEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolForeachJoinWithEdit, &QLineEdit::textEdited, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolForeachOnErrorCombo, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolForeachMaxIterationsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        scheduleVisualStepApply();
+    });
+    connect(m_toolForeachStepsEdit, &QPlainTextEdit::textChanged, this, [this]() {
         scheduleVisualStepApply();
     });
     connect(m_toolFileReadPathEdit, &QLineEdit::textEdited, this, [this]() {
@@ -2473,6 +3114,7 @@ void WorkflowPanel::executeWorkflow(const bool debugRequested)
     runContext.variables.insert("workspace_root", m_settingsService.workspaceRoot());
     runContext.variables.insert("comfyui_base_url", m_settingsService.comfyUiBaseUrl());
     runContext.variables.insert("provider_base_url", providerBaseUrl);
+    appendProjectVariableContext(m_projectVariableService, &runContext);
 
     const services::PreparedMemoryContext memoryContext = prepareMemoryContext(m_memoryService, project->id);
     runContext.memorySnippets = memoryContext.snippets;
@@ -2597,6 +3239,9 @@ void WorkflowPanel::executeWorkflow(const bool debugRequested)
 
     const QString workspaceRoot = m_settingsService.workspaceRoot();
     const QString comfyUiBaseUrl = m_settingsService.comfyUiBaseUrl();
+    const QString databasePath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation).trimmed().isEmpty()
+        ? QString()
+        : QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).filePath("privateclaw.sqlite");
     const QStringList allowedToolPaths = m_settingsService.effectiveAllowedToolPaths();
     core::ExecutionCallbacks executionCallbacks;
     executionCallbacks.onLogLine = [this, runId](const QString& line) {
@@ -2754,6 +3399,7 @@ void WorkflowPanel::executeWorkflow(const bool debugRequested)
                                           providerName,
                                           workspaceRoot,
                                           comfyUiBaseUrl,
+                                          databasePath,
                                           allowedToolPaths,
                                           executionCallbacks]() {
         return executeWorkflowWithProvider(
@@ -2761,6 +3407,7 @@ void WorkflowPanel::executeWorkflow(const bool debugRequested)
             providerBaseUrl,
             workspaceRoot,
             comfyUiBaseUrl,
+            databasePath,
             allowedToolPaths,
             workflow,
             runContext,
@@ -2902,6 +3549,17 @@ void WorkflowPanel::updateTemplateLibraryVisibility()
     const bool expanded = m_templateToggleButton->isChecked();
     m_templateBodyFrame->setVisible(expanded);
     m_templateToggleButton->setText(expanded ? "Einklappen" : "Einblenden");
+    if (m_templateFrame != nullptr) {
+        m_templateFrame->setSizePolicy(QSizePolicy::Preferred, expanded ? QSizePolicy::Preferred : QSizePolicy::Fixed);
+        const QMargins margins = m_templateFrame->contentsMargins();
+        const int collapsedHeight = m_templateToggleButton->sizeHint().height() + margins.top() + margins.bottom() + 24;
+        m_templateFrame->setMaximumHeight(expanded ? QWIDGETSIZE_MAX : collapsedHeight);
+        m_templateFrame->updateGeometry();
+    }
+    if (layout() != nullptr) {
+        layout()->invalidate();
+        layout()->activate();
+    }
 }
 
 void WorkflowPanel::loadSelectedTemplateIntoEditor()
@@ -2954,12 +3612,20 @@ void WorkflowPanel::updateVisualEditorVisibility()
     const bool visualEditorEnabled = m_visualEditorToggle->isChecked();
     m_visualEditorFrame->setVisible(visualEditorEnabled);
 
-    if (m_jsonDefinitionLabel != nullptr) {
-        m_jsonDefinitionLabel->setVisible(!visualEditorEnabled);
-    }
+    if (m_jsonDefinitionFrame != nullptr) {
+        m_jsonDefinitionFrame->setVisible(!visualEditorEnabled);
+    } else {
+        if (m_jsonDefinitionLabel != nullptr) {
+            m_jsonDefinitionLabel->setVisible(!visualEditorEnabled);
+        }
 
-    if (m_definitionEdit != nullptr) {
-        m_definitionEdit->setVisible(!visualEditorEnabled);
+        if (m_definitionEdit != nullptr) {
+            m_definitionEdit->setVisible(!visualEditorEnabled);
+        }
+    }
+    if (layout() != nullptr) {
+        layout()->invalidate();
+        layout()->activate();
     }
 }
 
@@ -2996,6 +3662,10 @@ void WorkflowPanel::updateDebuggerVisibility()
     }
 
     m_debuggerFrame->setVisible(m_debuggerToggle->isChecked());
+    if (layout() != nullptr) {
+        layout()->invalidate();
+        layout()->activate();
+    }
 }
 
 void WorkflowPanel::rebuildDebugStepList()
@@ -3189,6 +3859,9 @@ void WorkflowPanel::syncVisualEditorFromJson()
             QString("Status: JSON aktuell nicht lesbar. %1").arg(parseError.errorString())
         );
         m_visualStepList->clear();
+        if (m_visualGraphScene != nullptr) {
+            m_visualGraphScene->clear();
+        }
         clearVisualStepEditor();
         return;
     }
@@ -3198,6 +3871,9 @@ void WorkflowPanel::syncVisualEditorFromJson()
         m_visualEditorStatusLabel->setStyleSheet("color: #8b2f2f;");
         m_visualEditorStatusLabel->setText("Status: Der visuelle Editor erwartet ein JSON-Objekt.");
         m_visualStepList->clear();
+        if (m_visualGraphScene != nullptr) {
+            m_visualGraphScene->clear();
+        }
         clearVisualStepEditor();
         return;
     }
@@ -3208,6 +3884,9 @@ void WorkflowPanel::syncVisualEditorFromJson()
         m_visualEditorStatusLabel->setStyleSheet("color: #8b2f2f;");
         m_visualEditorStatusLabel->setText("Status: Im JSON fehlt ein Array 'steps'.");
         m_visualStepList->clear();
+        if (m_visualGraphScene != nullptr) {
+            m_visualGraphScene->clear();
+        }
         clearVisualStepEditor();
         return;
     }
@@ -3255,6 +3934,209 @@ void WorkflowPanel::rebuildVisualStepList(const QString& stepIdToSelect)
     loadVisualStepFromRow(rowToSelect);
 }
 
+void WorkflowPanel::rebuildVisualGraph(const QString& stepIdToSelect)
+{
+    if (m_visualGraphScene == nullptr || m_visualGraphView == nullptr) {
+        return;
+    }
+
+    m_isSyncingVisualGraph = true;
+    m_visualGraphScene->clear();
+
+    const QJsonArray steps = m_visualDefinitionRoot.value("steps").toArray();
+    if (steps.isEmpty()) {
+        auto* placeholder = m_visualGraphScene->addSimpleText(
+            "Noch keine Schritte sichtbar. Fuege einen Schritt hinzu oder pruefe das Workflow-JSON."
+        );
+        placeholder->setBrush(QColor("#6f6455"));
+        placeholder->setPos(20.0, 20.0);
+        m_visualGraphScene->setSceneRect(QRectF(0, 0, 620, 220));
+        m_isSyncingVisualGraph = false;
+        return;
+    }
+
+    QHash<QString, QRectF> nodeRectsById;
+    QHash<QString, int> stepIndexById;
+    nodeRectsById.reserve(steps.size());
+    stepIndexById.reserve(steps.size());
+
+    const qreal viewportWidth = m_visualGraphView->viewport() != nullptr
+        ? qMax<qreal>(620.0, m_visualGraphView->viewport()->width() - 12.0)
+        : 620.0;
+    constexpr qreal nodeWidth = 320.0;
+    constexpr qreal nodeHeight = 104.0;
+    constexpr qreal nodeSpacing = 72.0;
+    constexpr qreal topMargin = 32.0;
+    const qreal baseX = viewportWidth / 2.0 - nodeWidth / 2.0;
+
+    for (int index = 0; index < steps.size(); ++index) {
+        const QJsonObject stepObject = steps.at(index).toObject();
+        const QString stepId = stepObject.value("id").toString().trimmed();
+        if (stepId.isEmpty()) {
+            continue;
+        }
+
+        const QString stepType = normalizedStepType(stepObject.value("type").toString());
+        qreal x = baseX;
+        if (stepType == "tool") {
+            x -= 82.0;
+        } else if (stepType == "decision") {
+            x += 88.0;
+        } else if (stepType == "save_memory") {
+            x += 42.0;
+        }
+        const qreal y = topMargin + index * (nodeHeight + nodeSpacing);
+        const QRectF nodeRect(x, y, nodeWidth, nodeHeight);
+        nodeRectsById.insert(stepId, nodeRect);
+        stepIndexById.insert(stepId, index);
+    }
+
+    const QList<WorkflowGraphEdge> edges = collectWorkflowGraphEdges(steps);
+    for (const WorkflowGraphEdge& edge : edges) {
+        const auto sourceIt = nodeRectsById.constFind(edge.sourceId);
+        const auto targetIt = nodeRectsById.constFind(edge.targetId);
+        if (sourceIt == nodeRectsById.constEnd() || targetIt == nodeRectsById.constEnd()) {
+            continue;
+        }
+
+        const QRectF sourceRect = sourceIt.value();
+        const QRectF targetRect = targetIt.value();
+        const QPointF startPoint(sourceRect.center().x(), sourceRect.bottom());
+        const QPointF endPoint(targetRect.center().x(), targetRect.top());
+
+        qreal bendOffset = edge.bendOffset;
+        if (qFuzzyIsNull(bendOffset) && endPoint.y() <= startPoint.y()) {
+            bendOffset = 180.0;
+        }
+
+        QPainterPath path(startPoint);
+        path.cubicTo(
+            QPointF(startPoint.x() + bendOffset, startPoint.y() + 54.0),
+            QPointF(endPoint.x() + bendOffset, endPoint.y() - 54.0),
+            endPoint
+        );
+
+        auto* pathItem = m_visualGraphScene->addPath(
+            path,
+            QPen(edge.color, edge.label.isEmpty() ? 2.5 : 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin)
+        );
+        pathItem->setZValue(0.0);
+
+        const QPointF arrowAnchor = path.pointAtPercent(0.98);
+        const QPointF arrowBack = path.pointAtPercent(0.94);
+        const qreal arrowAngle = std::atan2(arrowAnchor.y() - arrowBack.y(), arrowAnchor.x() - arrowBack.x());
+        const qreal arrowSize = 8.0;
+        QPolygonF arrowHead;
+        arrowHead << arrowAnchor
+                  << QPointF(
+                         arrowAnchor.x() - std::cos(arrowAngle - 0.45) * arrowSize,
+                         arrowAnchor.y() - std::sin(arrowAngle - 0.45) * arrowSize
+                     )
+                  << QPointF(
+                         arrowAnchor.x() - std::cos(arrowAngle + 0.45) * arrowSize,
+                         arrowAnchor.y() - std::sin(arrowAngle + 0.45) * arrowSize
+                     );
+        auto* arrowItem = m_visualGraphScene->addPolygon(arrowHead, QPen(edge.color), QBrush(edge.color));
+        arrowItem->setZValue(0.5);
+
+        if (!edge.label.isEmpty()) {
+            auto* labelItem = m_visualGraphScene->addSimpleText(edge.label);
+            labelItem->setBrush(edge.color.darker(120));
+            labelItem->setZValue(1.0);
+            const QRectF labelRect = labelItem->boundingRect();
+            const QPointF labelPoint = path.pointAtPercent(0.5);
+            labelItem->setPos(labelPoint.x() - labelRect.width() / 2.0, labelPoint.y() - labelRect.height() - 4.0);
+        }
+    }
+
+    QGraphicsItem* selectedItem = nullptr;
+    for (int index = 0; index < steps.size(); ++index) {
+        const QJsonObject stepObject = steps.at(index).toObject();
+        const QString stepId = stepObject.value("id").toString().trimmed();
+        const QString stepType = normalizedStepType(stepObject.value("type").toString());
+        const QRectF nodeRect = nodeRectsById.value(stepId);
+        const QColor accentColor = workflowStepAccentColor(stepType);
+        const QColor fillColor = workflowStepFillColor(stepType);
+        const bool isSelected = !stepIdToSelect.trimmed().isEmpty() && stepId == stepIdToSelect.trimmed();
+
+        auto* outerRect = m_visualGraphScene->addRect(
+            nodeRect,
+            QPen(isSelected ? accentColor.darker(125) : accentColor.darker(110), isSelected ? 3.0 : 2.0),
+            QBrush(isSelected ? fillColor.lighter(102) : fillColor)
+        );
+        outerRect->setData(0, stepId);
+        outerRect->setToolTip(visualStepLabel(stepObject));
+        outerRect->setFlag(QGraphicsItem::ItemIsSelectable, true);
+        outerRect->setAcceptedMouseButtons(Qt::LeftButton);
+        outerRect->setCursor(Qt::PointingHandCursor);
+        outerRect->setZValue(2.0);
+
+        auto* headerRect = new QGraphicsRectItem(
+            QRectF(nodeRect.left(), nodeRect.top(), nodeRect.width(), 28.0),
+            outerRect
+        );
+        headerRect->setPen(Qt::NoPen);
+        headerRect->setBrush(accentColor);
+        headerRect->setAcceptedMouseButtons(Qt::NoButton);
+
+        auto* headerText = new QGraphicsTextItem(
+            QString("%1  #%2").arg(stepType.toUpper(), QString::number(index + 1)),
+            outerRect
+        );
+        headerText->setDefaultTextColor(Qt::white);
+        QFont headerFont = headerText->font();
+        headerFont.setBold(true);
+        headerFont.setPointSizeF(headerFont.pointSizeF() + 0.5);
+        headerText->setFont(headerFont);
+        headerText->setPos(nodeRect.left() + 12.0, nodeRect.top() + 4.0);
+        headerText->setTextWidth(nodeRect.width() - 24.0);
+        headerText->setAcceptedMouseButtons(Qt::NoButton);
+
+        auto* titleText = new QGraphicsTextItem(
+            stepObject.value("name").toString().trimmed().isEmpty()
+                ? stepId
+                : stepObject.value("name").toString().trimmed(),
+            outerRect
+        );
+        titleText->setDefaultTextColor(QColor("#231f1a"));
+        QFont titleFont = titleText->font();
+        titleFont.setBold(true);
+        titleText->setFont(titleFont);
+        titleText->setTextWidth(nodeRect.width() - 24.0);
+        titleText->setPos(nodeRect.left() + 12.0, nodeRect.top() + 34.0);
+        titleText->setAcceptedMouseButtons(Qt::NoButton);
+
+        auto* metaText = new QGraphicsTextItem(
+            QString("%1\n%2").arg(stepId, workflowGraphNodeSubtitle(stepObject)),
+            outerRect
+        );
+        metaText->setDefaultTextColor(QColor("#5b5143"));
+        QFont metaFont = metaText->font();
+        metaFont.setPointSizeF(metaFont.pointSizeF() - 0.2);
+        metaText->setFont(metaFont);
+        metaText->setTextWidth(nodeRect.width() - 24.0);
+        metaText->setPos(nodeRect.left() + 12.0, nodeRect.top() + 58.0);
+        metaText->setAcceptedMouseButtons(Qt::NoButton);
+
+        if (isSelected) {
+            selectedItem = outerRect;
+        }
+    }
+
+    const qreal sceneHeight = topMargin + steps.size() * (nodeHeight + nodeSpacing) + 40.0;
+    const qreal sceneWidth = viewportWidth + 40.0;
+    m_visualGraphScene->setSceneRect(QRectF(0.0, 0.0, sceneWidth, sceneHeight));
+    if (selectedItem != nullptr) {
+        selectedItem->setSelected(true);
+        m_visualGraphView->ensureVisible(selectedItem->sceneBoundingRect().adjusted(-60.0, -60.0, 60.0, 60.0));
+    } else {
+        m_visualGraphView->centerOn(sceneWidth / 2.0, sceneHeight / 2.0);
+    }
+    m_visualGraphView->viewport()->update();
+
+    m_isSyncingVisualGraph = false;
+}
+
 void WorkflowPanel::loadVisualStepFromRow(const int row)
 {
     if (m_isSyncingVisualEditor) {
@@ -3263,6 +4145,7 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
 
     const QJsonArray steps = m_visualDefinitionRoot.value("steps").toArray();
     if (row < 0 || row >= steps.size()) {
+        rebuildVisualGraph(QString());
         clearVisualStepEditor();
         return;
     }
@@ -3628,6 +4511,11 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
         m_toolMemoryDeleteDryRunCheckBox->setChecked(
             config.contains("dry_run") ? config.value("dry_run").toBool(true) : true
         );
+        {
+            const QString variableScope = config.value("scope").toString().trimmed().toLower();
+            const int index = m_toolVariableScopeCombo->findData(variableScope.isEmpty() ? "run" : variableScope);
+            m_toolVariableScopeCombo->setCurrentIndex(index >= 0 ? index : 0);
+        }
         m_toolVariableNameEdit->setText(config.value("name").toString());
         {
             const QString variableType = config.value("value_type").toString().trimmed().toLower();
@@ -3641,7 +4529,27 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
         }
         m_toolVariableValueEdit->setText(config.value("value").toString());
         m_toolVariableCurrentValueEdit->setText(config.value("current_value").toString());
-        m_toolVariableAmountSpin->setValue(config.value("amount").toInt(1));
+        m_toolVariableAmountSpin->setValue(config.value("amount").toDouble(1.0));
+        m_toolForeachItemsEdit->setPlainText(jsonValueToEditorText(config.value("items")));
+        m_toolForeachItemVarEdit->setText(config.value("item_var").toString());
+        m_toolForeachIndexVarEdit->setText(config.value("index_var").toString());
+        {
+            const QString foreachResultMode = config.value("result_mode").toString().trimmed().toLower();
+            const int index = m_toolForeachResultModeCombo->findData(
+                foreachResultMode.isEmpty() ? "text_joined" : foreachResultMode
+            );
+            m_toolForeachResultModeCombo->setCurrentIndex(index >= 0 ? index : 0);
+        }
+        m_toolForeachResultSourceEdit->setText(config.value("result_source").toString());
+        m_toolForeachResultVarEdit->setText(config.value("result_var").toString());
+        m_toolForeachJoinWithEdit->setText(config.value("join_with").toString());
+        {
+            const QString foreachOnError = config.value("on_error").toString().trimmed().toLower();
+            const int index = m_toolForeachOnErrorCombo->findData(foreachOnError.isEmpty() ? "abort" : foreachOnError);
+            m_toolForeachOnErrorCombo->setCurrentIndex(index >= 0 ? index : 0);
+        }
+        m_toolForeachMaxIterationsSpin->setValue(qMax(1, config.value("max_iterations").toInt(100)));
+        m_toolForeachStepsEdit->setPlainText(jsonValueToEditorText(config.value("steps")));
         m_toolFileWritePathEdit->setText(config.value("path").toString());
         const QString writeMode = config.value("mode").toString().trimmed().toLower();
         const int writeModeIndex = m_toolFileWriteModeCombo->findData(writeMode.isEmpty() ? "overwrite" : writeMode);
@@ -3790,6 +4698,7 @@ void WorkflowPanel::loadVisualStepFromRow(const int row)
     }
 
     m_isSyncingVisualEditor = false;
+    rebuildVisualGraph(stepObject.value("id").toString());
 }
 
 void WorkflowPanel::clearVisualStepEditor()
@@ -3896,6 +4805,23 @@ void WorkflowPanel::clearVisualStepEditor()
         m_toolMemoryDeleteKeepLatestSpin->setValue(0);
         m_toolMemoryDeleteKeepRelevanceSpin->setValue(90);
         m_toolMemoryDeleteDryRunCheckBox->setChecked(true);
+        m_toolVariableScopeCombo->setCurrentIndex(0);
+        m_toolVariableNameEdit->clear();
+        m_toolVariableTypeCombo->setCurrentIndex(0);
+        m_toolVariableOperationCombo->setCurrentIndex(0);
+        m_toolVariableValueEdit->clear();
+        m_toolVariableCurrentValueEdit->clear();
+        m_toolVariableAmountSpin->setValue(1.0);
+        m_toolForeachItemsEdit->clear();
+        m_toolForeachItemVarEdit->clear();
+        m_toolForeachIndexVarEdit->clear();
+        m_toolForeachResultModeCombo->setCurrentIndex(0);
+        m_toolForeachResultSourceEdit->clear();
+        m_toolForeachResultVarEdit->clear();
+        m_toolForeachJoinWithEdit->clear();
+        m_toolForeachOnErrorCombo->setCurrentIndex(0);
+        m_toolForeachMaxIterationsSpin->setValue(100);
+        m_toolForeachStepsEdit->clear();
         m_toolFileWritePathEdit->clear();
         m_toolFileWriteModeCombo->setCurrentIndex(0);
         m_toolFileWriteCreateDirsCheckBox->setChecked(true);
@@ -3994,6 +4920,7 @@ void WorkflowPanel::updateVisualToolConfigPage()
     const bool isMemorySummarizeTool = toolName == "memory.summarize";
     const bool isMemoryDeleteTool = toolName == "memory.delete_old";
     const bool isVariableTool = toolName == "variables.set";
+    const bool isForeachTool = toolName == "workflow.foreach";
     const bool isComfyTool = toolName == "comfyui.workflow";
     const bool isCsvReadTool = toolName == "csv.read";
     const bool isCsvWriteTool = toolName == "csv.write";
@@ -4097,17 +5024,14 @@ void WorkflowPanel::updateVisualToolConfigPage()
     const bool variableIncrementMode = isVariableTool
         && m_toolVariableOperationCombo != nullptr
         && m_toolVariableOperationCombo->currentData().toString().trimmed() == "increment";
+    if (m_toolVariableScopeCombo != nullptr) {
+        m_toolVariableScopeCombo->setEnabled(isVariableTool);
+    }
     if (m_toolVariableNameEdit != nullptr) {
         m_toolVariableNameEdit->setEnabled(isVariableTool);
     }
     if (m_toolVariableTypeCombo != nullptr) {
-        if (variableIncrementMode) {
-            const int intIndex = m_toolVariableTypeCombo->findData("int");
-            if (intIndex >= 0) {
-                m_toolVariableTypeCombo->setCurrentIndex(intIndex);
-            }
-        }
-        m_toolVariableTypeCombo->setEnabled(isVariableTool && !variableIncrementMode);
+        m_toolVariableTypeCombo->setEnabled(isVariableTool);
     }
     if (m_toolVariableOperationCombo != nullptr) {
         m_toolVariableOperationCombo->setEnabled(isVariableTool);
@@ -4120,6 +5044,36 @@ void WorkflowPanel::updateVisualToolConfigPage()
     }
     if (m_toolVariableAmountSpin != nullptr) {
         m_toolVariableAmountSpin->setEnabled(variableIncrementMode);
+    }
+    if (m_toolForeachItemsEdit != nullptr) {
+        m_toolForeachItemsEdit->setEnabled(isForeachTool);
+    }
+    if (m_toolForeachItemVarEdit != nullptr) {
+        m_toolForeachItemVarEdit->setEnabled(isForeachTool);
+    }
+    if (m_toolForeachIndexVarEdit != nullptr) {
+        m_toolForeachIndexVarEdit->setEnabled(isForeachTool);
+    }
+    if (m_toolForeachResultModeCombo != nullptr) {
+        m_toolForeachResultModeCombo->setEnabled(isForeachTool);
+    }
+    if (m_toolForeachResultSourceEdit != nullptr) {
+        m_toolForeachResultSourceEdit->setEnabled(isForeachTool);
+    }
+    if (m_toolForeachResultVarEdit != nullptr) {
+        m_toolForeachResultVarEdit->setEnabled(isForeachTool);
+    }
+    if (m_toolForeachJoinWithEdit != nullptr) {
+        m_toolForeachJoinWithEdit->setEnabled(isForeachTool);
+    }
+    if (m_toolForeachOnErrorCombo != nullptr) {
+        m_toolForeachOnErrorCombo->setEnabled(isForeachTool);
+    }
+    if (m_toolForeachMaxIterationsSpin != nullptr) {
+        m_toolForeachMaxIterationsSpin->setEnabled(isForeachTool);
+    }
+    if (m_toolForeachStepsEdit != nullptr) {
+        m_toolForeachStepsEdit->setEnabled(isForeachTool);
     }
     if (m_toolComfyModeStack != nullptr && m_toolComfyModeCombo != nullptr) {
         const QString comfyMode = m_toolComfyModeCombo->currentData().toString().trimmed();
@@ -4180,28 +5134,33 @@ void WorkflowPanel::updateVisualToolConfigPage()
         return;
     }
 
-    if (toolName == "file.write_text") {
+    if (toolName == "workflow.foreach") {
         m_toolConfigStack->setCurrentIndex(7);
         return;
     }
 
-    if (toolName == "file.edit_diff") {
+    if (toolName == "file.write_text") {
         m_toolConfigStack->setCurrentIndex(8);
         return;
     }
 
-    if (toolName == "http.request") {
+    if (toolName == "file.edit_diff") {
         m_toolConfigStack->setCurrentIndex(9);
         return;
     }
 
-    if (toolName == "shell.run") {
+    if (toolName == "http.request") {
         m_toolConfigStack->setCurrentIndex(10);
         return;
     }
 
-    if (toolName == "comfyui.workflow") {
+    if (toolName == "shell.run") {
         m_toolConfigStack->setCurrentIndex(11);
+        return;
+    }
+
+    if (toolName == "comfyui.workflow") {
+        m_toolConfigStack->setCurrentIndex(12);
         return;
     }
 
@@ -4494,6 +5453,15 @@ void WorkflowPanel::applyVisualStepChanges()
                 "poll_interval_ms",
                 "timeout_ms",
                 "mode",
+                "items",
+                "item_var",
+                "index_var",
+                "result_mode",
+                "result_source",
+                "result_var",
+                "join_with",
+                "on_error",
+                "max_iterations",
                 "modified_after_iso",
                 "within_minutes"
             }
@@ -4552,6 +5520,15 @@ void WorkflowPanel::applyVisualStepChanges()
                 "poll_interval_ms",
                 "timeout_ms",
                 "mode",
+                "items",
+                "item_var",
+                "index_var",
+                "result_mode",
+                "result_source",
+                "result_var",
+                "join_with",
+                "on_error",
+                "max_iterations",
                 "modified_after_iso",
                 "within_minutes"
             }
@@ -4670,7 +5647,16 @@ void WorkflowPanel::applyVisualStepChanges()
                 "value_type",
                 "operation",
                 "current_value",
-                "amount"
+                "amount",
+                "items",
+                "item_var",
+                "index_var",
+                "result_mode",
+                "result_source",
+                "result_var",
+                "join_with",
+                "on_error",
+                "max_iterations"
             }
         );
         const QString toolName = m_toolNameCombo->currentText().trimmed();
@@ -4874,6 +5860,7 @@ void WorkflowPanel::applyVisualStepChanges()
                     "timeout_ms"
                 }
             );
+            setJsonTextValue(&config, "scope", m_toolVariableScopeCombo->currentData().toString());
             setJsonTextValue(&config, "name", m_toolVariableNameEdit->text());
             setJsonTextValue(&config, "value_type", m_toolVariableTypeCombo->currentData().toString());
             setJsonTextValue(&config, "operation", m_toolVariableOperationCombo->currentData().toString());
@@ -4886,6 +5873,130 @@ void WorkflowPanel::applyVisualStepChanges()
                 setJsonTextValue(&config, "value", m_toolVariableValueEdit->text());
                 config.remove("current_value");
                 config.remove("amount");
+            }
+        } else if (toolName == "workflow.foreach") {
+            removeConfigKeys(
+                &config,
+                {
+                    "path",
+                    "include_extensions",
+                    "exclude_paths",
+                    "mode",
+                    "modified_after_iso",
+                    "within_minutes",
+                    "max_files",
+                    "max_chars_per_file",
+                    "max_total_chars",
+                    "include_hidden",
+                    "skip_binary",
+                    "recursive",
+                    "directories_only",
+                    "max_entries",
+                    "query",
+                    "entry_type",
+                    "tags",
+                    "limit",
+                    "max_chars",
+                    "format",
+                    "prompt",
+                    "system_prompt",
+                    "save_as_memory",
+                    "summary_entry_type",
+                    "summary_source",
+                    "summary_tags",
+                    "summary_relevance",
+                    "older_than_days",
+                    "keep_latest",
+                    "keep_relevance_at_or_above",
+                    "dry_run",
+                    "line_start",
+                    "line_end",
+                    "diff",
+                    "patch",
+                    "return_content",
+                    "create_dirs",
+                    "url",
+                    "method",
+                    "body",
+                    "body_json",
+                    "headers",
+                    "headers_json",
+                    "name",
+                    "value_type",
+                    "operation",
+                    "value",
+                    "current_value",
+                    "amount",
+                    "builder_mode",
+                    "checkpoint",
+                    "vae_name",
+                    "positive_prompt",
+                    "negative_prompt",
+                    "width",
+                    "height",
+                    "batch_size",
+                    "input_image",
+                    "mask_image",
+                    "mask_channel",
+                    "mask_grow_by",
+                    "seed",
+                    "randomize_seed",
+                    "cfg",
+                    "denoise",
+                    "sampler_name",
+                    "scheduler",
+                    "clip_skip",
+                    "filename_prefix",
+                    "loras",
+                    "base_url",
+                    "workflow",
+                    "workflow_json",
+                    "save_outputs_to",
+                    "download_images",
+                    "include_history_json",
+                    "poll_interval_ms",
+                    "timeout_ms"
+                }
+            );
+            const QString itemsText = m_toolForeachItemsEdit->toPlainText().trimmed();
+            if (itemsText.isEmpty()) {
+                config.remove("items");
+            } else {
+                QJsonValue parsedItems;
+                QString parseError;
+                if (tryParseJsonValueText(itemsText, &parsedItems, &parseError)) {
+                    if (parsedItems.isArray() || parsedItems.isObject()) {
+                        config.insert("items", parsedItems);
+                    } else {
+                        setJsonTextValue(&config, "items", itemsText);
+                    }
+                } else {
+                    setJsonTextValue(&config, "items", itemsText);
+                }
+            }
+            setJsonTextValue(&config, "item_var", m_toolForeachItemVarEdit->text());
+            setJsonTextValue(&config, "index_var", m_toolForeachIndexVarEdit->text());
+            setJsonTextValue(&config, "result_mode", m_toolForeachResultModeCombo->currentData().toString());
+            setJsonTextValue(&config, "result_source", m_toolForeachResultSourceEdit->text());
+            setJsonTextValue(&config, "result_var", m_toolForeachResultVarEdit->text());
+            setJsonTextValue(&config, "join_with", m_toolForeachJoinWithEdit->text());
+            setJsonTextValue(&config, "on_error", m_toolForeachOnErrorCombo->currentData().toString());
+            config.insert("max_iterations", m_toolForeachMaxIterationsSpin->value());
+
+            const QString nestedStepsText = m_toolForeachStepsEdit->toPlainText().trimmed();
+            if (nestedStepsText.isEmpty()) {
+                config.remove("steps");
+            } else {
+                QJsonValue parsedSteps;
+                QString parseError;
+                if (!tryParseJsonValueText(nestedStepsText, &parsedSteps, &parseError) || !parsedSteps.isArray()) {
+                    m_visualEditorStatusLabel->setStyleSheet("color: #8b5e2f;");
+                    m_visualEditorStatusLabel->setText(
+                        QString("Foreach-Unter-Schritte sind noch kein gueltiges JSON-Array: %1").arg(parseError)
+                    );
+                    return;
+                }
+                config.insert("steps", parsedSteps.toArray());
             }
         } else if (toolName == "file.write_text") {
             removeConfigKeys(
@@ -5424,7 +6535,16 @@ void WorkflowPanel::applyVisualStepChanges()
                 "download_images",
                 "include_history_json",
                 "poll_interval_ms",
-                "timeout_ms"
+                "timeout_ms",
+                "items",
+                "item_var",
+                "index_var",
+                "result_mode",
+                "result_source",
+                "result_var",
+                "join_with",
+                "on_error",
+                "max_iterations"
             }
         );
         setJsonTextValue(&config, "input", m_decisionInputEdit->text());
@@ -5465,6 +6585,7 @@ void WorkflowPanel::applyVisualStepChanges()
         QString("Status: Visueller Editor hat Schritt '%1' ins JSON geschrieben.")
             .arg(stepObject.value("id").toString())
     );
+    rebuildVisualGraph(stepObject.value("id").toString());
 }
 
 void WorkflowPanel::addVisualStep(const QString& stepType)

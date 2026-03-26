@@ -1,5 +1,6 @@
 #include "ui/SchedulePanel.h"
 
+#include "ui/CollapsibleCard.h"
 #include "scheduler/SchedulerService.h"
 #include "services/ProjectService.h"
 #include "services/ScheduleService.h"
@@ -85,63 +86,51 @@ void SchedulePanel::buildUi()
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
 
-    auto* infoCard = new QFrame(this);
-    infoCard->setProperty("panelCard", true);
-    auto* infoLayout = new QVBoxLayout(infoCard);
-    auto* title = new QLabel("Zeitplanung", infoCard);
-    title->setProperty("sectionTitle", true);
-
+    const CollapsibleCardParts infoCard = createCollapsibleCard(this, "Zeitplanung", true);
+    auto* infoLayout = infoCard.bodyLayout;
     auto* body = new QLabel(
         "Hier planst du einmalige und wiederkehrende Workflow-Starts. Aktive Zeitplaene werden waehrend der laufenden App automatisch im Hintergrund ausgefuehrt.",
-        infoCard
+        infoCard.bodyFrame
     );
     body->setWordWrap(true);
     body->setProperty("sectionBody", true);
 
-    infoLayout->addWidget(title);
     infoLayout->addWidget(body);
 
     auto* contentSplitter = new QSplitter(Qt::Horizontal, this);
 
-    auto* listCard = new QFrame(contentSplitter);
-    listCard->setProperty("panelCard", true);
-    auto* listLayout = new QVBoxLayout(listCard);
-    auto* listTitle = new QLabel("Zeitplaene", listCard);
-    listTitle->setProperty("sectionTitle", true);
+    const CollapsibleCardParts listCard = createCollapsibleCard(contentSplitter, "Zeitplaene", true);
+    auto* listLayout = listCard.bodyLayout;
     auto* listBody = new QLabel(
         "Uebersicht ueber gespeicherte Zeitplaene. Auswahl laedt die Konfiguration in den Editor.",
-        listCard
+        listCard.bodyFrame
     );
     listBody->setProperty("sectionBody", true);
     listBody->setWordWrap(true);
 
-    m_scheduleCountLabel = new QLabel("0 Zeitplaene", listCard);
+    m_scheduleCountLabel = new QLabel("0 Zeitplaene", listCard.bodyFrame);
     m_scheduleCountLabel->setProperty("sectionBody", true);
 
-    m_scheduleList = new QListWidget(listCard);
+    m_scheduleList = new QListWidget(listCard.bodyFrame);
     m_scheduleList->setAlternatingRowColors(true);
 
     auto* listActions = new QHBoxLayout();
-    auto* refreshButton = new QPushButton("Liste aktualisieren", listCard);
-    auto* newButton = new QPushButton("Neuer Zeitplan", listCard);
+    auto* refreshButton = new QPushButton("Liste aktualisieren", listCard.bodyFrame);
+    auto* newButton = new QPushButton("Neuer Zeitplan", listCard.bodyFrame);
     listActions->addWidget(refreshButton);
     listActions->addWidget(newButton);
     listActions->addStretch();
 
-    listLayout->addWidget(listTitle);
     listLayout->addWidget(listBody);
     listLayout->addWidget(m_scheduleCountLabel);
     listLayout->addWidget(m_scheduleList, 1);
     listLayout->addLayout(listActions);
 
-    auto* editorCard = new QFrame(contentSplitter);
-    editorCard->setProperty("panelCard", true);
-    auto* editorLayout = new QVBoxLayout(editorCard);
-    auto* editorTitle = new QLabel("Zeitplan bearbeiten", editorCard);
-    editorTitle->setProperty("sectionTitle", true);
+    const CollapsibleCardParts editorCard = createCollapsibleCard(contentSplitter, "Zeitplan bearbeiten", true);
+    auto* editorLayout = editorCard.bodyLayout;
     auto* editorBody = new QLabel(
         "Ein Zeitplan referenziert genau ein Projekt und einen Workflow. Wiederkehrende Zeitplaene berechnen den naechsten Lauf automatisch nach jeder Ausfuehrung neu.",
-        editorCard
+        editorCard.bodyFrame
     );
     editorBody->setProperty("sectionBody", true);
     editorBody->setWordWrap(true);
@@ -149,16 +138,16 @@ void SchedulePanel::buildUi()
     auto* formLayout = new QFormLayout();
     formLayout->setLabelAlignment(Qt::AlignLeft);
 
-    m_projectCombo = new QComboBox(editorCard);
-    m_workflowCombo = new QComboBox(editorCard);
-    m_enabledCheckBox = new QCheckBox("Zeitplan ist aktiv", editorCard);
+    m_projectCombo = new QComboBox(editorCard.bodyFrame);
+    m_workflowCombo = new QComboBox(editorCard.bodyFrame);
+    m_enabledCheckBox = new QCheckBox("Zeitplan ist aktiv", editorCard.bodyFrame);
     m_enabledCheckBox->setChecked(true);
-    m_triggerTypeCombo = new QComboBox(editorCard);
+    m_triggerTypeCombo = new QComboBox(editorCard.bodyFrame);
     m_triggerTypeCombo->addItem("Einmalig", "once");
     m_triggerTypeCombo->addItem("Alle X Minuten", "interval_minutes");
     m_triggerTypeCombo->addItem("Taeglich um", "daily_time");
 
-    m_triggerConfigStack = new QStackedWidget(editorCard);
+    m_triggerConfigStack = new QStackedWidget(editorCard.bodyFrame);
 
     auto* oncePage = new QWidget(m_triggerConfigStack);
     auto* onceLayout = new QFormLayout(oncePage);
@@ -187,11 +176,11 @@ void SchedulePanel::buildUi()
     dailyLayout->addRow("Uhrzeit", m_dailyTimeEdit);
     m_triggerConfigStack->addWidget(dailyPage);
 
-    m_previewLabel = new QLabel("Naechster Lauf: noch nicht berechnet.", editorCard);
+    m_previewLabel = new QLabel("Naechster Lauf: noch nicht berechnet.", editorCard.bodyFrame);
     m_previewLabel->setProperty("sectionBody", true);
     m_previewLabel->setWordWrap(true);
 
-    m_lastRunLabel = new QLabel("Letzter Lauf: noch nicht gelaufen", editorCard);
+    m_lastRunLabel = new QLabel("Letzter Lauf: noch nicht gelaufen", editorCard.bodyFrame);
     m_lastRunLabel->setProperty("sectionBody", true);
     m_lastRunLabel->setWordWrap(true);
 
@@ -202,21 +191,20 @@ void SchedulePanel::buildUi()
     formLayout->addRow("Konfiguration", m_triggerConfigStack);
 
     auto* actions = new QHBoxLayout();
-    auto* saveButton = new QPushButton("Zeitplan speichern", editorCard);
-    auto* runNowButton = new QPushButton("Jetzt ausfuehren", editorCard);
-    auto* deleteButton = new QPushButton("Zeitplan loeschen", editorCard);
-    auto* resetButton = new QPushButton("Editor zuruecksetzen", editorCard);
+    auto* saveButton = new QPushButton("Zeitplan speichern", editorCard.bodyFrame);
+    auto* runNowButton = new QPushButton("Jetzt ausfuehren", editorCard.bodyFrame);
+    auto* deleteButton = new QPushButton("Zeitplan loeschen", editorCard.bodyFrame);
+    auto* resetButton = new QPushButton("Editor zuruecksetzen", editorCard.bodyFrame);
     actions->addWidget(saveButton);
     actions->addWidget(runNowButton);
     actions->addWidget(deleteButton);
     actions->addWidget(resetButton);
     actions->addStretch();
 
-    m_feedbackLabel = new QLabel("Bereit.", editorCard);
+    m_feedbackLabel = new QLabel("Bereit.", editorCard.bodyFrame);
     m_feedbackLabel->setProperty("sectionBody", true);
     m_feedbackLabel->setWordWrap(true);
 
-    editorLayout->addWidget(editorTitle);
     editorLayout->addWidget(editorBody);
     editorLayout->addLayout(formLayout);
     editorLayout->addWidget(m_previewLabel);
@@ -228,7 +216,7 @@ void SchedulePanel::buildUi()
     contentSplitter->setStretchFactor(0, 2);
     contentSplitter->setStretchFactor(1, 3);
 
-    layout->addWidget(infoCard);
+    layout->addWidget(infoCard.frame);
     layout->addWidget(contentSplitter, 1);
 
     connect(refreshButton, &QPushButton::clicked, this, [this]() {

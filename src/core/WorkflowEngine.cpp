@@ -1,7 +1,10 @@
 #include "core/WorkflowEngine.h"
+#include "utils/JsonExtraction.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
 #include <QRegularExpression>
 #include <QSet>
 #include <QtGlobal>
@@ -27,6 +30,18 @@ QString configString(const QJsonObject& object, const QString& key)
 QString normalizedStepType(const QString& type)
 {
     return type.trimmed().toLower();
+}
+
+int configInt(const QJsonObject& object, const QString& key, const int fallback = 0)
+{
+    const QJsonValue value = object.value(key);
+    if (value.isDouble()) {
+        return value.toInt();
+    }
+
+    bool ok = false;
+    const int parsed = value.toString().trimmed().toInt(&ok);
+    return ok ? parsed : fallback;
 }
 
 QString renderTemplateWithVariables(const QString& templateText, const RunContext& runContext)
@@ -141,6 +156,18 @@ bool configBool(const QJsonObject& object, const QString& key, const bool fallba
     return fallback;
 }
 
+int renderedConfigInt(const QJsonObject& object, const QString& key, const RunContext& runContext, const int fallback)
+{
+    const QJsonValue value = object.value(key);
+    if (value.isDouble()) {
+        return value.toInt();
+    }
+
+    bool ok = false;
+    const int parsed = renderTemplateWithVariables(value.toString(), runContext).trimmed().toInt(&ok);
+    return ok ? parsed : fallback;
+}
+
 QString defaultSystemPrompt()
 {
     return QStringLiteral(
@@ -226,13 +253,233 @@ QList<WorkflowDebugVariable> snapshotDebugVariables(const QHash<QString, QString
     return snapshot;
 }
 
-QString nextStepLabel(const QList<domain::WorkflowStep>& steps, const int stepIndex)
+QString scopedStepId(const QString& scopePrefix, const QString& stepId)
+{
+    const QString normalizedStepId = stepId.trimmed();
+    if (normalizedStepId.isEmpty()) {
+        return {};
+    }
+
+    return scopePrefix.trimmed().isEmpty() ? normalizedStepId : scopePrefix.trimmed() + "/" + normalizedStepId;
+}
+
+QString nextStepLabel(const QVector<domain::WorkflowStep>& steps, const int stepIndex, const QString& scopePrefix = {})
 {
     if (stepIndex >= 0 && stepIndex < steps.size()) {
-        return steps.at(stepIndex).id.trimmed();
+        return scopedStepId(scopePrefix, steps.at(stepIndex).id.trimmed());
     }
 
     return "[ende]";
+}
+
+QVector<domain::WorkflowStep> workflowStepsFromJsonArray(const QJsonArray& stepsArray)
+{
+    QVector<domain::WorkflowStep> steps;
+    steps.reserve(stepsArray.size());
+    for (const QJsonValue& stepValue : stepsArray) {
+        if (!stepValue.isObject()) {
+            continue;
+        }
+
+        const QJsonObject stepObject = stepValue.toObject();
+        domain::WorkflowStep step;
+        step.id = stepObject.value("id").toString();
+        step.type = stepObject.value("type").toString();
+        step.name = stepObject.value("name").toString();
+        step.config = stepObject.value("config").toObject();
+        steps.append(step);
+    }
+
+    return steps;
+}
+
+QString jsonValueToWorkflowText(const QJsonValue& value)
+{
+    if (value.isString()) {
+        return value.toString();
+    }
+    if (value.isDouble()) {
+        const double numericValue = value.toDouble();
+        const qlonglong integralValue = static_cast<qlonglong>(numericValue);
+        if (qFuzzyCompare(numericValue + 1.0, static_cast<double>(integralValue) + 1.0)) {
+            return QString::number(integralValue);
+        }
+        return QString::number(numericValue, 'g', 16);
+    }
+    if (value.isBool()) {
+        return value.toBool() ? "true" : "false";
+    }
+    if (value.isNull() || value.isUndefined()) {
+        return "null";
+    }
+    if (value.isObject()) {
+        return QString::fromUtf8(QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact));
+    }
+    if (value.isArray()) {
+        return QString::fromUtf8(QJsonDocument(value.toArray()).toJson(QJsonDocument::Compact));
+    }
+
+    return {};
+}
+
+QJsonValue workflowTextToJsonValue(const QString& text)
+{
+    const QString trimmedText = text.trimmed();
+    if (trimmedText.isEmpty()) {
+        return QString();
+    }
+
+    QJsonDocument jsonDocument;
+    if (utils::extractJsonDocumentFromText(trimmedText, &jsonDocument)) {
+        if (jsonDocument.isArray()) {
+            return jsonDocument.array();
+        }
+        if (jsonDocument.isObject()) {
+            return jsonDocument.object();
+        }
+    }
+
+    if (trimmedText.compare("true", Qt::CaseInsensitive) == 0) {
+        return true;
+    }
+    if (trimmedText.compare("false", Qt::CaseInsensitive) == 0) {
+        return false;
+    }
+    if (trimmedText.compare("null", Qt::CaseInsensitive) == 0) {
+        return QJsonValue(QJsonValue::Null);
+    }
+
+    bool numericOk = false;
+    const double numericValue = trimmedText.toDouble(&numericOk);
+    if (numericOk) {
+        return numericValue;
+    }
+
+    return trimmedText;
+}
+
+void collectLoopVariableAssignments(
+    const QString& variableName,
+    const QJsonValue& value,
+    QHash<QString, QString>* assignments,
+    QStringList* assignedKeys
+)
+{
+    if (assignments == nullptr) {
+        return;
+    }
+
+    const QString normalizedVariableName = variableName.trimmed();
+    if (normalizedVariableName.isEmpty()) {
+        return;
+    }
+
+    assignments->insert(normalizedVariableName, jsonValueToWorkflowText(value));
+    if (assignedKeys != nullptr && !assignedKeys->contains(normalizedVariableName)) {
+        assignedKeys->append(normalizedVariableName);
+    }
+
+    if (value.isObject()) {
+        const QJsonObject objectValue = value.toObject();
+        for (auto it = objectValue.constBegin(); it != objectValue.constEnd(); ++it) {
+            collectLoopVariableAssignments(
+                normalizedVariableName + "." + it.key(),
+                it.value(),
+                assignments,
+                assignedKeys
+            );
+        }
+        return;
+    }
+
+    if (value.isArray()) {
+        const QJsonArray arrayValue = value.toArray();
+        for (int index = 0; index < arrayValue.size(); ++index) {
+            collectLoopVariableAssignments(
+                QString("%1.%2").arg(normalizedVariableName).arg(index),
+                arrayValue.at(index),
+                assignments,
+                assignedKeys
+            );
+        }
+    }
+}
+
+bool resolveForeachItems(
+    const QJsonValue& value,
+    const RunContext& runContext,
+    QJsonArray* resolvedItems,
+    QString* errorMessage
+)
+{
+    if (resolvedItems == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "Interner Fehler: Kein Ziel fuer foreach-Items vorhanden.";
+        }
+        return false;
+    }
+
+    *resolvedItems = QJsonArray();
+
+    const QJsonValue renderedValue = renderJsonValue(value, runContext);
+    if (renderedValue.isArray()) {
+        *resolvedItems = renderedValue.toArray();
+        return true;
+    }
+
+    if (renderedValue.isObject()) {
+        resolvedItems->append(renderedValue.toObject());
+        return true;
+    }
+
+    if (renderedValue.isNull() || renderedValue.isUndefined()) {
+        return true;
+    }
+
+    if (!renderedValue.isString()) {
+        resolvedItems->append(renderedValue);
+        return true;
+    }
+
+    const QString renderedText = renderedValue.toString().trimmed();
+    if (renderedText.isEmpty() || renderedText == "null") {
+        return true;
+    }
+
+    const QJsonValue structuredValue = workflowTextToJsonValue(renderedText);
+    if (structuredValue.isArray()) {
+        *resolvedItems = structuredValue.toArray();
+        return true;
+    }
+    if (structuredValue.isObject()) {
+        resolvedItems->append(structuredValue.toObject());
+        return true;
+    }
+
+    const QStringList lineParts = renderedText.split(QRegularExpression("[\\r\\n]+"), Qt::SkipEmptyParts);
+    if (lineParts.size() > 1) {
+        for (const QString& part : lineParts) {
+            const QString normalized = part.trimmed();
+            if (!normalized.isEmpty()) {
+                resolvedItems->append(normalized);
+            }
+        }
+        return true;
+    }
+
+    const QStringList commaParts = renderedText.split(',', Qt::SkipEmptyParts);
+    if (commaParts.size() > 1) {
+        for (const QString& part : commaParts) {
+            const QString normalized = part.trimmed();
+            if (!normalized.isEmpty()) {
+                resolvedItems->append(normalized);
+            }
+        }
+        return true;
+    }
+
+    resolvedItems->append(renderedText);
+    return true;
 }
 
 void captureDebugState(WorkflowDebugStep* debugStep, const RunContext& runContext)
@@ -460,95 +707,126 @@ QString WorkflowEngine::validateWorkflow(const domain::Workflow& workflow) const
         return "Workflow enthaelt noch keine Schritte.";
     }
 
-    QSet<QString> stepIds;
-    for (const domain::WorkflowStep& step : workflow.steps) {
-        if (step.id.trimmed().isEmpty() || step.type.trimmed().isEmpty()) {
-            return "Jeder Workflow-Schritt braucht mindestens 'id' und 'type'.";
+    std::function<QString(const QVector<domain::WorkflowStep>&, const QString&)> validateStepList;
+    validateStepList = [&](const QVector<domain::WorkflowStep>& steps, const QString& scopeLabel) -> QString {
+        if (steps.isEmpty()) {
+            return QString("%1 enthaelt noch keine Schritte.").arg(scopeLabel);
         }
 
-        const QString normalizedStepId = step.id.trimmed();
-        if (stepIds.contains(normalizedStepId)) {
-            return QString("Schritt-ID '%1' ist mehrfach vorhanden.").arg(normalizedStepId);
-        }
-        stepIds.insert(normalizedStepId);
-    }
-
-    for (const domain::WorkflowStep& step : workflow.steps) {
-        const QString stepType = normalizedStepType(step.type);
-
-        if (stepType != "prompt" && stepType != "save_memory" && stepType != "decision" && stepType != "tool") {
-            return QString(
-                "Schritt '%1' nutzt Typ '%2'. Aktuell werden nur 'prompt', 'save_memory', 'decision' und 'tool' unterstuetzt."
-            ).arg(step.id, step.type);
-        }
-
-        if (stepType == "prompt" && configString(step.config, "prompt").isEmpty()) {
-            return QString("Prompt-Schritt '%1' braucht ein config.prompt-Feld.").arg(step.id);
-        }
-
-        if (stepType == "tool" && configString(step.config, "tool").isEmpty()) {
-            return QString("Tool-Schritt '%1' braucht ein config.tool-Feld.").arg(step.id);
-        }
-
-        if (stepType == "decision") {
-            const QJsonValue rulesValue = step.config.value("rules");
-            const bool hasRules = rulesValue.isArray() && !rulesValue.toArray().isEmpty();
-
-            if (!rulesValue.isUndefined() && !rulesValue.isArray()) {
-                return QString("Decision-Schritt '%1' hat ein ungueltiges 'rules'-Feld.").arg(step.id);
+        QSet<QString> stepIds;
+        for (const domain::WorkflowStep& step : steps) {
+            if (step.id.trimmed().isEmpty() || step.type.trimmed().isEmpty()) {
+                return QString("%1: Jeder Schritt braucht mindestens 'id' und 'type'.").arg(scopeLabel);
             }
 
-            if (!hasRules && configString(step.config, "operator").isEmpty()) {
+            const QString normalizedStepId = step.id.trimmed();
+            if (stepIds.contains(normalizedStepId)) {
+                return QString("%1: Schritt-ID '%2' ist mehrfach vorhanden.").arg(scopeLabel, normalizedStepId);
+            }
+            stepIds.insert(normalizedStepId);
+        }
+
+        for (const domain::WorkflowStep& step : steps) {
+            const QString stepType = normalizedStepType(step.type);
+
+            if (stepType != "prompt" && stepType != "save_memory" && stepType != "decision" && stepType != "tool") {
                 return QString(
-                    "Decision-Schritt '%1' braucht entweder ein 'rules'-Array oder ein 'operator'-Feld."
-                ).arg(step.id);
+                    "%1: Schritt '%2' nutzt Typ '%3'. Aktuell werden nur 'prompt', 'save_memory', 'decision' und 'tool' unterstuetzt."
+                ).arg(scopeLabel, step.id, step.type);
             }
 
-            if (!validateTargetStepId(configString(step.config, "if_true"), stepIds, step.id, "if_true", nullptr)) {
-                return QString(
-                    "Schritt '%1' verweist in 'if_true' auf unbekannten Schritt '%2'."
-                ).arg(step.id, configString(step.config, "if_true"));
-            }
-            if (!validateTargetStepId(configString(step.config, "if_false"), stepIds, step.id, "if_false", nullptr)) {
-                return QString(
-                    "Schritt '%1' verweist in 'if_false' auf unbekannten Schritt '%2'."
-                ).arg(step.id, configString(step.config, "if_false"));
-            }
-            if (!validateTargetStepId(configString(step.config, "default_next"), stepIds, step.id, "default_next", nullptr)) {
-                return QString(
-                    "Schritt '%1' verweist in 'default_next' auf unbekannten Schritt '%2'."
-                ).arg(step.id, configString(step.config, "default_next"));
+            if (stepType == "prompt" && configString(step.config, "prompt").isEmpty()) {
+                return QString("%1: Prompt-Schritt '%2' braucht ein config.prompt-Feld.").arg(scopeLabel, step.id);
             }
 
-            if (hasRules) {
-                const QJsonArray rules = rulesValue.toArray();
-                for (int index = 0; index < rules.size(); ++index) {
-                    if (!rules.at(index).isObject()) {
-                        return QString("Decision-Schritt '%1' hat in 'rules' einen ungueltigen Eintrag.").arg(step.id);
+            if (stepType == "tool" && configString(step.config, "tool").isEmpty()) {
+                return QString("%1: Tool-Schritt '%2' braucht ein config.tool-Feld.").arg(scopeLabel, step.id);
+            }
+
+            if (stepType == "decision") {
+                const QJsonValue rulesValue = step.config.value("rules");
+                const bool hasRules = rulesValue.isArray() && !rulesValue.toArray().isEmpty();
+
+                if (!rulesValue.isUndefined() && !rulesValue.isArray()) {
+                    return QString("%1: Decision-Schritt '%2' hat ein ungueltiges 'rules'-Feld.").arg(scopeLabel, step.id);
+                }
+
+                if (!hasRules && configString(step.config, "operator").isEmpty()) {
+                    return QString(
+                        "%1: Decision-Schritt '%2' braucht entweder ein 'rules'-Array oder ein 'operator'-Feld."
+                    ).arg(scopeLabel, step.id);
+                }
+
+                if (!validateTargetStepId(configString(step.config, "if_true"), stepIds, step.id, "if_true", nullptr)) {
+                    return QString("%1: Schritt '%2' verweist in 'if_true' auf unbekannten Schritt '%3'.")
+                        .arg(scopeLabel, step.id, configString(step.config, "if_true"));
+                }
+                if (!validateTargetStepId(configString(step.config, "if_false"), stepIds, step.id, "if_false", nullptr)) {
+                    return QString("%1: Schritt '%2' verweist in 'if_false' auf unbekannten Schritt '%3'.")
+                        .arg(scopeLabel, step.id, configString(step.config, "if_false"));
+                }
+                if (!validateTargetStepId(configString(step.config, "default_next"), stepIds, step.id, "default_next", nullptr)) {
+                    return QString("%1: Schritt '%2' verweist in 'default_next' auf unbekannten Schritt '%3'.")
+                        .arg(scopeLabel, step.id, configString(step.config, "default_next"));
+                }
+
+                if (hasRules) {
+                    const QJsonArray rules = rulesValue.toArray();
+                    for (int index = 0; index < rules.size(); ++index) {
+                        if (!rules.at(index).isObject()) {
+                            return QString("%1: Decision-Schritt '%2' hat in 'rules' einen ungueltigen Eintrag.")
+                                .arg(scopeLabel, step.id);
+                        }
+
+                        const QJsonObject rule = rules.at(index).toObject();
+                        const QString operatorName = configString(rule, "operator");
+                        if (operatorName.isEmpty()) {
+                            return QString("%1: Decision-Schritt '%2' braucht in Regel %3 ein 'operator'-Feld.")
+                                .arg(scopeLabel, step.id, QString::number(index + 1));
+                        }
+
+                        QString targetError;
+                        if (!validateTargetStepId(configString(rule, "next_step"), stepIds, step.id, "next_step", &targetError)) {
+                            return QString("%1: %2").arg(scopeLabel, targetError);
+                        }
                     }
+                }
+            }
 
-                    const QJsonObject rule = rules.at(index).toObject();
-                    const QString operatorName = configString(rule, "operator");
-                    if (operatorName.isEmpty()) {
-                        return QString(
-                            "Decision-Schritt '%1' braucht in Regel %2 ein 'operator'-Feld."
-                        ).arg(step.id, QString::number(index + 1));
-                    }
+            if (stepType == "tool" && !configString(step.config, "if_true").isEmpty()) {
+                return QString("%1: Tool-Schritt '%2' unterstuetzt aktuell keine Decision-Sprungfelder.")
+                    .arg(scopeLabel, step.id);
+            }
 
-                    QString targetError;
-                    if (!validateTargetStepId(configString(rule, "next_step"), stepIds, step.id, "next_step", &targetError)) {
-                        return targetError;
+            if (stepType == "tool" && configString(step.config, "tool").trimmed().toLower() == "workflow.foreach") {
+                const QJsonValue nestedStepsValue = step.config.value("steps");
+                if (!nestedStepsValue.isArray() || nestedStepsValue.toArray().isEmpty()) {
+                    return QString("%1: Foreach-Tool '%2' braucht ein Array 'steps' mit Unter-Schritten.")
+                        .arg(scopeLabel, step.id);
+                }
+
+                const QJsonArray nestedStepsArray = nestedStepsValue.toArray();
+                for (int index = 0; index < nestedStepsArray.size(); ++index) {
+                    if (!nestedStepsArray.at(index).isObject()) {
+                        return QString("%1: Foreach-Tool '%2' hat in 'steps' einen ungueltigen Eintrag.")
+                            .arg(scopeLabel, step.id);
                     }
+                }
+
+                const QString nestedError = validateStepList(
+                    workflowStepsFromJsonArray(nestedStepsArray),
+                    QString("%1 > Foreach '%2'").arg(scopeLabel, step.id)
+                );
+                if (!nestedError.isEmpty()) {
+                    return nestedError;
                 }
             }
         }
 
-        if (stepType == "tool" && !configString(step.config, "if_true").isEmpty()) {
-            return QString("Tool-Schritt '%1' unterstuetzt aktuell keine Decision-Sprungfelder.").arg(step.id);
-        }
-    }
+        return {};
+    };
 
-    return {};
+    return validateStepList(workflow.steps, QString("Workflow '%1'").arg(workflow.name));
 }
 
 QString WorkflowEngine::previewExecution(const domain::Workflow& workflow, const RunContext& runContext) const
@@ -604,46 +882,91 @@ ExecutionResult WorkflowEngine::executeWorkflow(
     runContext.variables.insert("project_id", QString::number(runContext.projectId));
     runContext.variables.insert("workflow_name", runContext.workflowName);
     runContext.variables.insert("selected_model", runContext.selectedModel);
-    QHash<QString, int> stepIndexById;
-    stepIndexById.reserve(workflow.steps.size());
-    for (int index = 0; index < workflow.steps.size(); ++index) {
-        stepIndexById.insert(workflow.steps.at(index).id.trimmed(), index);
-    }
+    const auto syncProjectMemoryVariables = [&runContext]() {
+        runContext.variables.insert("project_memory", runContext.memorySnippets.join("\n"));
+        runContext.variables.insert("project_memory_count", QString::number(runContext.memoryEntryCount));
+        runContext.variables.insert("project_memory_snippet_count", QString::number(runContext.memorySnippets.size()));
+        runContext.variables.insert("project_memory_direct_count", QString::number(runContext.directMemoryEntryCount));
+        runContext.variables.insert(
+            "project_memory_compressed_count",
+            QString::number(runContext.compressedMemoryEntryCount)
+        );
+        runContext.variables.insert("project_memory_pinned_count", QString::number(runContext.pinnedMemoryEntryCount));
+        runContext.variables.insert(
+            "project_memory_total_pinned_count",
+            QString::number(runContext.totalPinnedMemoryEntryCount)
+        );
+    };
+    const auto appendPreparedMemoryEntries = [&](const QList<domain::MemoryEntry>& entries) {
+        for (const domain::MemoryEntry& entry : entries) {
+            result.memoryEntriesToPersist.append(entry);
+            runContext.memorySnippets.append(memorySnippetFromEntry(entry));
+            ++runContext.memoryEntryCount;
+            ++runContext.directMemoryEntryCount;
+            if (entry.pinned) {
+                ++runContext.pinnedMemoryEntryCount;
+                ++runContext.totalPinnedMemoryEntryCount;
+            }
+            runContext.variables.insert("last_memory_content", entry.content);
+            runContext.variables.insert("last_memory_type", entry.type);
+        }
+        syncProjectMemoryVariables();
+    };
 
-    int currentStepIndex = 0;
+    syncProjectMemoryVariables();
+
     int executedStepCount = 0;
-    const int maxStepExecutions = qMax(20, workflow.steps.size() * 20);
-    while (currentStepIndex >= 0 && currentStepIndex < workflow.steps.size()) {
-        if (++executedStepCount > maxStepExecutions) {
-            result.errorMessage = "Workflow wurde wegen zu vieler Schritt-Ausfuehrungen abgebrochen. Pruefe Decision-Spruenge.";
-            appendLog(QString("[engine] Abbruch: %1").arg(result.errorMessage));
-            result.variables = runContext.variables;
-            return result;
+    const int maxStepExecutions = qMax(200, workflow.steps.size() * 500);
+    std::function<bool(const QVector<domain::WorkflowStep>&, const QString&)> executeStepList;
+    executeStepList = [&](const QVector<domain::WorkflowStep>& stepList, const QString& scopePrefix) -> bool {
+        QHash<QString, int> stepIndexById;
+        stepIndexById.reserve(stepList.size());
+        for (int index = 0; index < stepList.size(); ++index) {
+            stepIndexById.insert(stepList.at(index).id.trimmed(), index);
         }
 
-        const domain::WorkflowStep& step = workflow.steps.at(currentStepIndex);
-        const int sequentialNextIndex = currentStepIndex + 1;
-        const QString stepType = normalizedStepType(step.type);
-        const int stepLogStartIndex = result.logs.size();
-        WorkflowDebugStep debugStep;
-        debugStep.executionIndex = executedStepCount;
-        debugStep.stepId = step.id;
-        debugStep.stepType = stepType;
-        debugStep.stepName = step.name;
-        updateStepStatus(
-            step.id,
-            QString("Schritt '%1' (%2) wird ausgefuehrt").arg(step.id, stepType)
-        );
-        auto finalizeDebugStep = [&](const QString& status, const QString& summary) {
-            debugStep.status = status;
-            debugStep.summary = summary;
-            captureDebugState(&debugStep, runContext);
-            for (int logIndex = stepLogStartIndex; logIndex < result.logs.size(); ++logIndex) {
-                debugStep.logs.append(result.logs.at(logIndex));
+        int currentStepIndex = 0;
+        while (currentStepIndex >= 0 && currentStepIndex < stepList.size()) {
+            if (++executedStepCount > maxStepExecutions) {
+                result.errorMessage =
+                    "Workflow wurde wegen zu vieler Schritt-Ausfuehrungen abgebrochen. Pruefe Decision-Spruenge.";
+                appendLog(QString("[engine] Abbruch: %1").arg(result.errorMessage));
+                result.variables = runContext.variables;
+                return false;
             }
-            result.debugSteps.append(debugStep);
-            updateStepStatus(step.id, QString("Schritt '%1': %2").arg(step.id, summary));
-        };
+
+            const domain::WorkflowStep& step = stepList.at(currentStepIndex);
+            const int sequentialNextIndex = currentStepIndex + 1;
+            const QString stepType = normalizedStepType(step.type);
+            const QString displayStepId = scopedStepId(scopePrefix, step.id.trimmed());
+            const int stepLogStartIndex = result.logs.size();
+            WorkflowDebugStep debugStep;
+            debugStep.executionIndex = executedStepCount;
+            debugStep.stepId = displayStepId;
+            debugStep.stepType = stepType;
+            debugStep.stepName = step.name;
+            updateStepStatus(
+                displayStepId,
+                QString("Schritt '%1' (%2) wird ausgefuehrt").arg(displayStepId, stepType)
+            );
+            const auto finalizeDebugStep = [&](const QString& status, const QString& summary) {
+                debugStep.status = status;
+                debugStep.summary = summary;
+                captureDebugState(&debugStep, runContext);
+                for (int logIndex = stepLogStartIndex; logIndex < result.logs.size(); ++logIndex) {
+                    debugStep.logs.append(result.logs.at(logIndex));
+                }
+                result.debugSteps.append(debugStep);
+                updateStepStatus(displayStepId, QString("Schritt '%1': %2").arg(displayStepId, summary));
+            };
+            const auto failStep = [&](const QString& errorMessage, const QString& summary) {
+                result.errorMessage = errorMessage;
+                appendLog(QString("[step:%1] Fehler: %2").arg(displayStepId, errorMessage));
+                debugStep.errorMessage = errorMessage;
+                debugStep.nextStepId = "[abbruch]";
+                finalizeDebugStep("failed", summary);
+                result.variables = runContext.variables;
+            };
 
         if (stepType == "save_memory") {
             QString contentTemplate = configString(step.config, "content");
@@ -654,15 +977,11 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             const QString content = renderTemplate(contentTemplate, runContext).trimmed();
             debugStep.inputPreview = previewText(content);
             if (content.isEmpty()) {
-                result.errorMessage = QString(
-                    "Schritt '%1' konnte keinen Memory-Inhalt erzeugen."
-                ).arg(step.id);
-                appendLog(QString("[step:%1] Fehler: %2").arg(step.id, result.errorMessage));
-                debugStep.errorMessage = result.errorMessage;
-                debugStep.nextStepId = "[abbruch]";
-                finalizeDebugStep("failed", "Kein Memory-Inhalt erzeugt.");
-                result.variables = runContext.variables;
-                return result;
+                failStep(
+                    QString("Schritt '%1' konnte keinen Memory-Inhalt erzeugen.").arg(displayStepId),
+                    "Kein Memory-Inhalt erzeugt."
+                );
+                return false;
             }
 
             domain::MemoryEntry entry;
@@ -677,7 +996,7 @@ ExecutionResult WorkflowEngine::executeWorkflow(
 
             entry.source = renderTemplate(configString(step.config, "source"), runContext).trimmed();
             if (entry.source.isEmpty()) {
-                entry.source = QString("workflow:%1/%2").arg(runContext.workflowName, step.id);
+                entry.source = QString("workflow:%1/%2").arg(runContext.workflowName, displayStepId);
             }
 
             entry.tags = configTags(step.config, "tags", runContext);
@@ -685,36 +1004,20 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             entry.pinned = configBool(step.config, "pinned", false);
             entry.content = content;
 
-            result.memoryEntriesToPersist.append(entry);
-            runContext.memorySnippets.append(memorySnippetFromEntry(entry));
-            ++runContext.memoryEntryCount;
-            ++runContext.directMemoryEntryCount;
-            if (entry.pinned) {
-                ++runContext.pinnedMemoryEntryCount;
-                ++runContext.totalPinnedMemoryEntryCount;
-            }
-            runContext.variables.insert("last_memory_content", entry.content);
-            runContext.variables.insert("last_memory_type", entry.type);
-            runContext.variables.insert("project_memory", runContext.memorySnippets.join("\n"));
-            runContext.variables.insert("project_memory_count", QString::number(runContext.memoryEntryCount));
-            runContext.variables.insert("project_memory_snippet_count", QString::number(runContext.memorySnippets.size()));
-            runContext.variables.insert("project_memory_direct_count", QString::number(runContext.directMemoryEntryCount));
-            runContext.variables.insert("project_memory_compressed_count", QString::number(runContext.compressedMemoryEntryCount));
-            runContext.variables.insert("project_memory_pinned_count", QString::number(runContext.pinnedMemoryEntryCount));
-            runContext.variables.insert("project_memory_total_pinned_count", QString::number(runContext.totalPinnedMemoryEntryCount));
+            appendPreparedMemoryEntries({ entry });
 
-            appendLog(QString("[step:%1] Typ: save_memory").arg(step.id));
-            appendLog(QString("[step:%1] Memory-Typ: %2").arg(step.id, entry.type));
-            appendLog(QString("[step:%1] Memory-Quelle: %2").arg(step.id, entry.source));
+            appendLog(QString("[step:%1] Typ: save_memory").arg(displayStepId));
+            appendLog(QString("[step:%1] Memory-Typ: %2").arg(displayStepId, entry.type));
+            appendLog(QString("[step:%1] Memory-Quelle: %2").arg(displayStepId, entry.source));
             if (entry.pinned) {
-                appendLog(QString("[step:%1] Memory wird angepinnt gespeichert.").arg(step.id));
+                appendLog(QString("[step:%1] Memory wird angepinnt gespeichert.").arg(displayStepId));
             }
-            appendLog(QString("[step:%1] Memory gespeichert vorgemerkt.").arg(step.id));
-            appendLog(QString("[step:%1] Inhalt: %2").arg(step.id, previewText(entry.content)));
+            appendLog(QString("[step:%1] Memory gespeichert vorgemerkt.").arg(displayStepId));
+            appendLog(QString("[step:%1] Inhalt: %2").arg(displayStepId, previewText(entry.content)));
             debugStep.outputKey = "last_memory_content";
             debugStep.outputPreview = previewText(entry.content);
             debugStep.outputText = debugVariableValueForDisplay({}, entry.content);
-            debugStep.nextStepId = nextStepLabel(workflow.steps, sequentialNextIndex);
+            debugStep.nextStepId = nextStepLabel(stepList, sequentialNextIndex, scopePrefix);
             finalizeDebugStep("completed", QString("Memory-Eintrag vom Typ '%1' vorgemerkt.").arg(entry.type));
             currentStepIndex = sequentialNextIndex;
             continue;
@@ -726,13 +1029,16 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                 : configString(step.config, "input");
             const QString inputValue = renderTemplate(inputTemplate, runContext);
             debugStep.inputPreview = previewText(inputValue);
-            const QString outputKey = configString(step.config, "output").isEmpty()
-                ? step.id
-                : configString(step.config, "output");
+            QString outputKey = configString(step.config, "output").isEmpty()
+                ? step.id.trimmed()
+                : renderTemplate(configString(step.config, "output"), runContext).trimmed();
+            if (outputKey.isEmpty()) {
+                outputKey = step.id.trimmed();
+            }
             const bool caseSensitive = configBool(step.config, "case_sensitive", false);
 
-            appendLog(QString("[step:%1] Typ: decision").arg(step.id));
-            appendLog(QString("[step:%1] Input: %2").arg(step.id, previewText(inputValue)));
+            appendLog(QString("[step:%1] Typ: decision").arg(displayStepId));
+            appendLog(QString("[step:%1] Input: %2").arg(displayStepId, previewText(inputValue)));
 
             bool matched = false;
             QString decisionValue;
@@ -756,14 +1062,12 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                             &ruleMatched,
                             &evaluationError
                         )) {
-                        result.errorMessage = QString("Schritt '%1' fehlgeschlagen: %2").arg(step.id, evaluationError);
-                        appendLog(QString("[step:%1] Fehler: %2").arg(step.id, evaluationError));
-                        debugStep.errorMessage = result.errorMessage;
                         debugStep.outputKey = outputKey;
-                        debugStep.nextStepId = "[abbruch]";
-                        finalizeDebugStep("failed", "Decision-Auswertung fehlgeschlagen.");
-                        result.variables = runContext.variables;
-                        return result;
+                        failStep(
+                            QString("Schritt '%1' fehlgeschlagen: %2").arg(displayStepId, evaluationError),
+                            "Decision-Auswertung fehlgeschlagen."
+                        );
+                        return false;
                     }
 
                     if (!ruleMatched) {
@@ -778,7 +1082,7 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                     targetStepId = configString(rule, "next_step");
                     appendLog(
                         QString("[step:%1] Regel %2 getroffen (%3).")
-                            .arg(step.id)
+                            .arg(displayStepId)
                             .arg(index + 1)
                             .arg(operatorName)
                     );
@@ -791,7 +1095,7 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                         decisionValue = "no_match";
                     }
                     targetStepId = configString(step.config, "default_next");
-                    appendLog(QString("[step:%1] Keine Regel getroffen.").arg(step.id));
+                    appendLog(QString("[step:%1] Keine Regel getroffen.").arg(displayStepId));
                 }
             } else {
                 const QString operatorName = configString(step.config, "operator");
@@ -804,14 +1108,12 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                         &matched,
                         &evaluationError
                     )) {
-                    result.errorMessage = QString("Schritt '%1' fehlgeschlagen: %2").arg(step.id, evaluationError);
-                    appendLog(QString("[step:%1] Fehler: %2").arg(step.id, evaluationError));
-                    debugStep.errorMessage = result.errorMessage;
                     debugStep.outputKey = outputKey;
-                    debugStep.nextStepId = "[abbruch]";
-                    finalizeDebugStep("failed", "Decision-Auswertung fehlgeschlagen.");
-                    result.variables = runContext.variables;
-                    return result;
+                    failStep(
+                        QString("Schritt '%1' fehlgeschlagen: %2").arg(displayStepId, evaluationError),
+                        "Decision-Auswertung fehlgeschlagen."
+                    );
+                    return false;
                 }
 
                 if (matched) {
@@ -830,13 +1132,13 @@ ExecutionResult WorkflowEngine::executeWorkflow(
 
                 appendLog(
                     QString("[step:%1] Entscheidung: %2")
-                        .arg(step.id, matched ? "true" : "false")
+                        .arg(displayStepId, matched ? "true" : "false")
                 );
             }
 
             runContext.variables.insert(outputKey, decisionValue);
             runContext.variables.insert("last_decision", decisionValue);
-            appendLog(QString("[step:%1] Ergebnisvariable '%2' = %3").arg(step.id, outputKey, decisionValue));
+            appendLog(QString("[step:%1] Ergebnisvariable '%2' = %3").arg(displayStepId, outputKey, decisionValue));
 
             QString targetError;
             const int resolvedIndex = resolveNextStepIndex(
@@ -846,30 +1148,31 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                 &targetError
             );
             if (resolvedIndex < 0) {
-                result.errorMessage = QString("Schritt '%1' fehlgeschlagen: %2").arg(step.id, targetError);
-                appendLog(QString("[step:%1] Fehler: %2").arg(step.id, targetError));
-                debugStep.errorMessage = result.errorMessage;
                 debugStep.outputKey = outputKey;
                 debugStep.outputPreview = previewText(decisionValue);
                 debugStep.outputText = debugVariableValueForDisplay({}, decisionValue);
-                debugStep.nextStepId = targetStepId.trimmed().isEmpty() ? "[abbruch]" : targetStepId.trimmed();
-                finalizeDebugStep("failed", "Decision-Zielsprung ungueltig.");
-                result.variables = runContext.variables;
-                return result;
+                debugStep.nextStepId = targetStepId.trimmed().isEmpty()
+                    ? "[abbruch]"
+                    : scopedStepId(scopePrefix, targetStepId.trimmed());
+                failStep(
+                    QString("Schritt '%1' fehlgeschlagen: %2").arg(displayStepId, targetError),
+                    "Decision-Zielsprung ungueltig."
+                );
+                return false;
             }
 
             if (targetStepId.trimmed().isEmpty()) {
-                appendLog(QString("[step:%1] Weiter mit naechstem Schritt.").arg(step.id));
+                appendLog(QString("[step:%1] Weiter mit naechstem Schritt.").arg(displayStepId));
             } else {
-                appendLog(QString("[step:%1] Springe zu '%2'.").arg(step.id, targetStepId));
+                appendLog(QString("[step:%1] Springe zu '%2'.").arg(displayStepId, targetStepId));
             }
 
             debugStep.outputKey = outputKey;
             debugStep.outputPreview = previewText(decisionValue);
             debugStep.outputText = debugVariableValueForDisplay({}, decisionValue);
             debugStep.nextStepId = targetStepId.trimmed().isEmpty()
-                ? nextStepLabel(workflow.steps, resolvedIndex)
-                : targetStepId.trimmed();
+                ? nextStepLabel(stepList, resolvedIndex, scopePrefix)
+                : scopedStepId(scopePrefix, targetStepId.trimmed());
             finalizeDebugStep(
                 "completed",
                 QString("Decision-Ergebnis '%1' mit Folge '%2'.")
@@ -880,25 +1183,241 @@ ExecutionResult WorkflowEngine::executeWorkflow(
         }
 
         if (stepType == "tool") {
+            const QString rawToolName = configString(step.config, "tool").trimmed().toLower();
+            QString outputKey = configString(step.config, "output").isEmpty()
+                ? step.id.trimmed()
+                : renderTemplate(configString(step.config, "output"), runContext).trimmed();
+            if (outputKey.isEmpty()) {
+                outputKey = step.id.trimmed();
+            }
+
+            if (rawToolName == "workflow.foreach") {
+                appendLog(QString("[step:%1] Typ: tool").arg(displayStepId));
+                appendLog(QString("[step:%1] Tool: workflow.foreach").arg(displayStepId));
+                debugStep.inputPreview = "workflow.foreach";
+
+                const QJsonValue rawItemsValue = step.config.contains("items")
+                    ? step.config.value("items")
+                    : QJsonValue(QString("{{last_response}}"));
+                QJsonArray items;
+                QString itemResolutionError;
+                if (!resolveForeachItems(rawItemsValue, runContext, &items, &itemResolutionError)) {
+                    debugStep.outputKey = outputKey;
+                    failStep(
+                        QString("Schritt '%1' fehlgeschlagen: %2").arg(displayStepId, itemResolutionError),
+                        "Foreach-Items konnten nicht aufgeloest werden."
+                    );
+                    return false;
+                }
+
+                const int maxIterations = qMax(1, renderedConfigInt(step.config, "max_iterations", runContext, 100));
+                const int iterationCount = qMin(items.size(), maxIterations);
+                const QString onErrorMode = renderTemplate(configString(step.config, "on_error"), runContext)
+                    .trimmed()
+                    .toLower();
+                const QString itemVar = renderTemplate(
+                    configString(step.config, "item_var").isEmpty()
+                        ? "loop_item"
+                        : configString(step.config, "item_var"),
+                    runContext
+                ).trimmed();
+                const QString resolvedItemVar = itemVar.isEmpty() ? "loop_item" : itemVar;
+                const QString indexVar = renderTemplate(
+                    configString(step.config, "index_var").isEmpty()
+                        ? "loop_index"
+                        : configString(step.config, "index_var"),
+                    runContext
+                ).trimmed();
+                const QString resolvedIndexVar = indexVar.isEmpty() ? "loop_index" : indexVar;
+                const QString resultMode = renderTemplate(
+                    configString(step.config, "result_mode").isEmpty()
+                        ? "text_joined"
+                        : configString(step.config, "result_mode"),
+                    runContext
+                ).trimmed().toLower();
+                const QString resultSourceTemplate = step.config.value("result_source").toString().trimmed().isEmpty()
+                    ? QString("{{last_response}}")
+                    : step.config.value("result_source").toString();
+                QString joinWith = renderTemplate(step.config.value("join_with").toString(), runContext);
+                if (!step.config.contains("join_with")) {
+                    joinWith = "\n\n";
+                }
+                const QString resultVar = renderTemplate(configString(step.config, "result_var"), runContext)
+                    .trimmed();
+                const QVector<domain::WorkflowStep> nestedSteps =
+                    workflowStepsFromJsonArray(step.config.value("steps").toArray());
+
+                QHash<QString, QString> originalLoopValues;
+                QSet<QString> originalLoopExistingKeys;
+                QSet<QString> trackedLoopKeys;
+                QStringList previousIterationKeys;
+                QString previousIterationOutput;
+                QStringList textResults;
+                QJsonArray jsonResults;
+                const auto rememberOriginalLoopVariable = [&](const QString& key) {
+                    if (key.trimmed().isEmpty() || trackedLoopKeys.contains(key)) {
+                        return;
+                    }
+                    trackedLoopKeys.insert(key);
+                    if (runContext.variables.contains(key)) {
+                        originalLoopExistingKeys.insert(key);
+                        originalLoopValues.insert(key, runContext.variables.value(key));
+                    }
+                };
+
+                appendLog(
+                    QString("[step:%1] Foreach verarbeitet %2 Item(s).").arg(displayStepId).arg(iterationCount)
+                );
+                if (items.size() > maxIterations) {
+                    appendLog(
+                        QString("[step:%1] Foreach kuerzt %2 Items auf max_iterations=%3.")
+                            .arg(displayStepId)
+                            .arg(items.size())
+                            .arg(maxIterations)
+                    );
+                }
+
+                for (int iterationIndex = 0; iterationIndex < iterationCount; ++iterationIndex) {
+                    for (const QString& key : previousIterationKeys) {
+                        runContext.variables.remove(key);
+                    }
+                    previousIterationKeys.clear();
+
+                    const QJsonValue currentItem = items.at(iterationIndex);
+                    QHash<QString, QString> loopAssignments;
+                    collectLoopVariableAssignments(
+                        resolvedItemVar,
+                        currentItem,
+                        &loopAssignments,
+                        &previousIterationKeys
+                    );
+                    collectLoopVariableAssignments("loop_item", currentItem, &loopAssignments, &previousIterationKeys);
+                    loopAssignments.insert(resolvedIndexVar, QString::number(iterationIndex));
+                    loopAssignments.insert("loop_index", QString::number(iterationIndex));
+                    loopAssignments.insert("loop_first", iterationIndex == 0 ? "true" : "false");
+                    loopAssignments.insert("loop_last", iterationIndex == iterationCount - 1 ? "true" : "false");
+                    loopAssignments.insert("loop_count", QString::number(iterationCount));
+                    loopAssignments.insert("loop_prev_output", previousIterationOutput);
+                    for (auto it = loopAssignments.constBegin(); it != loopAssignments.constEnd(); ++it) {
+                        rememberOriginalLoopVariable(it.key());
+                        if (!previousIterationKeys.contains(it.key())) {
+                            previousIterationKeys.append(it.key());
+                        }
+                        runContext.variables.insert(it.key(), it.value());
+                    }
+
+                    const QHash<QString, QString> iterationVariableSnapshot = runContext.variables;
+                    const QStringList iterationMemorySnippetSnapshot = runContext.memorySnippets;
+                    const int iterationMemoryEntryCount = runContext.memoryEntryCount;
+                    const int iterationDirectMemoryEntryCount = runContext.directMemoryEntryCount;
+                    const int iterationPinnedMemoryEntryCount = runContext.pinnedMemoryEntryCount;
+                    const int iterationTotalPinnedMemoryEntryCount = runContext.totalPinnedMemoryEntryCount;
+                    const int persistedMemoryCount = result.memoryEntriesToPersist.size();
+                    const QString finalOutputBeforeIteration = result.finalOutput;
+
+                    const QString iterationScope = scopedStepId(
+                        scopePrefix,
+                        QString("%1/iter_%2").arg(step.id.trimmed()).arg(iterationIndex + 1)
+                    );
+                    if (!executeStepList(nestedSteps, iterationScope)) {
+                        const QString iterationError = result.errorMessage;
+                        if (onErrorMode == "continue") {
+                            appendLog(
+                                QString("[step:%1] Iteration %2 uebersprungen: %3")
+                                    .arg(displayStepId)
+                                    .arg(iterationIndex + 1)
+                                    .arg(iterationError)
+                            );
+                            runContext.variables = iterationVariableSnapshot;
+                            runContext.memorySnippets = iterationMemorySnippetSnapshot;
+                            runContext.memoryEntryCount = iterationMemoryEntryCount;
+                            runContext.directMemoryEntryCount = iterationDirectMemoryEntryCount;
+                            runContext.pinnedMemoryEntryCount = iterationPinnedMemoryEntryCount;
+                            runContext.totalPinnedMemoryEntryCount = iterationTotalPinnedMemoryEntryCount;
+                            while (result.memoryEntriesToPersist.size() > persistedMemoryCount) {
+                                result.memoryEntriesToPersist.removeLast();
+                            }
+                            result.finalOutput = finalOutputBeforeIteration;
+                            result.errorMessage.clear();
+                            previousIterationOutput.clear();
+                            continue;
+                        }
+
+                        debugStep.outputKey = outputKey;
+                        debugStep.nextStepId = "[abbruch]";
+                        finalizeDebugStep(
+                            "failed",
+                            QString("Foreach brach in Iteration %1 ab.").arg(iterationIndex + 1)
+                        );
+                        result.variables = runContext.variables;
+                        return false;
+                    }
+
+                    const QString iterationResultText = renderTemplate(resultSourceTemplate, runContext).trimmed();
+                    previousIterationOutput = iterationResultText;
+                    if (resultMode == "json_array") {
+                        jsonResults.append(workflowTextToJsonValue(iterationResultText));
+                    } else {
+                        textResults.append(iterationResultText);
+                    }
+                }
+
+                for (const QString& key : previousIterationKeys) {
+                    runContext.variables.remove(key);
+                }
+                for (const QString& key : trackedLoopKeys) {
+                    if (originalLoopExistingKeys.contains(key)) {
+                        runContext.variables.insert(key, originalLoopValues.value(key));
+                    } else {
+                        runContext.variables.remove(key);
+                    }
+                }
+
+                const QString aggregatedOutput = resultMode == "json_array"
+                    ? QString::fromUtf8(QJsonDocument(jsonResults).toJson(QJsonDocument::Indented)).trimmed()
+                    : textResults.join(joinWith);
+                runContext.variables.insert(outputKey, aggregatedOutput);
+                runContext.variables.insert("last_tool_output", aggregatedOutput);
+                runContext.variables.insert("last_tool_name", "workflow.foreach");
+                if (!resultVar.isEmpty()) {
+                    runContext.variables.insert(resultVar, aggregatedOutput);
+                }
+                result.finalOutput = aggregatedOutput;
+
+                appendLog(
+                    QString("[step:%1] Foreach-Ausgabe gespeichert in Variable '%2'.")
+                        .arg(displayStepId, outputKey)
+                );
+                appendLog(QString("[step:%1] Ausgabe: %2").arg(displayStepId, previewText(aggregatedOutput)));
+                debugStep.outputKey = outputKey;
+                debugStep.outputPreview = previewText(aggregatedOutput);
+                debugStep.outputText = debugVariableValueForDisplay({}, aggregatedOutput);
+                debugStep.nextStepId = nextStepLabel(stepList, sequentialNextIndex, scopePrefix);
+                finalizeDebugStep(
+                    "completed",
+                    QString("Foreach mit %1 Iteration(en) abgeschlossen.").arg(iterationCount)
+                );
+                currentStepIndex = sequentialNextIndex;
+                continue;
+            }
+
             if (m_toolExecutor == nullptr) {
-                result.errorMessage = QString("Schritt '%1' fehlgeschlagen: Kein ToolExecutor konfiguriert.").arg(step.id);
-                appendLog(QString("[step:%1] Fehler: %2").arg(step.id, result.errorMessage));
-                debugStep.errorMessage = result.errorMessage;
-                debugStep.nextStepId = "[abbruch]";
-                finalizeDebugStep("failed", "Kein ToolExecutor konfiguriert.");
-                result.variables = runContext.variables;
-                return result;
+                failStep(
+                    QString("Schritt '%1' fehlgeschlagen: Kein ToolExecutor konfiguriert.").arg(displayStepId),
+                    "Kein ToolExecutor konfiguriert."
+                );
+                return false;
             }
 
             const QJsonObject renderedConfig = renderJsonValue(step.config, runContext).toObject();
             const QString toolName = configString(renderedConfig, "tool");
             debugStep.inputPreview = toolName;
-            const QString outputKey = configString(renderedConfig, "output").isEmpty()
-                ? step.id
+            outputKey = configString(renderedConfig, "output").isEmpty()
+                ? step.id.trimmed()
                 : configString(renderedConfig, "output");
 
-            appendLog(QString("[step:%1] Typ: tool").arg(step.id));
-            appendLog(QString("[step:%1] Tool: %2").arg(step.id, toolName));
+            appendLog(QString("[step:%1] Typ: tool").arg(displayStepId));
+            appendLog(QString("[step:%1] Tool: %2").arg(displayStepId, toolName));
 
             tools::ToolExecutionRequest request;
             request.toolName = toolName;
@@ -906,7 +1425,7 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             request.projectId = runContext.projectId;
             request.projectName = runContext.projectName;
             request.workflowName = runContext.workflowName;
-            request.stepId = step.id;
+            request.stepId = displayStepId;
             request.selectedModel = runContext.selectedModel;
             request.systemPrompt = runContext.systemPrompt;
             request.llmProvider = &provider;
@@ -916,18 +1435,16 @@ ExecutionResult WorkflowEngine::executeWorkflow(
 
             const tools::ToolExecutionResult toolResult = m_toolExecutor->execute(request);
             for (const QString& logLine : toolResult.logs) {
-                appendLog(QString("[step:%1] %2").arg(step.id, logLine));
+                appendLog(QString("[step:%1] %2").arg(displayStepId, logLine));
             }
 
             if (!toolResult.success) {
-                result.errorMessage = QString("Schritt '%1' fehlgeschlagen: %2").arg(step.id, toolResult.errorMessage);
-                appendLog(QString("[step:%1] Fehler: %2").arg(step.id, toolResult.errorMessage));
-                debugStep.errorMessage = result.errorMessage;
                 debugStep.outputKey = outputKey;
-                debugStep.nextStepId = "[abbruch]";
-                finalizeDebugStep("failed", QString("Tool '%1' fehlgeschlagen.").arg(toolName));
-                result.variables = runContext.variables;
-                return result;
+                failStep(
+                    QString("Schritt '%1' fehlgeschlagen: %2").arg(displayStepId, toolResult.errorMessage),
+                    QString("Tool '%1' fehlgeschlagen.").arg(toolName)
+                );
+                return false;
             }
 
             runContext.variables.insert(outputKey, toolResult.outputText);
@@ -943,28 +1460,10 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             result.finalOutput = toolResult.outputText;
 
             if (!toolResult.memoryEntriesToPersist.isEmpty()) {
-                for (const domain::MemoryEntry& entry : toolResult.memoryEntriesToPersist) {
-                    result.memoryEntriesToPersist.append(entry);
-                    runContext.memorySnippets.append(memorySnippetFromEntry(entry));
-                    ++runContext.memoryEntryCount;
-                    ++runContext.directMemoryEntryCount;
-                    if (entry.pinned) {
-                        ++runContext.pinnedMemoryEntryCount;
-                        ++runContext.totalPinnedMemoryEntryCount;
-                    }
-                    runContext.variables.insert("last_memory_content", entry.content);
-                    runContext.variables.insert("last_memory_type", entry.type);
-                }
-                runContext.variables.insert("project_memory", runContext.memorySnippets.join("\n"));
-                runContext.variables.insert("project_memory_count", QString::number(runContext.memoryEntryCount));
-                runContext.variables.insert("project_memory_snippet_count", QString::number(runContext.memorySnippets.size()));
-                runContext.variables.insert("project_memory_direct_count", QString::number(runContext.directMemoryEntryCount));
-                runContext.variables.insert("project_memory_compressed_count", QString::number(runContext.compressedMemoryEntryCount));
-                runContext.variables.insert("project_memory_pinned_count", QString::number(runContext.pinnedMemoryEntryCount));
-                runContext.variables.insert("project_memory_total_pinned_count", QString::number(runContext.totalPinnedMemoryEntryCount));
+                appendPreparedMemoryEntries(toolResult.memoryEntriesToPersist);
                 appendLog(
                     QString("[step:%1] Tool hat %2 Memory-Eintrag(e) vorgemerkt.")
-                        .arg(step.id)
+                        .arg(displayStepId)
                         .arg(toolResult.memoryEntriesToPersist.size())
                 );
             }
@@ -972,20 +1471,20 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             if (!updatedVariableNames.isEmpty()) {
                 appendLog(
                     QString("[step:%1] Tool hat %2 Variable(n) aktualisiert: %3")
-                        .arg(step.id)
+                        .arg(displayStepId)
                         .arg(updatedVariableNames.size())
                         .arg(updatedVariableNames.join(", "))
                 );
             }
 
             appendLog(
-                QString("[step:%1] Tool-Ausgabe gespeichert in Variable '%2'.").arg(step.id, outputKey)
+                QString("[step:%1] Tool-Ausgabe gespeichert in Variable '%2'.").arg(displayStepId, outputKey)
             );
-            appendLog(QString("[step:%1] Ausgabe: %2").arg(step.id, previewText(toolResult.outputText)));
+            appendLog(QString("[step:%1] Ausgabe: %2").arg(displayStepId, previewText(toolResult.outputText)));
             debugStep.outputKey = outputKey;
             debugStep.outputPreview = previewText(toolResult.outputText);
             debugStep.outputText = debugVariableValueForDisplay({}, toolResult.outputText);
-            debugStep.nextStepId = nextStepLabel(workflow.steps, sequentialNextIndex);
+            debugStep.nextStepId = nextStepLabel(stepList, sequentialNextIndex, scopePrefix);
             finalizeDebugStep(
                 "completed",
                 toolResult.memoryEntriesToPersist.isEmpty()
@@ -999,18 +1498,21 @@ ExecutionResult WorkflowEngine::executeWorkflow(
         }
 
         const QString promptTemplate = configString(step.config, "prompt");
-        const QString outputKey = configString(step.config, "output").isEmpty()
-            ? step.id
-            : configString(step.config, "output");
+        QString outputKey = configString(step.config, "output").isEmpty()
+            ? step.id.trimmed()
+            : renderTemplate(configString(step.config, "output"), runContext).trimmed();
+        if (outputKey.isEmpty()) {
+            outputKey = step.id.trimmed();
+        }
         const QString model = configString(step.config, "model").isEmpty()
             ? runContext.selectedModel
-            : configString(step.config, "model");
+            : renderTemplate(configString(step.config, "model"), runContext).trimmed();
 
-        QString systemPrompt = configString(step.config, "system_prompt");
-        if (systemPrompt.isEmpty()) {
+        QString systemPrompt = step.config.value("system_prompt").toString();
+        if (systemPrompt.trimmed().isEmpty()) {
             systemPrompt = runContext.systemPrompt;
         }
-        if (systemPrompt.isEmpty()) {
+        if (systemPrompt.trimmed().isEmpty()) {
             systemPrompt = defaultSystemPrompt();
         }
 
@@ -1026,18 +1528,18 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             }
         }
 
-        appendLog(QString("[step:%1] Typ: prompt").arg(step.id));
-        appendLog(QString("[step:%1] Modell: %2").arg(step.id, model));
+        appendLog(QString("[step:%1] Typ: prompt").arg(displayStepId));
+        appendLog(QString("[step:%1] Modell: %2").arg(displayStepId, model));
         if (!runContext.memorySnippets.isEmpty()) {
             appendLog(
                 QString("[step:%1] Memory-Kontext: %2 Eintraege verfuegbar (%3 direkte Snippets, %4 komprimiert).")
-                    .arg(step.id)
+                    .arg(displayStepId)
                     .arg(runContext.memoryEntryCount)
                     .arg(runContext.directMemoryEntryCount)
                     .arg(runContext.compressedMemoryEntryCount)
             );
         }
-        appendLog(QString("[step:%1] Prompt: %2").arg(step.id, previewText(renderedPrompt)));
+        appendLog(QString("[step:%1] Prompt: %2").arg(displayStepId, previewText(renderedPrompt)));
 
         providers::ChatRequest request;
         request.model = model;
@@ -1047,23 +1549,21 @@ ExecutionResult WorkflowEngine::executeWorkflow(
         providers::ChatResponse response;
         const bool shouldStreamPrompt = provider.supportsStreaming() && static_cast<bool>(callbacks.onPromptChunk);
         if (shouldStreamPrompt) {
-            appendLog(QString("[step:%1] Live-Streaming aktiviert.").arg(step.id));
-            updateStepStatus(step.id, QString("Schritt '%1' streamt Modellausgabe").arg(step.id));
+            appendLog(QString("[step:%1] Live-Streaming aktiviert.").arg(displayStepId));
+            updateStepStatus(displayStepId, QString("Schritt '%1' streamt Modellausgabe").arg(displayStepId));
             response = provider.chatStream(request, [&](const QString& chunk) {
-                appendPromptChunk(step.id, chunk);
+                appendPromptChunk(displayStepId, chunk);
             });
         } else {
             response = provider.chat(request);
         }
         if (!response.success) {
-            result.errorMessage = QString("Schritt '%1' fehlgeschlagen: %2").arg(step.id, response.errorMessage);
-            appendLog(QString("[step:%1] Fehler: %2").arg(step.id, response.errorMessage));
-            debugStep.errorMessage = result.errorMessage;
             debugStep.outputKey = outputKey;
-            debugStep.nextStepId = "[abbruch]";
-            finalizeDebugStep("failed", QString("Prompt-Schritt mit Modell '%1' fehlgeschlagen.").arg(model));
-            result.variables = runContext.variables;
-            return result;
+            failStep(
+                QString("Schritt '%1' fehlgeschlagen: %2").arg(displayStepId, response.errorMessage),
+                QString("Prompt-Schritt mit Modell '%1' fehlgeschlagen.").arg(model)
+            );
+            return false;
         }
 
         const SanitizedPromptResponse sanitizedResponse = sanitizePromptResponse(response.text);
@@ -1080,12 +1580,12 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             runContext.variables.insert("last_response_reasoning", sanitizedResponse.reasoningText);
             appendLog(
                 QString("[step:%1] Reasoning-Tags erkannt und aus der sichtbaren Ausgabe entfernt.")
-                    .arg(step.id)
+                    .arg(displayStepId)
             );
             if (!sanitizedResponse.reasoningText.isEmpty()) {
                 appendLog(
                     QString("[step:%1] Reasoning gespeichert in '%2_reasoning' und 'last_reasoning'.")
-                        .arg(step.id, outputKey)
+                        .arg(displayStepId, outputKey)
                 );
             }
         } else {
@@ -1095,14 +1595,14 @@ ExecutionResult WorkflowEngine::executeWorkflow(
         }
 
         appendLog(
-            QString("[step:%1] Antwort gespeichert in Variable '%2'.").arg(step.id, outputKey)
+            QString("[step:%1] Antwort gespeichert in Variable '%2'.").arg(displayStepId, outputKey)
         );
-        appendLog(QString("[step:%1] Ausgabe: %2").arg(step.id, previewText(sanitizedResponse.visibleText)));
+        appendLog(QString("[step:%1] Ausgabe: %2").arg(displayStepId, previewText(sanitizedResponse.visibleText)));
         debugStep.outputKey = outputKey;
         debugStep.outputPreview = previewText(sanitizedResponse.visibleText);
         debugStep.outputText = debugVariableValueForDisplay({}, sanitizedResponse.visibleText);
         debugStep.reasoningText = debugVariableValueForDisplay({}, sanitizedResponse.reasoningText);
-        debugStep.nextStepId = nextStepLabel(workflow.steps, sequentialNextIndex);
+        debugStep.nextStepId = nextStepLabel(stepList, sequentialNextIndex, scopePrefix);
         finalizeDebugStep(
             "completed",
             sanitizedResponse.hadReasoningTags
@@ -1110,6 +1610,13 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                 : QString("Prompt-Schritt mit Modell '%1' erfolgreich.").arg(model)
         );
         currentStepIndex = sequentialNextIndex;
+        }
+
+        return true;
+    };
+
+    if (!executeStepList(workflow.steps, {})) {
+        return result;
     }
 
     result.success = true;

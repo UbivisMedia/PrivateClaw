@@ -17,10 +17,29 @@ Wenn kein passender Abschnitt gefunden wird, faellt der Workflow automatisch auf
 ### Added
 
 - `variables.set` als Workflow-Tool fuer String- und Integer-Variablen, inklusive Inkrementen fuer Kapitel-, Szenen- und Retry-Zaehler
+- `workflow.foreach` als Workflow-Tool fuer JSON-Arrays, Listen und Unter-Schritte mit `loop_item`-, Index- und Sammelvariablen
+- Projektvariablen mit eigener Sidebar-Ansicht, Typen `string`/`int`/`float` und direkter Nutzung in Workflows
 
 ### Changed
 
 - Decision-Schritte koennen jetzt auch numerisch vergleichen (`greater_than`, `greater_or_equal`, `less_than`, `less_or_equal`), sodass Workflow-Zaehler direkt nutzbar werden
+- Der Beispiel-Workflow fuer Romanszenen nutzt jetzt gezielte Foreach-Schleifen fuer Figuren-Bootstrap, beatweises Schreiben und entity-spezifische Memories
+- Der Romanschreiber-Beispielworkflow speichert Kapitel- und Szenenzaehler jetzt als Projektvariablen statt sie ueber Fortschritts-Memories wieder per KI auszulesen
+- Der Workflow-Editor nutzt jetzt einklappbare Bereiche fuer Metadaten, Canvas, Schrittdetails, JSON und Ausgaben, damit lange Workflows deutlich platzsparender bearbeitet werden koennen
+- Die linke Hauptnavigation laesst sich jetzt zu einer kompakten Icon-Leiste einklappen, um mehr Platz fuer Editor und Graph freizugeben
+- Eingeklappte Bereiche verteilen den freigewordenen Platz jetzt aktiv an die verbleibenden Editor-Bereiche weiter, statt Leeraum stehenzulassen
+- Projekt-, Memory-, Run- und Zeitplan-Ansichten nutzen jetzt ebenfalls einklappbare Hauptkarten, damit sich grosse Bereiche bei Bedarf gezielt ausblenden lassen
+- Das Schliessen ueber das Fenster-`X` beendet die App jetzt wieder direkt, waehrend ein eigener Toolbar-Button das bewusste Minimieren in den Tray uebernimmt
+- Die obere Workflow-Editor-Infokarte laesst sich jetzt ebenfalls einklappen, um dem eigentlichen Editor mehr Hoehe zu geben
+
+### Fixed
+
+- Der Ablaufgraph im visuellen Workflow-Editor wird jetzt beim Laden und Auswaehlen von Schritten sofort neu aufgebaut, statt leer zu bleiben
+- Klicks und Doppelklicks auf Flowchart-Nodes wechseln den Schritt jetzt asynchron ueber die UI-Queue, damit der Graph beim Neuzeichnen nicht mehr abstuerzen kann
+- `json.extract` und Foreach-JSON-Eingaenge akzeptieren jetzt auch JSON aus Markdown-Codeblocks oder Antworten mit zusaetzlichem Begleittext
+- `memory.search` sucht mehrwortige Queries jetzt ueber einzelne Begriffe statt nur als exakte Gesamtphrase, damit Fortschritts- und Story-Memories zuverlaessiger wiedergefunden werden
+- LM-Studio-Streaming faellt bei leerer oder nicht auswertbarer Stream-Antwort jetzt automatisch auf verwertbare Abschlussdaten oder den normalen Chat-Pfad zurueck
+- `variables.set` kann jetzt optional projektweit persistent speichern (`scope: "project"`), inklusive Float-Werten fuer fortlaufende Zaehler oder Metriken
 
 
 ## [v0.1.2] - 2026-03-25

@@ -4,8 +4,10 @@
 
 #include <QDateTime>
 #include <QHash>
+#include <QRegularExpression>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QSet>
 
 #include <algorithm>
 
@@ -39,6 +41,40 @@ QString serializeTags(const QStringList& tags)
     }
 
     return normalized.join(", ");
+}
+
+QStringList normalizedSearchTerms(const QString& rawSearchText)
+{
+    const QString normalizedSearch = rawSearchText.simplified().trimmed().toLower();
+    if (normalizedSearch.isEmpty()) {
+        return {};
+    }
+
+    QStringList terms;
+    QSet<QString> seenTerms;
+    const auto appendTerm = [&](const QString& rawTerm) {
+        const QString normalizedTerm = rawTerm.trimmed().toLower();
+        if (normalizedTerm.isEmpty() || seenTerms.contains(normalizedTerm)) {
+            return;
+        }
+        seenTerms.insert(normalizedTerm);
+        terms.append(normalizedTerm);
+    };
+
+    appendTerm(normalizedSearch);
+
+    const QStringList tokenParts = normalizedSearch.split(
+        QRegularExpression("[^\\p{L}\\p{N}_-]+"),
+        Qt::SkipEmptyParts
+    );
+    for (const QString& token : tokenParts) {
+        if (token.size() < 2 && !token.at(0).isDigit()) {
+            continue;
+        }
+        appendTerm(token);
+    }
+
+    return terms;
 }
 
 domain::MemoryEntry mapEntry(const QSqlQuery& query)
@@ -241,11 +277,16 @@ QList<domain::MemoryEntry> MemoryService::listEntries(
         conditions.append("project_id = ?");
     }
 
-    const QString normalizedSearch = searchText.trimmed().toLower();
-    if (!normalizedSearch.isEmpty()) {
-        conditions.append(
-            "(LOWER(entry_type) LIKE ? OR LOWER(content) LIKE ? OR LOWER(source) LIKE ? OR LOWER(tags) LIKE ?)"
-        );
+    const QStringList searchTerms = normalizedSearchTerms(searchText);
+    if (!searchTerms.isEmpty()) {
+        QStringList searchConditions;
+        searchConditions.reserve(searchTerms.size());
+        for (int index = 0; index < searchTerms.size(); ++index) {
+            searchConditions.append(
+                "(LOWER(entry_type) LIKE ? OR LOWER(content) LIKE ? OR LOWER(source) LIKE ? OR LOWER(tags) LIKE ?)"
+            );
+        }
+        conditions.append("(" + searchConditions.join(" OR ") + ")");
     }
 
     if (!conditions.isEmpty()) {
@@ -263,8 +304,8 @@ QList<domain::MemoryEntry> MemoryService::listEntries(
         query.addBindValue(projectId);
     }
 
-    if (!normalizedSearch.isEmpty()) {
-        const QString likeValue = "%" + normalizedSearch + "%";
+    for (const QString& searchTerm : searchTerms) {
+        const QString likeValue = "%" + searchTerm + "%";
         query.addBindValue(likeValue);
         query.addBindValue(likeValue);
         query.addBindValue(likeValue);

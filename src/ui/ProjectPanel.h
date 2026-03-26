@@ -13,6 +13,7 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QTextEdit;
+class QToolButton;
 
 namespace privateclaw::providers {
 class ILlmProvider;
@@ -85,7 +86,7 @@ private:
     QLabel* m_allowedPathInfoLabel = nullptr;
     QLabel* m_providerEndpointLabel = nullptr;
     QLabel* m_providerStatusLabel = nullptr;
-    QLabel* m_formTitleLabel = nullptr;
+    QToolButton* m_formTitleButton = nullptr;
     QLabel* m_secretInfoLabel = nullptr;
     QLineEdit* m_allowedPathEdit = nullptr;
     QLineEdit* m_nameEdit = nullptr;

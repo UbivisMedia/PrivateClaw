@@ -15,6 +15,8 @@ class QComboBox;
 class QDoubleSpinBox;
 class QFrame;
 class QFutureWatcherBase;
+class QGraphicsScene;
+class QGraphicsView;
 class QLabel;
 class QListWidget;
 class QLineEdit;
@@ -34,6 +36,7 @@ class ProviderManager;
 namespace privateclaw::services {
 class MemoryService;
 class ProjectService;
+class ProjectVariableService;
 class RunService;
 class SecretsService;
 class SettingsService;
@@ -48,6 +51,7 @@ public:
     WorkflowPanel(
         services::ProjectService& projectService,
         services::SettingsService& settingsService,
+        services::ProjectVariableService& projectVariableService,
         services::MemoryService& memoryService,
         services::SecretsService& secretsService,
         services::RunService& runService,
@@ -89,6 +93,7 @@ private:
     void scheduleVisualSyncFromJson();
     void syncVisualEditorFromJson();
     void rebuildVisualStepList(const QString& stepIdToSelect = QString());
+    void rebuildVisualGraph(const QString& stepIdToSelect = QString());
     void loadVisualStepFromRow(int row);
     void clearVisualStepEditor();
     void updateVisualConfigPage();
@@ -125,6 +130,7 @@ private:
 
     services::ProjectService& m_projectService;
     services::SettingsService& m_settingsService;
+    services::ProjectVariableService& m_projectVariableService;
     services::MemoryService& m_memoryService;
     services::SecretsService& m_secretsService;
     services::RunService& m_runService;
@@ -146,6 +152,7 @@ private:
     std::function<void(const QString& streamId, const QString& prefix, const QString& chunk)>
         m_onExecutionStreamChunk;
     bool m_isSyncingVisualEditor = false;
+    bool m_isSyncingVisualGraph = false;
     bool m_visualEditorHasValidJson = false;
     bool m_lastExecutionWasDebug = false;
     bool m_comfyMetadataLoaded = false;
@@ -176,7 +183,10 @@ private:
     QPlainTextEdit* m_debugSummaryView = nullptr;
     QPlainTextEdit* m_debugVariablesView = nullptr;
     QPlainTextEdit* m_debugLogsView = nullptr;
+    QFrame* m_jsonDefinitionFrame = nullptr;
     QLabel* m_visualEditorStatusLabel = nullptr;
+    QGraphicsView* m_visualGraphView = nullptr;
+    QGraphicsScene* m_visualGraphScene = nullptr;
     QListWidget* m_visualStepList = nullptr;
     QLineEdit* m_visualStepIdEdit = nullptr;
     QComboBox* m_visualStepTypeCombo = nullptr;
@@ -259,12 +269,23 @@ private:
     QSpinBox* m_toolMemoryDeleteKeepLatestSpin = nullptr;
     QSpinBox* m_toolMemoryDeleteKeepRelevanceSpin = nullptr;
     QCheckBox* m_toolMemoryDeleteDryRunCheckBox = nullptr;
+    QComboBox* m_toolVariableScopeCombo = nullptr;
     QLineEdit* m_toolVariableNameEdit = nullptr;
     QComboBox* m_toolVariableTypeCombo = nullptr;
     QComboBox* m_toolVariableOperationCombo = nullptr;
     QLineEdit* m_toolVariableValueEdit = nullptr;
     QLineEdit* m_toolVariableCurrentValueEdit = nullptr;
-    QSpinBox* m_toolVariableAmountSpin = nullptr;
+    QDoubleSpinBox* m_toolVariableAmountSpin = nullptr;
+    QPlainTextEdit* m_toolForeachItemsEdit = nullptr;
+    QLineEdit* m_toolForeachItemVarEdit = nullptr;
+    QLineEdit* m_toolForeachIndexVarEdit = nullptr;
+    QComboBox* m_toolForeachResultModeCombo = nullptr;
+    QLineEdit* m_toolForeachResultSourceEdit = nullptr;
+    QLineEdit* m_toolForeachResultVarEdit = nullptr;
+    QLineEdit* m_toolForeachJoinWithEdit = nullptr;
+    QComboBox* m_toolForeachOnErrorCombo = nullptr;
+    QSpinBox* m_toolForeachMaxIterationsSpin = nullptr;
+    QPlainTextEdit* m_toolForeachStepsEdit = nullptr;
     QLineEdit* m_toolFileWritePathEdit = nullptr;
     QComboBox* m_toolFileWriteModeCombo = nullptr;
     QCheckBox* m_toolFileWriteCreateDirsCheckBox = nullptr;

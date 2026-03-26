@@ -29,6 +29,8 @@ set(PRIVATECLAW_SOURCES
     src/ui/MainWindow.h
     src/ui/ProjectPanel.cpp
     src/ui/ProjectPanel.h
+    src/ui/ProjectVariablePanel.cpp
+    src/ui/ProjectVariablePanel.h
     src/ui/WorkflowPanel.cpp
     src/ui/WorkflowPanel.h
     src/ui/MemoryPanel.cpp
@@ -43,6 +45,7 @@ set(PRIVATECLAW_SOURCES
     src/core/WorkflowEngine.h
     src/core/RunContext.h
     src/domain/Project.h
+    src/domain/ProjectVariable.h
     src/domain/Workflow.h
     src/domain/Run.h
     src/domain/MemoryEntry.h
@@ -68,6 +71,8 @@ set(PRIVATECLAW_SOURCES
     src/services/UpdateChecker.h
     src/services/ProjectService.cpp
     src/services/ProjectService.h
+    src/services/ProjectVariableService.cpp
+    src/services/ProjectVariableService.h
     src/services/WorkflowService.cpp
     src/services/WorkflowService.h
     src/services/MemoryService.cpp

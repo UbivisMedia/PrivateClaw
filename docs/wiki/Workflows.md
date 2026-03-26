@@ -165,6 +165,17 @@ Zusatzvariablen fuer die letzte Prompt-Antwort:
 Tools koennen zusaetzlich eigene Laufvariablen setzen.
 `variables.set` mit `name: "kapitel_nummer"` macht also `{{kapitel_nummer}}` sofort fuer spaetere Prompt-, Tool-, Memory- und Decision-Schritte verfuegbar.
 
+`workflow.foreach` legt waehrend jeder Iteration zusaetzlich temporare Loop-Variablen an:
+
+- `{{loop_item}}`
+- `{{loop_index}}`
+- `{{loop_first}}`
+- `{{loop_last}}`
+- `{{loop_count}}`
+- `{{loop_prev_output}}`
+
+Wenn ein Loop-Item ein JSON-Objekt ist, stehen seine Felder ausserdem unter dem konfigurierten `item_var` bereit, zum Beispiel `{{figur.name}}`.
+
 ### Variablen aus Memory-Schritten
 
 - `{{last_memory_content}}`
@@ -338,7 +349,7 @@ Wenn keine Regel trifft, greifen:
 ## Schrittart `tool`
 
 `tool` fuehrt einen externen oder lokalen Arbeitsschritt aus.
-Die eigentliche Tool-Logik liegt nicht in der Engine, sondern in der Tool-Schicht.
+Die meiste Tool-Logik liegt in der Tool-Schicht; `workflow.foreach` ist die wichtigste Ausnahme und wird direkt von der Workflow-Engine orchestriert.
 
 ### Allgemeine Konfigurationsfelder
 
@@ -351,24 +362,63 @@ Die Details dazu stehen in [Tools](./Tools.md).
 
 ### Eigene Laufvariablen mit `variables.set`
 
-Mit dem Tool `variables.set` lassen sich String- und Integer-Variablen innerhalb eines Runs gezielt setzen oder erhoehen.
+Mit dem Tool `variables.set` lassen sich String-, Integer- und Float-Variablen innerhalb eines Runs gezielt setzen oder erhoehen.
+Wenn du `scope: "project"` setzt, wird der Wert ausserdem projektweit gespeichert und steht in spaeteren Laeufen automatisch wieder bereit.
 
 ```json
 {
-  "id": "set_chapter_label",
+  "id": "advance_scene_counter",
   "type": "tool",
   "config": {
     "tool": "variables.set",
-    "name": "kapitel_label",
-    "value_type": "string",
-    "operation": "set",
-    "value": "Kapitel {{kapitel_nummer}}, Szene {{szenen_nummer}}",
-    "output": "kapitel_label_status"
+    "scope": "project",
+    "name": "szenen_nummer",
+    "value_type": "int",
+    "operation": "increment",
+    "current_value": "{{szenen_nummer}}",
+    "amount": 1,
+    "output": "szenen_nummer_status"
   }
 }
 ```
 
-Das Ergebnis steht danach sowohl als `{{kapitel_label}}` als auch ueber die konfigurierte `output`-Variable bereit.
+Das Ergebnis steht danach sowohl als `{{szenen_nummer}}` als auch ueber die konfigurierte `output`-Variable bereit.
+
+### Listen mit `workflow.foreach`
+
+Mit `workflow.foreach` kannst du JSON-Arrays oder Listen durch eingebettete Unter-Schritte laufen lassen.
+Das ist besonders praktisch fuer:
+
+- Figurenlisten, die einzeln ausgearbeitet und gespeichert werden sollen
+- Szenenbeats oder Absatzplaene, die nacheinander geschrieben werden
+- extrahierte Orte, Ereignisse oder Tasks, die einzeln persistiert werden sollen
+
+Kompaktes Beispiel:
+
+```json
+{
+  "id": "schreibe_absaetze",
+  "type": "tool",
+  "config": {
+    "tool": "workflow.foreach",
+    "items": "{{beats_json}}",
+    "item_var": "beat",
+    "result_mode": "text_joined",
+    "result_source": "{{absatz}}",
+    "output": "szene_text",
+    "steps": [
+      {
+        "id": "write_paragraph",
+        "type": "prompt",
+        "config": {
+          "prompt": "Schreibe den Beat {{beat.title}} aus.",
+          "output": "absatz"
+        }
+      }
+    ]
+  }
+}
+```
 
 ## Beispiel: LLM plus Tool plus Memory
 

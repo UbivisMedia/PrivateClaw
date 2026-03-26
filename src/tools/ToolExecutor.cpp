@@ -1,7 +1,9 @@
 #include "tools/ToolExecutor.h"
 
 #include "providers/ILlmProvider.h"
+#include "services/ProjectVariableService.h"
 #include "tools/ToolRisk.h"
+#include "utils/JsonExtraction.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -21,6 +23,7 @@
 #include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -221,6 +224,40 @@ QString serializeTags(const QStringList& tags)
     return normalized.join(", ");
 }
 
+QStringList normalizedSearchTerms(const QString& rawQueryText)
+{
+    const QString normalizedQuery = rawQueryText.simplified().trimmed().toLower();
+    if (normalizedQuery.isEmpty()) {
+        return {};
+    }
+
+    QStringList terms;
+    QSet<QString> seenTerms;
+    const auto appendTerm = [&](const QString& rawTerm) {
+        const QString normalizedTerm = rawTerm.trimmed().toLower();
+        if (normalizedTerm.isEmpty() || seenTerms.contains(normalizedTerm)) {
+            return;
+        }
+        seenTerms.insert(normalizedTerm);
+        terms.append(normalizedTerm);
+    };
+
+    appendTerm(normalizedQuery);
+
+    const QStringList tokenParts = normalizedQuery.split(
+        QRegularExpression("[^\\p{L}\\p{N}_-]+"),
+        Qt::SkipEmptyParts
+    );
+    for (const QString& token : tokenParts) {
+        if (token.size() < 2 && !token.at(0).isDigit()) {
+            continue;
+        }
+        appendTerm(token);
+    }
+
+    return terms;
+}
+
 bool parseIntegerValue(const QJsonValue& value, qlonglong* parsedValue)
 {
     if (parsedValue == nullptr) {
@@ -245,6 +282,50 @@ bool parseIntegerValue(const QJsonValue& value, qlonglong* parsedValue)
 
     *parsedValue = integerValue;
     return true;
+}
+
+bool parseDoubleValue(const QJsonValue& value, double* parsedValue)
+{
+    if (parsedValue == nullptr) {
+        return false;
+    }
+
+    if (value.isDouble()) {
+        const double numericValue = value.toDouble();
+        if (!std::isfinite(numericValue)) {
+            return false;
+        }
+        *parsedValue = numericValue;
+        return true;
+    }
+
+    bool ok = false;
+    const double numericValue = value.toString().trimmed().toDouble(&ok);
+    if (!ok || !std::isfinite(numericValue)) {
+        return false;
+    }
+
+    *parsedValue = numericValue;
+    return true;
+}
+
+QString valueTextFromDouble(const double value)
+{
+    return QString::number(value, 'g', 16);
+}
+
+QString jsonValueText(const QJsonValue& value)
+{
+    if (value.isString()) {
+        return value.toString();
+    }
+    if (value.isDouble()) {
+        return valueTextFromDouble(value.toDouble());
+    }
+    if (value.isBool()) {
+        return value.toBool() ? "true" : "false";
+    }
+    return value.toVariant().toString();
 }
 
 bool isValidWorkflowVariableName(const QString& name)
@@ -338,6 +419,120 @@ domain::MemoryEntry mapMemoryEntry(const QSqlQuery& query)
     return entry;
 }
 
+struct ProjectVariableRecord
+{
+    bool found = false;
+    qint64 id = -1;
+    QString name;
+    QString valueType;
+    QString valueText;
+};
+
+bool loadProjectVariableRecord(
+    const QSqlDatabase& database,
+    const qint64 projectId,
+    const QString& name,
+    ProjectVariableRecord* record,
+    QString* errorMessage
+)
+{
+    if (!database.isValid() || !database.isOpen()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "SQLite-Verbindung fuer Projektvariablen ist nicht verfuegbar.";
+        }
+        return false;
+    }
+
+    if (projectId <= 0) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "Projektvariablen brauchen ein gueltiges Projekt im Run-Kontext.";
+        }
+        return false;
+    }
+
+    if (record != nullptr) {
+        *record = {};
+    }
+
+    QSqlQuery query(database);
+    query.prepare(
+        "SELECT id, name, value_type, value_text "
+        "FROM project_variables "
+        "WHERE project_id = ? AND LOWER(name) = LOWER(?) "
+        "LIMIT 1"
+    );
+    query.addBindValue(projectId);
+    query.addBindValue(name.trimmed());
+    if (!query.exec()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = query.lastError().text();
+        }
+        return false;
+    }
+
+    if (!query.next()) {
+        return true;
+    }
+
+    if (record != nullptr) {
+        record->found = true;
+        record->id = query.value(0).toLongLong();
+        record->name = query.value(1).toString();
+        record->valueType = query.value(2).toString();
+        record->valueText = query.value(3).toString();
+    }
+    return true;
+}
+
+bool upsertProjectVariableRecord(
+    const QSqlDatabase& database,
+    const qint64 projectId,
+    const QString& name,
+    const QString& valueType,
+    const QString& valueText,
+    QString* errorMessage
+)
+{
+    if (!database.isValid() || !database.isOpen()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "SQLite-Verbindung fuer Projektvariablen ist nicht verfuegbar.";
+        }
+        return false;
+    }
+
+    if (projectId <= 0) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "Projektvariablen brauchen ein gueltiges Projekt im Run-Kontext.";
+        }
+        return false;
+    }
+
+    const QString timestamp = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    QSqlQuery query(database);
+    query.prepare(
+        "INSERT INTO project_variables (project_id, name, value_type, value_text, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(project_id, name) DO UPDATE SET "
+        "value_type = excluded.value_type, "
+        "value_text = excluded.value_text, "
+        "updated_at = excluded.updated_at"
+    );
+    query.addBindValue(projectId);
+    query.addBindValue(name.trimmed());
+    query.addBindValue(valueType);
+    query.addBindValue(valueText);
+    query.addBindValue(timestamp);
+    query.addBindValue(timestamp);
+    if (!query.exec()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = query.lastError().text();
+        }
+        return false;
+    }
+
+    return true;
+}
+
 MemoryQueryResult queryMemoryEntries(const QSqlDatabase& database, const MemoryQueryOptions& options)
 {
     MemoryQueryResult result;
@@ -356,10 +551,16 @@ MemoryQueryResult queryMemoryEntries(const QSqlDatabase& database, const MemoryQ
         "FROM memory_entries "
         "WHERE project_id = ?";
 
-    const QString normalizedQuery = options.queryText.trimmed().toLower();
-    if (!normalizedQuery.isEmpty()) {
-        statement +=
-            " AND (LOWER(entry_type) LIKE ? OR LOWER(content) LIKE ? OR LOWER(source) LIKE ? OR LOWER(tags) LIKE ?)";
+    const QStringList searchTerms = normalizedSearchTerms(options.queryText);
+    if (!searchTerms.isEmpty()) {
+        QStringList searchConditions;
+        searchConditions.reserve(searchTerms.size());
+        for (int index = 0; index < searchTerms.size(); ++index) {
+            searchConditions.append(
+                "(LOWER(entry_type) LIKE ? OR LOWER(content) LIKE ? OR LOWER(source) LIKE ? OR LOWER(tags) LIKE ?)"
+            );
+        }
+        statement += " AND (" + searchConditions.join(" OR ") + ")";
     }
 
     const QString normalizedEntryType = options.entryType.trimmed().toLower();
@@ -392,8 +593,8 @@ MemoryQueryResult queryMemoryEntries(const QSqlDatabase& database, const MemoryQ
     query.prepare(statement);
     query.addBindValue(options.projectId);
 
-    if (!normalizedQuery.isEmpty()) {
-        const QString likeValue = "%" + normalizedQuery + "%";
+    for (const QString& searchTerm : searchTerms) {
+        const QString likeValue = "%" + searchTerm + "%";
         query.addBindValue(likeValue);
         query.addBindValue(likeValue);
         query.addBindValue(likeValue);
@@ -1649,6 +1850,7 @@ QStringList ToolExecutor::availableTools() const
         "memory.delete_old",
         "memory.ingest_directory",
         "variables.set",
+        "workflow.foreach",
         "file.write_text",
         "file.edit_diff",
         "http.request",
@@ -1727,7 +1929,13 @@ ToolExecutionResult ToolExecutor::execute(const ToolExecutionRequest& request) c
     }
 
     if (toolName == "variables.set") {
-        return executeVariablesSet(request.config);
+        return executeVariablesSet(request);
+    }
+
+    if (toolName == "workflow.foreach") {
+        ToolExecutionResult result;
+        result.errorMessage = "Tool 'workflow.foreach' wird direkt von der WorkflowEngine ausgefuehrt.";
+        return result;
     }
 
     if (toolName == "file.write_text") {
@@ -1833,10 +2041,11 @@ ToolExecutionResult ToolExecutor::executeJsonExtract(const QJsonObject& config) 
         return result;
     }
 
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(inputJson.toUtf8(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || document.isNull()) {
-        result.errorMessage = QString("JSON konnte nicht geparst werden: %1").arg(parseError.errorString());
+    QJsonDocument document;
+    QString extractedJsonText;
+    QString parseErrorMessage;
+    if (!utils::extractJsonDocumentFromText(inputJson, &document, &extractedJsonText, &parseErrorMessage)) {
+        result.errorMessage = QString("JSON konnte nicht geparst werden: %1").arg(parseErrorMessage);
         return result;
     }
 
@@ -1877,6 +2086,9 @@ ToolExecutionResult ToolExecutor::executeJsonExtract(const QJsonObject& config) 
     }
 
     result.success = true;
+    if (utils::normalizedJsonText(inputJson) != extractedJsonText) {
+        result.logs.append("JSON wurde aus umgebendem Text oder Markdown-Codeblock extrahiert.");
+    }
     result.logs.append(QString("JSON erfolgreich extrahiert: %1").arg(configString(config, "path").isEmpty() ? "<root>" : configString(config, "path")));
     return result;
 }
@@ -2826,9 +3038,10 @@ ToolExecutionResult ToolExecutor::executeMemoryDeleteOld(const ToolExecutionRequ
     return result;
 }
 
-ToolExecutionResult ToolExecutor::executeVariablesSet(const QJsonObject& config) const
+ToolExecutionResult ToolExecutor::executeVariablesSet(const ToolExecutionRequest& request) const
 {
     ToolExecutionResult result;
+    const QJsonObject& config = request.config;
 
     const QString variableName = configString(config, "name");
     if (variableName.isEmpty()) {
@@ -2843,80 +3056,231 @@ ToolExecutionResult ToolExecutor::executeVariablesSet(const QJsonObject& config)
         return result;
     }
 
-    const QString operation = configString(config, "operation").toLower().isEmpty()
-        ? "set"
-        : configString(config, "operation").toLower();
-    QString valueType = configString(config, "value_type").toLower();
-    if (valueType.isEmpty()) {
-        valueType = operation == "increment" ? "int" : "string";
-    }
-
-    if (valueType != "string" && valueType != "int") {
+    const QString scope = configString(config, "scope").toLower().isEmpty()
+        ? "run"
+        : configString(config, "scope").toLower();
+    if (scope != "run" && scope != "project") {
         result.errorMessage = QString(
-            "Tool 'variables.set' kennt nur value_type 'string' oder 'int', nicht '%1'."
-        ).arg(valueType);
+            "Tool 'variables.set' kennt nur scope 'run' oder 'project', nicht '%1'."
+        ).arg(scope);
         return result;
     }
 
-    if (operation == "set") {
-        if (valueType == "int") {
-            qlonglong parsedInteger = 0;
-            if (!parseIntegerValue(config.value("value"), &parsedInteger)) {
-                result.errorMessage = QString(
-                    "Tool 'variables.set' konnte den Integer-Wert fuer '%1' nicht lesen."
-                ).arg(variableName);
-                return result;
-            }
+    const QString operation = configString(config, "operation").toLower().isEmpty()
+        ? "set"
+        : configString(config, "operation").toLower();
+    const QString rawValueType = configString(config, "value_type");
+    QString valueType = services::ProjectVariableService::normalizeValueType(rawValueType);
+    if (!rawValueType.trimmed().isEmpty() && valueType.isEmpty()) {
+        result.errorMessage = QString(
+            "Tool 'variables.set' kennt nur value_type 'string', 'int' oder 'float', nicht '%1'."
+        ).arg(rawValueType);
+        return result;
+    }
 
-            result.outputText = QString::number(parsedInteger);
-            result.outputVariables.insert(variableName, result.outputText);
+    ScopedSqliteConnection connection;
+    if (scope == "project") {
+        if (!openSqliteConnection(m_databasePath, "project_variables", &connection, &result.errorMessage)) {
+            return result;
+        }
+        if (request.projectId <= 0) {
+            result.errorMessage = "Tool 'variables.set' braucht fuer scope 'project' ein gueltiges Projekt.";
+            return result;
+        }
+    }
+
+    ProjectVariableRecord existingProjectVariable;
+    if (scope == "project") {
+        if (!loadProjectVariableRecord(
+                connection.database,
+                request.projectId,
+                variableName,
+                &existingProjectVariable,
+                &result.errorMessage
+            )) {
+            return result;
+        }
+    }
+
+    if (valueType.isEmpty()) {
+        if (operation == "increment" && existingProjectVariable.found) {
+            valueType = services::ProjectVariableService::normalizeValueType(existingProjectVariable.valueType);
+        }
+        if (valueType.isEmpty()) {
+            valueType = operation == "increment" ? "int" : "string";
+        }
+    }
+
+    const auto applyResultVariables = [&](const QString& outputValue) {
+        result.outputText = outputValue;
+        result.outputVariables.insert(variableName, outputValue);
+        if (scope == "project") {
+            result.outputVariables.insert(QString("project_var.%1").arg(variableName), outputValue);
+            result.outputVariables.insert(QString("project_var_type.%1").arg(variableName), valueType);
+        }
+    };
+
+    if (operation == "set") {
+        QString normalizedValue;
+        if (valueType == "string") {
+            normalizedValue = rawConfigString(config, "value");
+        } else if (!services::ProjectVariableService::normalizeValueForType(
+                       valueType,
+                       jsonValueText(config.value("value")),
+                       &normalizedValue,
+                       &result.errorMessage
+                   )) {
+            result.errorMessage = QString(
+                "Tool 'variables.set' konnte den Wert fuer '%1' nicht lesen: %2"
+            ).arg(variableName, result.errorMessage);
+            return result;
+        }
+
+        if (scope == "project"
+            && !upsertProjectVariableRecord(
+                connection.database,
+                request.projectId,
+                variableName,
+                valueType,
+                normalizedValue,
+                &result.errorMessage
+            )) {
+            return result;
+        }
+
+        applyResultVariables(normalizedValue);
+        if (scope == "project") {
             result.logs.append(
-                QString("Integer-Variable '%1' wurde auf %2 gesetzt.").arg(variableName, result.outputText)
+                QString("Projektvariable '%1' (%2) wurde auf %3 gesetzt.")
+                    .arg(variableName, valueType, previewText(result.outputText))
             );
-        } else {
-            result.outputText = rawConfigString(config, "value");
-            result.outputVariables.insert(variableName, result.outputText);
+        } else if (valueType == "string") {
             result.logs.append(
                 QString("String-Variable '%1' wurde gesetzt (%2 Zeichen).")
                     .arg(variableName)
                     .arg(result.outputText.size())
             );
+        } else {
+            result.logs.append(
+                QString("%1-Variable '%2' wurde auf %3 gesetzt.")
+                    .arg(valueType.toUpper(), variableName, result.outputText)
+            );
         }
-
         result.success = true;
         return result;
     }
 
     if (operation == "increment") {
-        qlonglong currentValue = 0;
-        if (config.contains("current_value") && !config.value("current_value").toString().trimmed().isEmpty()) {
-            if (!parseIntegerValue(config.value("current_value"), &currentValue)) {
+        if (valueType == "string") {
+            result.errorMessage = "Tool 'variables.set' unterstuetzt increment nur fuer int oder float.";
+            return result;
+        }
+
+        QString currentValueText;
+        const QString configuredCurrentValue = rawConfigString(config, "current_value");
+        if (!configuredCurrentValue.trimmed().isEmpty()) {
+            currentValueText = configuredCurrentValue;
+        } else if (existingProjectVariable.found) {
+            const QString existingType = services::ProjectVariableService::normalizeValueType(existingProjectVariable.valueType);
+            if (!existingType.isEmpty() && existingType != valueType) {
                 result.errorMessage = QString(
-                    "Tool 'variables.set' konnte current_value fuer '%1' nicht als Integer lesen."
+                    "Tool 'variables.set' kann '%1' nicht als %2 inkrementieren, weil die Projektvariable als %3 gespeichert ist."
+                ).arg(variableName, valueType, existingType);
+                return result;
+            }
+            currentValueText = existingProjectVariable.valueText;
+        }
+
+        if (valueType == "int") {
+            qlonglong currentValue = 0;
+            if (!currentValueText.trimmed().isEmpty()) {
+                if (!parseIntegerValue(QJsonValue(currentValueText), &currentValue)) {
+                    result.errorMessage = QString(
+                        "Tool 'variables.set' konnte current_value fuer '%1' nicht als Integer lesen."
+                    ).arg(variableName);
+                    return result;
+                }
+            }
+
+            qlonglong amount = 1;
+            if (config.contains("amount")) {
+                if (!parseIntegerValue(config.value("amount"), &amount)) {
+                    result.errorMessage = QString(
+                        "Tool 'variables.set' konnte amount fuer '%1' nicht als Integer lesen."
+                    ).arg(variableName);
+                    return result;
+                }
+            }
+
+            const qlonglong nextValue = currentValue + amount;
+            const QString outputValue = QString::number(nextValue);
+            if (scope == "project"
+                && !upsertProjectVariableRecord(
+                    connection.database,
+                    request.projectId,
+                    variableName,
+                    valueType,
+                    outputValue,
+                    &result.errorMessage
+                )) {
+                return result;
+            }
+
+            applyResultVariables(outputValue);
+            result.logs.append(
+                QString("%1 '%2' wurde von %3 um %4 auf %5 erhoeht.")
+                    .arg(scope == "project" ? "Projektvariable" : "Integer-Variable")
+                    .arg(variableName)
+                    .arg(currentValue)
+                    .arg(amount)
+                    .arg(nextValue)
+            );
+            result.success = true;
+            return result;
+        }
+
+        double currentValue = 0.0;
+        if (!currentValueText.trimmed().isEmpty()) {
+            if (!parseDoubleValue(QJsonValue(currentValueText), &currentValue)) {
+                result.errorMessage = QString(
+                    "Tool 'variables.set' konnte current_value fuer '%1' nicht als Float lesen."
                 ).arg(variableName);
                 return result;
             }
         }
 
-        qlonglong amount = 1;
+        double amount = 1.0;
         if (config.contains("amount")) {
-            if (!parseIntegerValue(config.value("amount"), &amount)) {
+            if (!parseDoubleValue(config.value("amount"), &amount)) {
                 result.errorMessage = QString(
-                    "Tool 'variables.set' konnte amount fuer '%1' nicht als Integer lesen."
+                    "Tool 'variables.set' konnte amount fuer '%1' nicht als Float lesen."
                 ).arg(variableName);
                 return result;
             }
         }
 
-        const qlonglong nextValue = currentValue + amount;
-        result.outputText = QString::number(nextValue);
-        result.outputVariables.insert(variableName, result.outputText);
+        const double nextValue = currentValue + amount;
+        const QString outputValue = valueTextFromDouble(nextValue);
+        if (scope == "project"
+            && !upsertProjectVariableRecord(
+                connection.database,
+                request.projectId,
+                variableName,
+                valueType,
+                outputValue,
+                &result.errorMessage
+            )) {
+            return result;
+        }
+
+        applyResultVariables(outputValue);
         result.logs.append(
-            QString("Integer-Variable '%1' wurde von %2 um %3 auf %4 erhoeht.")
+            QString("%1 '%2' wurde von %3 um %4 auf %5 erhoeht.")
+                .arg(scope == "project" ? "Projektvariable" : "Float-Variable")
                 .arg(variableName)
                 .arg(currentValue)
                 .arg(amount)
-                .arg(nextValue)
+                .arg(outputValue)
         );
         result.success = true;
         return result;

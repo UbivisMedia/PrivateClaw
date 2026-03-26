@@ -36,14 +36,18 @@ Datei:
 
 Zweck:
 
-- restauriert Kapitel- und Szenenstand aus einem Fortschritts-Memory
+- nutzt projektweite Variablen fuer Kapitel- und Szenenstand statt diese ueber KI wieder aus Memories auszulesen
 - nutzt `variables.set` fuer Titel, Dateipfade, Labels und Zaehler
 - bootstrappt Hauptcharakter-Memories nur dann, wenn noch keine vorhanden sind
-- schreibt eine neue Szene und exportiert sie als Markdown-Datei
-- legt bei Bedarf gezielte Update-Memories fuer Nebencharaktere, Orte und plotrelevante Ereignisse an
-- speichert am Ende den naechsten Kapitel-/Szenenstand wieder als Fortschritts-Memory
+- nutzt `workflow.foreach`, um Hauptfiguren einzeln auszuarbeiten und gezielt als Character-Memories zu speichern
+- plant Szenenbeats als JSON und schreibt die Szene absatzweise ueber einen zweiten `workflow.foreach`
+- legt neue Nebencharaktere, Orte und plotrelevante Ereignisse gezielt als einzelne Memories an
+- aktualisiert den naechsten Kapitel-/Szenenstand direkt als persistente Projektvariable
 
 Hinweis:
 
-Der Workflow legt Erinnerungen fuer neue Figuren, Orte und Ereignisse als kategorisierte Update-Notizen an.
-Solange es noch keine Schleifen oder Foreach-Schritte gibt, ist das der robusteste Weg, mehrere neue Entitaeten in einem Run gesammelt festzuhalten.
+Der Workflow zeigt den neuen `workflow.foreach`-MVP in drei typischen Schreibprojekt-Faellen:
+
+- Figurenlisten in einzelne Character-Memories aufteilen
+- Szenen in Beats oder Absaetze zerlegen und wieder zusammensetzen
+- neue Entitaeten wie Nebencharaktere, Orte und Ereignisse einzeln persistieren

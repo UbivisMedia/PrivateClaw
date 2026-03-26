@@ -1,5 +1,6 @@
 #include "ui/MemoryPanel.h"
 
+#include "ui/CollapsibleCard.h"
 #include "services/MemoryService.h"
 #include "services/ProjectService.h"
 
@@ -70,73 +71,59 @@ void MemoryPanel::buildUi()
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
 
-    auto* infoCard = new QFrame(this);
-    infoCard->setProperty("panelCard", true);
-    auto* infoLayout = new QVBoxLayout(infoCard);
-    auto* infoTitle = new QLabel("Projekt-Erinnerung", infoCard);
-    infoTitle->setProperty("sectionTitle", true);
-
+    const CollapsibleCardParts infoCard = createCollapsibleCard(this, "Projekt-Erinnerung", true);
+    auto* infoLayout = infoCard.bodyLayout;
     auto* infoBody = new QLabel(
         "Hier werden projektbezogene Fakten, Notizen, Entscheidungen und Kontextbausteine gespeichert. "
         "Angepinnte Eintraege werden bei Workflow-Runs bevorzugt beruecksichtigt, waehrend aeltere Inhalte "
         "automatisch verdichtet in den Kontext einfliessen koennen.",
-        infoCard
+        infoCard.bodyFrame
     );
     infoBody->setWordWrap(true);
     infoBody->setProperty("sectionBody", true);
 
-    infoLayout->addWidget(infoTitle);
     infoLayout->addWidget(infoBody);
 
     auto* contentSplitter = new QSplitter(Qt::Horizontal, this);
 
-    auto* listCard = new QFrame(contentSplitter);
-    listCard->setProperty("panelCard", true);
-    auto* listLayout = new QVBoxLayout(listCard);
-    auto* listTitle = new QLabel("Memory-Eintraege", listCard);
-    listTitle->setProperty("sectionTitle", true);
-
+    const CollapsibleCardParts listCard = createCollapsibleCard(contentSplitter, "Memory-Eintraege", true);
+    auto* listLayout = listCard.bodyLayout;
     auto* listBody = new QLabel(
         "Die Liste wird nach Relevanz und Aktualitaet sortiert. Suche filtert Inhalt, Quelle, Typ und Tags.",
-        listCard
+        listCard.bodyFrame
     );
     listBody->setProperty("sectionBody", true);
     listBody->setWordWrap(true);
 
-    m_projectCombo = new QComboBox(listCard);
-    m_searchEdit = new QLineEdit(listCard);
+    m_projectCombo = new QComboBox(listCard.bodyFrame);
+    m_searchEdit = new QLineEdit(listCard.bodyFrame);
     m_searchEdit->setPlaceholderText("Eintraege durchsuchen");
-    m_entryCountLabel = new QLabel("0 Eintraege", listCard);
+    m_entryCountLabel = new QLabel("0 Eintraege", listCard.bodyFrame);
     m_entryCountLabel->setProperty("sectionBody", true);
 
-    m_entryList = new QListWidget(listCard);
+    m_entryList = new QListWidget(listCard.bodyFrame);
     m_entryList->setAlternatingRowColors(true);
 
     auto* listActions = new QHBoxLayout();
-    auto* refreshButton = new QPushButton("Liste aktualisieren", listCard);
-    auto* newButton = new QPushButton("Neuer Eintrag", listCard);
+    auto* refreshButton = new QPushButton("Liste aktualisieren", listCard.bodyFrame);
+    auto* newButton = new QPushButton("Neuer Eintrag", listCard.bodyFrame);
     listActions->addWidget(refreshButton);
     listActions->addWidget(newButton);
     listActions->addStretch();
 
-    listLayout->addWidget(listTitle);
     listLayout->addWidget(listBody);
-    listLayout->addWidget(new QLabel("Projekt", listCard));
+    listLayout->addWidget(new QLabel("Projekt", listCard.bodyFrame));
     listLayout->addWidget(m_projectCombo);
     listLayout->addWidget(m_searchEdit);
     listLayout->addWidget(m_entryCountLabel);
     listLayout->addWidget(m_entryList, 1);
     listLayout->addLayout(listActions);
 
-    auto* editorCard = new QFrame(contentSplitter);
-    editorCard->setProperty("panelCard", true);
-    auto* editorLayout = new QVBoxLayout(editorCard);
-    auto* editorTitle = new QLabel("Eintrag bearbeiten", editorCard);
-    editorTitle->setProperty("sectionTitle", true);
-
+    const CollapsibleCardParts editorCard = createCollapsibleCard(contentSplitter, "Eintrag bearbeiten", true);
+    auto* editorLayout = editorCard.bodyLayout;
     auto* editorBody = new QLabel(
         "Jeder Eintrag bleibt einem Projekt zugeordnet und kann spaeter von Workflows als Erinnerungskontext genutzt werden.",
-        editorCard
+        editorCard.bodyFrame
     );
     editorBody->setProperty("sectionBody", true);
     editorBody->setWordWrap(true);
@@ -144,23 +131,23 @@ void MemoryPanel::buildUi()
     auto* formLayout = new QFormLayout();
     formLayout->setLabelAlignment(Qt::AlignLeft);
 
-    m_typeCombo = new QComboBox(editorCard);
+    m_typeCombo = new QComboBox(editorCard.bodyFrame);
     m_typeCombo->setEditable(true);
     m_typeCombo->addItems({ "note", "fact", "decision", "context", "todo" });
 
-    m_sourceEdit = new QLineEdit(editorCard);
+    m_sourceEdit = new QLineEdit(editorCard.bodyFrame);
     m_sourceEdit->setPlaceholderText("z. B. Meeting, Ticket #12, Handnotiz");
 
-    m_tagsEdit = new QLineEdit(editorCard);
+    m_tagsEdit = new QLineEdit(editorCard.bodyFrame);
     m_tagsEdit->setPlaceholderText("Tags mit Komma trennen");
 
-    m_relevanceSpin = new QSpinBox(editorCard);
+    m_relevanceSpin = new QSpinBox(editorCard.bodyFrame);
     m_relevanceSpin->setRange(0, 100);
     m_relevanceSpin->setValue(50);
 
-    m_pinnedCheckBox = new QCheckBox("Wichtige Erinnerung anpinnen", editorCard);
+    m_pinnedCheckBox = new QCheckBox("Wichtige Erinnerung anpinnen", editorCard.bodyFrame);
 
-    m_createdAtLabel = new QLabel("Noch nicht gespeichert", editorCard);
+    m_createdAtLabel = new QLabel("Noch nicht gespeichert", editorCard.bodyFrame);
     m_createdAtLabel->setProperty("sectionBody", true);
 
     formLayout->addRow("Typ", m_typeCombo);
@@ -170,25 +157,24 @@ void MemoryPanel::buildUi()
     formLayout->addRow("", m_pinnedCheckBox);
     formLayout->addRow("Erstellt", m_createdAtLabel);
 
-    auto* contentLabel = new QLabel("Inhalt", editorCard);
+    auto* contentLabel = new QLabel("Inhalt", editorCard.bodyFrame);
     contentLabel->setProperty("sectionBody", true);
 
-    m_contentEdit = new QPlainTextEdit(editorCard);
+    m_contentEdit = new QPlainTextEdit(editorCard.bodyFrame);
     m_contentEdit->setMinimumHeight(320);
     m_contentEdit->setPlaceholderText("Wichtige Projektinformationen, Entscheidungen oder offene Punkte");
 
     auto* editorActions = new QHBoxLayout();
-    auto* saveButton = new QPushButton("Eintrag speichern", editorCard);
-    auto* deleteButton = new QPushButton("Eintrag loeschen", editorCard);
+    auto* saveButton = new QPushButton("Eintrag speichern", editorCard.bodyFrame);
+    auto* deleteButton = new QPushButton("Eintrag loeschen", editorCard.bodyFrame);
     editorActions->addWidget(saveButton);
     editorActions->addWidget(deleteButton);
     editorActions->addStretch();
 
-    m_feedbackLabel = new QLabel(editorCard);
+    m_feedbackLabel = new QLabel(editorCard.bodyFrame);
     m_feedbackLabel->setProperty("sectionBody", true);
     m_feedbackLabel->setWordWrap(true);
 
-    editorLayout->addWidget(editorTitle);
     editorLayout->addWidget(editorBody);
     editorLayout->addLayout(formLayout);
     editorLayout->addWidget(contentLabel);
@@ -199,7 +185,7 @@ void MemoryPanel::buildUi()
     contentSplitter->setStretchFactor(0, 3);
     contentSplitter->setStretchFactor(1, 5);
 
-    layout->addWidget(infoCard);
+    layout->addWidget(infoCard.frame);
     layout->addWidget(contentSplitter, 1);
 
     connect(refreshButton, &QPushButton::clicked, this, [this]() {

@@ -5,6 +5,7 @@
 #include "providers/ProviderManager.h"
 #include "services/MemoryService.h"
 #include "services/ProjectService.h"
+#include "services/ProjectVariableService.h"
 #include "services/RunService.h"
 #include "services/ScheduleService.h"
 #include "services/SecretsService.h"
@@ -35,6 +36,7 @@ private:
     services::SettingsService m_settingsService;
     providers::ProviderManager m_providerManager;
     services::ProjectService m_projectService;
+    services::ProjectVariableService m_projectVariableService;
     services::WorkflowService m_workflowService;
     services::MemoryService m_memoryService;
     services::SecretsService m_secretsService;

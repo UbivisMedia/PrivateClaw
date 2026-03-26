@@ -17,6 +17,7 @@ Aktuell verfuegbare Tools:
 - `memory.summarize`
 - `memory.delete_old`
 - `variables.set`
+- `workflow.foreach`
 - `memory.ingest_directory`
 - `file.write_text`
 - `file.edit_diff`
@@ -500,10 +501,12 @@ Hohe Relevanz oder die neuesten Eintraege koennen geschuetzt werden.
 ## `variables.set`
 
 Legt Laufvariablen fuer den aktuellen Workflow an oder ueberschreibt sie.
+Mit `scope: "project"` kann dasselbe Tool Variablen jetzt auch projektweit persistent in SQLite speichern.
 Das ist besonders praktisch fuer Titel, Dateipfade, Labels und Zaehler wie `kapitel_nummer`.
 
 ### Wichtige Felder
 
+- `scope`
 - `name`
 - `value_type`
 - `operation`
@@ -516,16 +519,23 @@ Das ist besonders praktisch fuer Titel, Dateipfade, Labels und Zaehler wie `kapi
 
 - `string`
 - `int`
+- `float`
 
 ### Werte fuer `operation`
 
 - `set`
 - `increment`
 
+### Werte fuer `scope`
+
+- `run`
+- `project`
+
 ### Hinweise
 
 - Das Tool aktualisiert die benannte Variable direkt im aktuellen Run, nicht nur die `output`-Variable.
-- Integer werden intern weiterhin als Textvariable gespeichert, koennen aber in Decisions numerisch verglichen werden.
+- Bei `scope: "project"` steht der Wert in spaeteren Laeufen automatisch als `{{project_var.name}}` bereit und meist auch direkt als `{{name}}`.
+- Integer und Floats werden intern weiterhin als Textvariable gespeichert, koennen aber in Decisions numerisch verglichen werden.
 - Fuer Zaehler ist `increment` meist bequemer als ein neuer Prompt oder ein JSON-Hilfsschritt.
 
 ### Beispiel
@@ -536,12 +546,82 @@ Das ist besonders praktisch fuer Titel, Dateipfade, Labels und Zaehler wie `kapi
   "type": "tool",
   "config": {
     "tool": "variables.set",
+    "scope": "project",
     "name": "szenen_nummer",
     "value_type": "int",
     "operation": "increment",
     "current_value": "{{szenen_nummer}}",
     "amount": 1,
     "output": "szenen_nummer_status"
+  }
+}
+```
+
+## `workflow.foreach`
+
+Fuehrt eine Liste von Items ueber eine eingebettete Unter-Schrittfolge aus.
+Das Tool ist ideal fuer Figurenlisten, Szenenbeats, extrahierte Entitaeten oder andere JSON-Arrays, die einzeln weiterverarbeitet werden sollen.
+
+### Wichtige Felder
+
+- `items`
+- `item_var`
+- `index_var`
+- `steps`
+- `result_mode`
+- `result_source`
+- `result_var`
+- `join_with`
+- `max_iterations`
+- `on_error`
+- `output`
+
+### Verhalten
+
+- `items` kann ein echtes JSON-Array, ein JSON-String, eine komma- oder zeilengetrennte Liste oder eine Variable wie `{{last_response}}` sein.
+- Pro Iteration stehen `{{loop_item}}`, `{{loop_index}}`, `{{loop_first}}`, `{{loop_last}}`, `{{loop_count}}` und `{{loop_prev_output}}` bereit.
+- Wenn ein Item ein JSON-Objekt ist, werden seine Felder zusaetzlich als Punkt-Variablen verfuegbar, zum Beispiel `{{figur.name}}` oder `{{loop_item.name}}`.
+- `steps` ist ein JSON-Array normaler Workflow-Schritte wie `prompt`, `tool`, `save_memory` oder `decision`.
+- `result_mode: "text_joined"` fuehrt Iterationsergebnisse zu Text zusammen, `json_array` sammelt sie als JSON-Array.
+- `on_error: "continue"` setzt eine fehlgeschlagene Iteration zurueck und macht mit dem naechsten Item weiter.
+
+### Beispiel
+
+```json
+{
+  "id": "arbeite_figuren_aus",
+  "type": "tool",
+  "config": {
+    "tool": "workflow.foreach",
+    "items": "{{figuren_json}}",
+    "item_var": "figur",
+    "index_var": "figur_index",
+    "result_mode": "text_joined",
+    "result_source": "{{figur_detail}}",
+    "join_with": "\n\n",
+    "max_iterations": 12,
+    "on_error": "abort",
+    "output": "figuren_dossier",
+    "steps": [
+      {
+        "id": "detail_prompt",
+        "type": "prompt",
+        "config": {
+          "prompt": "Arbeite diese Figur aus: {{figur.name}}",
+          "output": "figur_detail"
+        }
+      },
+      {
+        "id": "save_figur",
+        "type": "save_memory",
+        "config": {
+          "content": "{{figur_detail}}",
+          "entry_type": "character",
+          "tags": "roman,figur,{{figur.name}}",
+          "relevance": 85
+        }
+      }
+    ]
   }
 }
 ```
@@ -838,6 +918,7 @@ Zusaetzlich je nach Modus:
 - Nutze `memory.summarize` und `memory.delete_old`, um dein Projektgedaechtnis regelmaessig schlank zu halten.
 - Nutze `memory.ingest_directory`, wenn du Projektwissen langfristig aufbauen willst.
 - Nutze `variables.set` fuer lesbare Laufvariablen wie Kapitelzaehler, Statuslabels oder exportierte Dateipfade.
+- Nutze `workflow.foreach`, wenn eine JSON-Liste oder eine Modellantwort in einzelne Unter-Schritte zerlegt werden soll.
 - Nutze `file.write_text` fuer klar definierte Zielartefakte statt Antworten nur im Run-Log zu lassen.
 - Verwende `file.edit_diff` statt unstrukturierter Dateischreibaktionen.
 - Nutze `http.request` fuer einfache API-Anbindungen, wenn dafuer noch kein spezialisiertes Tool existiert.

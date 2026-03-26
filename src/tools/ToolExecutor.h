@@ -69,7 +69,7 @@ private:
     ToolExecutionResult executeMemorySummarize(const ToolExecutionRequest& request) const;
     ToolExecutionResult executeMemoryDeleteOld(const ToolExecutionRequest& request) const;
     ToolExecutionResult executeMemoryIngestDirectory(const ToolExecutionRequest& request) const;
-    ToolExecutionResult executeVariablesSet(const QJsonObject& config) const;
+    ToolExecutionResult executeVariablesSet(const ToolExecutionRequest& request) const;
     ToolExecutionResult executeFileWriteText(const QJsonObject& config) const;
     ToolExecutionResult executeFileEditDiff(const QJsonObject& config) const;
     ToolExecutionResult executeHttpRequest(const QJsonObject& config) const;

@@ -13,6 +13,7 @@ namespace privateclaw::app {
 ApplicationBootstrap::ApplicationBootstrap()
     : m_databaseManager("privateclaw-main")
     , m_projectService(m_databaseManager)
+    , m_projectVariableService(m_databaseManager)
     , m_workflowService(m_databaseManager)
     , m_memoryService(m_databaseManager)
     , m_runService(m_databaseManager)
@@ -48,6 +49,7 @@ bool ApplicationBootstrap::initialize(QString* errorMessage)
         m_databaseManager,
         m_settingsService,
         m_projectService,
+        m_projectVariableService,
         m_memoryService,
         m_secretsService,
         m_workflowService,
