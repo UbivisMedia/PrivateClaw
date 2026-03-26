@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(PrivateClaw
-    VERSION 0.1.2.1
+    VERSION 0.1.2.3
     DESCRIPTION "Desktop app for project-based LLM automation"
     LANGUAGES CXX
 )
@@ -89,6 +89,8 @@ set(PRIVATECLAW_SOURCES
     src/ui/ExecutionApproval.h
     src/utils/Logger.cpp
     src/utils/Logger.h
+    src/utils/ModelResponseSanitizer.h
+    src/utils/PersistenceGuards.h
     resources/resources.qrc
 )
 

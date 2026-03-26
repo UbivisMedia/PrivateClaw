@@ -5,10 +5,13 @@
 #include "domain/Workflow.h"
 #include "services/ComfyUiMetadataService.h"
 
+#include <QHash>
 #include <QJsonObject>
 #include <QWidget>
 
+#include <atomic>
 #include <functional>
+#include <memory>
 
 class QCheckBox;
 class QComboBox;
@@ -78,6 +81,7 @@ private:
     void loadWorkflowFromRow(int row);
     void saveWorkflow();
     void executeWorkflow(bool debugRequested = false);
+    void cancelActiveExecution();
     void updateExecutionStatus();
     void updateVisualEditorVisibility();
     void startNewWorkflow();
@@ -145,6 +149,8 @@ private:
     int m_nextExecutionId = 1;
     int m_executionStatusFrame = 0;
     QString m_activeExecutionDetail;
+    QList<int> m_activeExecutionOrder;
+    QHash<int, std::shared_ptr<std::atomic_bool>> m_executionCancelFlags;
     std::function<void()> m_onWorkflowDataChanged;
     std::function<void()> m_onRunDataChanged;
     std::function<void()> m_onSettingsDataChanged;
@@ -343,6 +349,7 @@ private:
     QPlainTextEdit* m_executionOutputView = nullptr;
     QCheckBox* m_activeCheckBox = nullptr;
     QLabel* m_executionStatusLabel = nullptr;
+    QPushButton* m_cancelRunButton = nullptr;
     QLabel* m_feedbackLabel = nullptr;
     QTimer* m_executionStatusTimer = nullptr;
     QTimer* m_visualSyncTimer = nullptr;

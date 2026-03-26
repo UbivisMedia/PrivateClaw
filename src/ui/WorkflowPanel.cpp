@@ -100,6 +100,11 @@ struct WorkflowGraphEdge
     qreal bendOffset = 0.0;
 };
 
+bool isCancellationRequested(const std::shared_ptr<std::atomic_bool>& cancelFlag)
+{
+    return cancelFlag != nullptr && cancelFlag->load(std::memory_order_relaxed);
+}
+
 QString defaultWorkflowJson()
 {
     return QString::fromUtf8(
@@ -1032,16 +1037,22 @@ core::ExecutionResult executeWorkflowWithProvider(
     const core::ExecutionCallbacks& callbacks
 )
 {
-    const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl, databasePath, allowedToolPaths);
+    const tools::ToolExecutor toolExecutor(
+        workspaceRoot,
+        comfyUiBaseUrl,
+        databasePath,
+        allowedToolPaths,
+        callbacks.shouldCancel
+    );
     core::WorkflowEngine workflowEngine(&toolExecutor);
 
     if (providerName.compare("Ollama", Qt::CaseInsensitive) == 0) {
-        providers::OllamaProvider provider(providerBaseUrl);
+        providers::OllamaProvider provider(providerBaseUrl, callbacks.shouldCancel);
         return workflowEngine.executeWorkflow(workflow, runContext, provider, callbacks);
     }
 
     if (providerName.compare("LM Studio", Qt::CaseInsensitive) == 0) {
-        providers::LmStudioProvider provider(providerBaseUrl);
+        providers::LmStudioProvider provider(providerBaseUrl, callbacks.shouldCancel);
         return workflowEngine.executeWorkflow(workflow, runContext, provider, callbacks);
     }
 
@@ -2170,6 +2181,8 @@ void WorkflowPanel::buildUi()
     auto* saveButton = new QPushButton("Workflow speichern", editorCard);
     auto* runButton = new QPushButton("Workflow ausfuehren", editorCard);
     auto* debugRunButton = new QPushButton("Debug-Ausfuehrung", editorCard);
+    m_cancelRunButton = new QPushButton("Aktiven Lauf abbrechen", editorCard);
+    m_cancelRunButton->setEnabled(false);
     auto* resetButton = new QPushButton("Editor zuruecksetzen", editorCard);
 
     m_debuggerToggle = new QCheckBox("Debugger anzeigen", editorCard);
@@ -2258,6 +2271,7 @@ void WorkflowPanel::buildUi()
     auto* runActions = new QHBoxLayout();
     runActions->addWidget(runButton);
     runActions->addWidget(debugRunButton);
+    runActions->addWidget(m_cancelRunButton);
     runActions->addStretch();
     runTabLayout->addLayout(runActions);
     m_editorTabs->addTab(runTabWidget, "Ausf\u00fchrung");
@@ -2295,6 +2309,10 @@ void WorkflowPanel::buildUi()
 
     connect(debugRunButton, &QPushButton::clicked, this, [this]() {
         executeWorkflow(true);
+    });
+
+    connect(m_cancelRunButton, &QPushButton::clicked, this, [this]() {
+        cancelActiveExecution();
     });
 
     connect(resetButton, &QPushButton::clicked, this, [this]() {
@@ -3179,7 +3197,10 @@ void WorkflowPanel::executeWorkflow(const bool debugRequested)
     }
 
     const int runId = m_nextExecutionId++;
-    ++m_activeRunCount;
+    const auto cancelFlag = std::make_shared<std::atomic_bool>(false);
+    m_activeExecutionOrder.append(runId);
+    m_executionCancelFlags.insert(runId, cancelFlag);
+    m_activeRunCount = m_activeExecutionOrder.size();
     m_executionStatusFrame = 0;
     m_activeExecutionDetail = debugRequested
         ? QString("Debug-Lauf #%1 wird vorbereitet").arg(runId)
@@ -3233,16 +3254,20 @@ void WorkflowPanel::executeWorkflow(const bool debugRequested)
             publishExecutionLog(QString("[run:%1] %2").arg(runId).arg(line));
         }, Qt::QueuedConnection);
     };
-    executionCallbacks.onStepStatus = [this, runId](const QString& stepId, const QString& statusText) {
-        QMetaObject::invokeMethod(this, [this, runId, stepId, statusText]() {
+    executionCallbacks.onStepStatus = [this, runId, cancelFlag](const QString& stepId, const QString& statusText) {
+        QMetaObject::invokeMethod(this, [this, runId, cancelFlag, stepId, statusText]() {
             Q_UNUSED(stepId);
-            m_activeExecutionDetail = QString("Lauf #%1 - %2").arg(runId).arg(statusText);
+            m_activeExecutionDetail = isCancellationRequested(cancelFlag)
+                ? QString("Lauf #%1 wird abgebrochen").arg(runId)
+                : QString("Lauf #%1 - %2").arg(runId).arg(statusText);
             updateExecutionStatus();
         }, Qt::QueuedConnection);
     };
-    executionCallbacks.onPromptChunk = [this, runId](const QString& stepId, const QString& chunk) {
-        QMetaObject::invokeMethod(this, [this, runId, stepId, chunk]() {
-            m_activeExecutionDetail = QString("Lauf #%1 - Schritt '%2' streamt").arg(runId).arg(stepId);
+    executionCallbacks.onPromptChunk = [this, runId, cancelFlag](const QString& stepId, const QString& chunk) {
+        QMetaObject::invokeMethod(this, [this, runId, cancelFlag, stepId, chunk]() {
+            m_activeExecutionDetail = isCancellationRequested(cancelFlag)
+                ? QString("Lauf #%1 wird abgebrochen").arg(runId)
+                : QString("Lauf #%1 - Schritt '%2' streamt").arg(runId).arg(stepId);
             updateExecutionStatus();
             if (m_onExecutionStreamChunk) {
                 m_onExecutionStreamChunk(
@@ -3256,126 +3281,156 @@ void WorkflowPanel::executeWorkflow(const bool debugRequested)
             publishExecutionLog(QString("[run:%1][step:%2][stream] %3").arg(runId).arg(stepId, chunk));
         }, Qt::QueuedConnection);
     };
+    executionCallbacks.shouldCancel = [cancelFlag]() {
+        return isCancellationRequested(cancelFlag);
+    };
 
     auto* watcher = new QFutureWatcher<core::ExecutionResult>(this);
-    connect(watcher, &QFutureWatcher<core::ExecutionResult>::finished, this, [this, watcher, runId, persistedRun, debugRequested]() mutable {
-        const core::ExecutionResult result = watcher->result();
-        watcher->deleteLater();
+    connect(
+        watcher,
+        &QFutureWatcher<core::ExecutionResult>::finished,
+        this,
+        [this, watcher, runId, persistedRun, debugRequested, cancelFlag]() mutable {
+            const core::ExecutionResult result = watcher->result();
+            watcher->deleteLater();
+            const bool interrupted = result.interrupted || isCancellationRequested(cancelFlag);
 
-        m_activeRunCount = qMax(0, m_activeRunCount - 1);
-        if (m_activeRunCount == 0) {
-            m_executionStatusTimer->stop();
-            m_activeExecutionDetail.clear();
-        } else {
-            m_activeExecutionDetail = QString("Letzter abgeschlossener Lauf: #%1").arg(runId);
-        }
+            m_executionCancelFlags.remove(runId);
+            m_activeExecutionOrder.removeAll(runId);
+            m_activeRunCount = m_activeExecutionOrder.size();
+            if (m_activeRunCount == 0) {
+                m_executionStatusTimer->stop();
+                m_activeExecutionDetail.clear();
+            } else if (interrupted) {
+                m_activeExecutionDetail = QString("Lauf #%1 wurde abgebrochen").arg(runId);
+            } else {
+                m_activeExecutionDetail = QString("Letzter abgeschlossener Lauf: #%1").arg(runId);
+            }
 
-        updateExecutionStatus();
-        m_executionOutputView->setPlainText(result.finalOutput);
-        m_lastDebugSteps = result.debugSteps;
-        rebuildDebugStepList();
-        if (m_debuggerStatusLabel != nullptr) {
-            m_debuggerStatusLabel->setText(
-                result.debugSteps.isEmpty()
-                    ? "Keine Schritt-Trace-Daten verfuegbar."
-                    : QString("%1 Schritt-Trace(s) aus Lauf #%2 geladen.")
-                          .arg(result.debugSteps.size())
-                          .arg(runId)
-            );
-        }
-        if (debugRequested && m_editorTabs != nullptr) {
-            m_editorTabs->setCurrentIndex(3);
-        }
+            updateExecutionStatus();
+            m_executionOutputView->setPlainText(result.finalOutput);
+            m_lastDebugSteps = result.debugSteps;
+            rebuildDebugStepList();
+            if (m_debuggerStatusLabel != nullptr) {
+                m_debuggerStatusLabel->setText(
+                    result.debugSteps.isEmpty()
+                        ? "Keine Schritt-Trace-Daten verfuegbar."
+                        : QString("%1 Schritt-Trace(s) aus Lauf #%2 geladen.")
+                              .arg(result.debugSteps.size())
+                              .arg(runId)
+                );
+            }
+            if (debugRequested && m_editorTabs != nullptr) {
+                m_editorTabs->setCurrentIndex(3);
+            }
 
-        int savedMemoryCount = 0;
-        bool memoryPersistenceFailed = false;
-        QString memoryPersistenceError;
-        for (domain::MemoryEntry entry : result.memoryEntriesToPersist) {
-            QString saveError;
-            if (!m_memoryService.saveEntry(&entry, &saveError)) {
-                memoryPersistenceFailed = true;
-                if (memoryPersistenceError.isEmpty()) {
-                    memoryPersistenceError = saveError;
+            int savedMemoryCount = 0;
+            bool memoryPersistenceFailed = false;
+            QString memoryPersistenceError;
+            if (!interrupted) {
+                for (domain::MemoryEntry entry : result.memoryEntriesToPersist) {
+                    QString saveError;
+                    if (!m_memoryService.saveEntry(&entry, &saveError)) {
+                        memoryPersistenceFailed = true;
+                        if (memoryPersistenceError.isEmpty()) {
+                            memoryPersistenceError = saveError;
+                        }
+                        publishExecutionLog(
+                            QString("[run:%1] Memory-Speichern fehlgeschlagen: %2")
+                                .arg(runId)
+                                .arg(saveError)
+                        );
+                        continue;
+                    }
+
+                    ++savedMemoryCount;
+                    QString preview = entry.content.simplified();
+                    if (preview.size() > 120) {
+                        preview = preview.left(117) + "...";
+                    }
+                    publishExecutionLog(
+                        QString("[run:%1] Memory-Eintrag gespeichert: %2")
+                            .arg(runId)
+                            .arg(preview)
+                    );
                 }
-                publishExecutionLog(
-                    QString("[run:%1] Memory-Speichern fehlgeschlagen: %2")
-                        .arg(runId)
-                        .arg(saveError)
-                );
-                continue;
             }
 
-            ++savedMemoryCount;
-            QString preview = entry.content.simplified();
-            if (preview.size() > 120) {
-                preview = preview.left(117) + "...";
-            }
-            publishExecutionLog(
-                QString("[run:%1] Memory-Eintrag gespeichert: %2")
-                    .arg(runId)
-                    .arg(preview)
+            persistedRun.status = interrupted ? "interrupted" : (result.success ? "completed" : "failed");
+            persistedRun.summary = summarizeRunText(
+                interrupted
+                    ? (result.errorMessage.trimmed().isEmpty()
+                        ? QString("Workflow wurde manuell abgebrochen.")
+                        : result.errorMessage)
+                    : result.success
+                    ? (!result.finalOutput.trimmed().isEmpty()
+                        ? result.finalOutput
+                        : QString("Workflow erfolgreich abgeschlossen."))
+                    : result.errorMessage
             );
-        }
-
-        persistedRun.status = result.success ? "completed" : "failed";
-        persistedRun.summary = summarizeRunText(
-            result.success
-                ? (!result.finalOutput.trimmed().isEmpty()
-                    ? result.finalOutput
-                    : QString("Workflow erfolgreich abgeschlossen."))
-                : result.errorMessage
-        );
-        persistedRun.outputText = result.finalOutput;
-        persistedRun.logText = result.logs.join('\n');
-        persistedRun.errorMessage = result.success ? QString() : result.errorMessage;
-        persistedRun.savedMemoryCount = savedMemoryCount;
-        persistedRun.finishedAt = QDateTime::currentDateTimeUtc();
-        if (persistedRun.id > 0) {
-            QString finishRunError;
-            if (!m_runService.finishRun(&persistedRun, &finishRunError)) {
-                publishExecutionLog(
-                    QString("[run:%1] Run-Historie konnte nicht abgeschlossen werden: %2")
-                        .arg(runId)
-                        .arg(finishRunError)
-                );
+            persistedRun.outputText = result.finalOutput;
+            persistedRun.logText = result.logs.join('\n');
+            persistedRun.errorMessage = (result.success && !interrupted) ? QString() : result.errorMessage;
+            persistedRun.savedMemoryCount = savedMemoryCount;
+            persistedRun.finishedAt = QDateTime::currentDateTimeUtc();
+            if (persistedRun.id > 0) {
+                QString finishRunError;
+                if (!m_runService.finishRun(&persistedRun, &finishRunError)) {
+                    publishExecutionLog(
+                        QString("[run:%1] Run-Historie konnte nicht abgeschlossen werden: %2")
+                            .arg(runId)
+                            .arg(finishRunError)
+                    );
+                }
             }
-        }
 
-        if (m_onRunDataChanged) {
-            m_onRunDataChanged();
-        }
+            if (m_onRunDataChanged) {
+                m_onRunDataChanged();
+            }
 
-        if (memoryPersistenceFailed && result.success) {
-            m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
+            if (interrupted) {
+                publishExecutionLog(QString("[run:%1] Workflow wurde manuell abgebrochen.").arg(runId));
+                m_feedbackLabel->setStyleSheet("color: #8b5e2f;");
+                m_feedbackLabel->setText(
+                    QString("%1 #%2 wurde manuell abgebrochen.")
+                        .arg(debugRequested ? "Debug-Ausfuehrung" : "Workflow-Ausfuehrung")
+                        .arg(runId)
+                );
+                return;
+            }
+
+            if (memoryPersistenceFailed && result.success) {
+                m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
+                m_feedbackLabel->setText(
+                    QString("%1 #%2 abgeschlossen, aber Memory konnte nicht vollstaendig gespeichert werden: %3")
+                        .arg(debugRequested ? "Debug-Ausfuehrung" : "Workflow-Ausfuehrung")
+                        .arg(runId)
+                        .arg(memoryPersistenceError)
+                );
+                return;
+            }
+
+            if (!result.success) {
+                m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
+                m_feedbackLabel->setText(
+                    QString("%1 #%2 fehlgeschlagen: %3")
+                        .arg(debugRequested ? "Debug-Ausfuehrung" : "Workflow-Ausfuehrung")
+                        .arg(runId)
+                        .arg(result.errorMessage)
+                );
+                return;
+            }
+
+            m_feedbackLabel->setStyleSheet("color: #2f6b3a;");
             m_feedbackLabel->setText(
-                QString("%1 #%2 abgeschlossen, aber Memory konnte nicht vollstaendig gespeichert werden: %3")
+                QString("%1 #%2 erfolgreich abgeschlossen. Letzte Ausgabezeichen: %3 | Memory: %4")
                     .arg(debugRequested ? "Debug-Ausfuehrung" : "Workflow-Ausfuehrung")
                     .arg(runId)
-                    .arg(memoryPersistenceError)
+                    .arg(result.finalOutput.size())
+                    .arg(savedMemoryCount)
             );
-            return;
         }
-
-        if (!result.success) {
-            m_feedbackLabel->setStyleSheet("color: #8b2f2f;");
-            m_feedbackLabel->setText(
-                QString("%1 #%2 fehlgeschlagen: %3")
-                    .arg(debugRequested ? "Debug-Ausfuehrung" : "Workflow-Ausfuehrung")
-                    .arg(runId)
-                    .arg(result.errorMessage)
-            );
-            return;
-        }
-
-        m_feedbackLabel->setStyleSheet("color: #2f6b3a;");
-        m_feedbackLabel->setText(
-            QString("%1 #%2 erfolgreich abgeschlossen. Letzte Ausgabezeichen: %3 | Memory: %4")
-                .arg(debugRequested ? "Debug-Ausfuehrung" : "Workflow-Ausfuehrung")
-                .arg(runId)
-                .arg(result.finalOutput.size())
-                .arg(savedMemoryCount)
-        );
-    });
+    );
 
     watcher->setFuture(QtConcurrent::run([workflow,
                                           runContext,
@@ -3406,6 +3461,24 @@ void WorkflowPanel::updateExecutionStatus()
         return;
     }
 
+    int pendingCancellationCount = 0;
+    for (const int executionId : std::as_const(m_activeExecutionOrder)) {
+        const auto cancelFlag = m_executionCancelFlags.value(executionId);
+        if (isCancellationRequested(cancelFlag)) {
+            ++pendingCancellationCount;
+        }
+    }
+
+    if (m_cancelRunButton != nullptr) {
+        const bool hasActiveRuns = !m_activeExecutionOrder.isEmpty();
+        m_cancelRunButton->setEnabled(hasActiveRuns);
+        m_cancelRunButton->setText(
+            m_activeExecutionOrder.size() > 1
+                ? "Letzten aktiven Lauf abbrechen"
+                : "Aktiven Lauf abbrechen"
+        );
+    }
+
     if (m_activeRunCount <= 0) {
         m_executionStatusLabel->setText("Status: Bereit.");
         return;
@@ -3413,7 +3486,12 @@ void WorkflowPanel::updateExecutionStatus()
 
     const QString dots((m_executionStatusFrame % 4) + 1, '.');
     ++m_executionStatusFrame;
-    const QString detail = m_activeExecutionDetail.trimmed();
+    QString detail = m_activeExecutionDetail.trimmed();
+    if (detail.isEmpty() && pendingCancellationCount > 0) {
+        detail = pendingCancellationCount == 1
+            ? "Abbruch angefordert"
+            : QString("%1 Abbrueche angefordert").arg(pendingCancellationCount);
+    }
 
     if (m_activeRunCount == 1) {
         m_executionStatusLabel->setText(
@@ -3429,6 +3507,39 @@ void WorkflowPanel::updateExecutionStatus()
             ? QString("Status: %1 aktive Laeufe - Modelle denken%2").arg(m_activeRunCount).arg(dots)
             : QString("Status: %1 aktive Laeufe - zuletzt: %2%3").arg(m_activeRunCount).arg(detail, dots)
     );
+}
+
+void WorkflowPanel::cancelActiveExecution()
+{
+    for (auto it = m_activeExecutionOrder.crbegin(); it != m_activeExecutionOrder.crend(); ++it) {
+        const int runId = *it;
+        const auto cancelFlag = m_executionCancelFlags.value(runId);
+        if (cancelFlag == nullptr || isCancellationRequested(cancelFlag)) {
+            continue;
+        }
+
+        cancelFlag->store(true, std::memory_order_relaxed);
+        m_activeExecutionDetail = QString("Lauf #%1 wird abgebrochen").arg(runId);
+        updateExecutionStatus();
+        if (m_feedbackLabel != nullptr) {
+            m_feedbackLabel->setStyleSheet("color: #8b5e2f;");
+            m_feedbackLabel->setText(
+                QString("Abbruch fuer Lauf #%1 angefordert. Der aktuelle Schritt wird jetzt beendet.")
+                    .arg(runId)
+            );
+        }
+        publishExecutionLog(QString("[run:%1] Manueller Abbruch angefordert.").arg(runId));
+        return;
+    }
+
+    if (m_feedbackLabel != nullptr) {
+        m_feedbackLabel->setStyleSheet("color: #8b5e2f;");
+        m_feedbackLabel->setText(
+            m_activeExecutionOrder.isEmpty()
+                ? "Es laeuft aktuell kein manueller Workflow-Lauf."
+                : "Fuer alle aktiven manuellen Laeufe wurde bereits ein Abbruch angefordert."
+        );
+    }
 }
 
 void WorkflowPanel::startNewWorkflow()

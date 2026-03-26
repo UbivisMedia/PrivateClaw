@@ -2,12 +2,14 @@
 
 #include "providers/ILlmProvider.h"
 
+#include <QHash>
+
 namespace privateclaw::providers {
 
 class LmStudioProvider : public ILlmProvider
 {
 public:
-    explicit LmStudioProvider(QString baseUrl);
+    explicit LmStudioProvider(QString baseUrl, std::function<bool()> shouldCancel = {});
 
     QString name() const override;
     QString baseUrl() const override;
@@ -20,6 +22,9 @@ public:
 
 private:
     QString m_baseUrl;
+    std::function<bool()> m_shouldCancel;
+    QHash<QString, int> m_contextLengthCache;
+    QHash<QString, int> m_maxContextLengthCache;
 };
 
 } // namespace privateclaw::providers

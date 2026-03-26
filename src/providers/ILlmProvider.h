@@ -19,6 +19,7 @@ struct ChatResponse
     bool success = false;
     QString text;
     QString errorMessage;
+    QStringList logs;
 };
 
 using ChatStreamCallback = std::function<void(const QString& chunk)>;

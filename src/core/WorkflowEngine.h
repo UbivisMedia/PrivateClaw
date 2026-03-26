@@ -47,6 +47,7 @@ struct WorkflowDebugStep
 struct ExecutionResult
 {
     bool success = false;
+    bool interrupted = false;
     QString errorMessage;
     QString finalOutput;
     QStringList logs;
@@ -60,6 +61,7 @@ struct ExecutionCallbacks
     std::function<void(const QString& line)> onLogLine;
     std::function<void(const QString& stepId, const QString& statusText)> onStepStatus;
     std::function<void(const QString& stepId, const QString& chunk)> onPromptChunk;
+    std::function<bool()> shouldCancel;
 };
 
 class WorkflowEngine

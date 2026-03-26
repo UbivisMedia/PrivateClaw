@@ -196,16 +196,22 @@ core::ExecutionResult executeWorkflowWithProvider(
     const core::ExecutionCallbacks& callbacks
 )
 {
-    const tools::ToolExecutor toolExecutor(workspaceRoot, comfyUiBaseUrl, databasePath, allowedToolPaths);
+    const tools::ToolExecutor toolExecutor(
+        workspaceRoot,
+        comfyUiBaseUrl,
+        databasePath,
+        allowedToolPaths,
+        callbacks.shouldCancel
+    );
     core::WorkflowEngine workflowEngine(&toolExecutor);
 
     if (providerName.compare("Ollama", Qt::CaseInsensitive) == 0) {
-        providers::OllamaProvider provider(providerBaseUrl);
+        providers::OllamaProvider provider(providerBaseUrl, callbacks.shouldCancel);
         return workflowEngine.executeWorkflow(workflow, runContext, provider, callbacks);
     }
 
     if (providerName.compare("LM Studio", Qt::CaseInsensitive) == 0) {
-        providers::LmStudioProvider provider(providerBaseUrl);
+        providers::LmStudioProvider provider(providerBaseUrl, callbacks.shouldCancel);
         return workflowEngine.executeWorkflow(workflow, runContext, provider, callbacks);
     }
 
@@ -363,7 +369,14 @@ void MainWindow::buildUi()
     m_memoryPanel->setOnMemoryDataChanged([this]() {
         updateStatusBar();
     });
-    m_runPanel = new RunPanel(m_projectService, m_workflowService, m_runService, m_pages);
+    m_runPanel = new RunPanel(
+        m_settingsService,
+        m_projectService,
+        m_memoryService,
+        m_workflowService,
+        m_runService,
+        m_pages
+    );
     m_schedulePanel = new SchedulePanel(
         m_projectService,
         m_workflowService,

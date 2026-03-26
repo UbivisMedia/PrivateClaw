@@ -47,7 +47,8 @@ Das untere `Run-Protokoll` zeigt Laufmeldungen, Fehler und Hintergrundstarts.
 ## Wichtige Hinweise
 
 - Automatische Zeitplaene laufen, solange die App selbst aktiv ist, bei verfuegbarem Tray auch im Hintergrund.
-- Prompt-Antworten werden automatisch von typischen Reasoning-Tags wie `<think>...</think>` bereinigt.
+- Prompt-Antworten werden automatisch von typischen Reasoning-Tags wie `<think>...</think>` und offensichtlichen Thinking-/Meta-Bloecken bereinigt.
+- Persistente Folgeschritte koennen zusaetzlich Guardrails wie `sanitize_before_persist`, `sanitize_before_write`, `skip_if_all_inputs_empty` und `fail_if_all_inputs_empty` nutzen.
 - Sichtbare Workflow-Ausgaben verwenden die bereinigte Antwort.
 - Extrahiertes Reasoning kann bei Bedarf separat ueber Variablen wie `{{last_reasoning}}` gespeichert werden.
 - Tool-Zugriffe auf Dateien und Verzeichnisse sind auf den konfigurierten Workspace ausgerichtet.

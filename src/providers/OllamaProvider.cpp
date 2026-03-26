@@ -17,6 +17,16 @@ namespace privateclaw::providers {
 
 namespace {
 
+QString manualCancellationMessage()
+{
+    return "Workflow wurde manuell abgebrochen.";
+}
+
+bool isCancellationRequested(const std::function<bool()>& shouldCancel)
+{
+    return static_cast<bool>(shouldCancel) && shouldCancel();
+}
+
 QUrl buildEndpoint(const QString& baseUrl, const QString& suffix)
 {
     QUrl url(baseUrl);
@@ -176,8 +186,9 @@ QString extractOllamaResponseText(const QJsonObject& root, bool* reasoningOpen)
 
 } // namespace
 
-OllamaProvider::OllamaProvider(QString baseUrl)
+OllamaProvider::OllamaProvider(QString baseUrl, std::function<bool()> shouldCancel)
     : m_baseUrl(std::move(baseUrl))
+    , m_shouldCancel(std::move(shouldCancel))
 {
 }
 
@@ -235,15 +246,41 @@ ChatResponse OllamaProvider::chat(const ChatRequest& request)
     networkRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
     QEventLoop loop;
+    QTimer cancelTimer;
+    bool cancelled = false;
 
     QNetworkReply* reply = networkManager.post(
         networkRequest,
         QJsonDocument(buildChatPayload(request, false)).toJson(QJsonDocument::Compact)
     );
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    if (m_shouldCancel) {
+        cancelTimer.setInterval(100);
+        cancelTimer.setSingleShot(false);
+        QObject::connect(&cancelTimer, &QTimer::timeout, &loop, [&]() {
+            if (!isCancellationRequested(m_shouldCancel)) {
+                return;
+            }
+
+            cancelled = true;
+            if (reply->isRunning()) {
+                reply->abort();
+            }
+            loop.quit();
+        });
+        cancelTimer.start();
+    }
     loop.exec();
+    if (cancelTimer.isActive()) {
+        cancelTimer.stop();
+    }
 
     const QByteArray payloadBytes = reply->readAll();
+    if (cancelled || (isCancellationRequested(m_shouldCancel) && reply->error() == QNetworkReply::OperationCanceledError)) {
+        response.errorMessage = manualCancellationMessage();
+        reply->deleteLater();
+        return response;
+    }
     if (reply->error() != QNetworkReply::NoError) {
         const QString serverError = ollamaErrorMessageFromPayload(payloadBytes);
         response.errorMessage = serverError.isEmpty() ? reply->errorString() : serverError;
@@ -286,6 +323,7 @@ ChatResponse OllamaProvider::chatStream(const ChatRequest& request, const ChatSt
     networkRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
     QEventLoop loop;
+    QTimer cancelTimer;
     QNetworkReply* reply = networkManager.post(
         networkRequest,
         QJsonDocument(buildChatPayload(request, true)).toJson(QJsonDocument::Compact)
@@ -297,6 +335,7 @@ ChatResponse OllamaProvider::chatStream(const ChatRequest& request, const ChatSt
     QString accumulatedText;
     QString parseError;
     bool reasoningOpen = false;
+    bool cancelled = false;
 
     const auto appendChunk = [&](const QString& chunk) {
         if (chunk.isEmpty()) {
@@ -338,12 +377,37 @@ ChatResponse OllamaProvider::chatStream(const ChatRequest& request, const ChatSt
         }
     });
 
+    if (m_shouldCancel) {
+        cancelTimer.setInterval(100);
+        cancelTimer.setSingleShot(false);
+        QObject::connect(&cancelTimer, &QTimer::timeout, &loop, [&]() {
+            if (!isCancellationRequested(m_shouldCancel)) {
+                return;
+            }
+
+            cancelled = true;
+            if (reply->isRunning()) {
+                reply->abort();
+            }
+            loop.quit();
+        });
+        cancelTimer.start();
+    }
+
     loop.exec();
+    if (cancelTimer.isActive()) {
+        cancelTimer.stop();
+    }
 
     if (!pendingBuffer.trimmed().isEmpty()) {
         processLine(pendingBuffer);
     }
 
+    if (cancelled || (isCancellationRequested(m_shouldCancel) && reply->error() == QNetworkReply::OperationCanceledError)) {
+        response.errorMessage = manualCancellationMessage();
+        reply->deleteLater();
+        return response;
+    }
     if (reply->error() != QNetworkReply::NoError) {
         const QString serverError = ollamaErrorMessageFromPayload(rawPayload);
         response.errorMessage = serverError.isEmpty() ? reply->errorString() : serverError;

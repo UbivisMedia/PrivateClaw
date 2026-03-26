@@ -1,5 +1,7 @@
 #include "core/WorkflowEngine.h"
 #include "utils/JsonExtraction.h"
+#include "utils/ModelResponseSanitizer.h"
+#include "utils/PersistenceGuards.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -19,7 +21,7 @@ struct SanitizedPromptResponse
 {
     QString visibleText;
     QString reasoningText;
-    bool hadReasoningTags = false;
+    bool hadReasoningContent = false;
 };
 
 QString configString(const QJsonObject& object, const QString& key)
@@ -30,6 +32,16 @@ QString configString(const QJsonObject& object, const QString& key)
 QString normalizedStepType(const QString& type)
 {
     return type.trimmed().toLower();
+}
+
+QString manualCancellationMessage()
+{
+    return "Workflow wurde manuell abgebrochen.";
+}
+
+bool isCancellationRequested(const ExecutionCallbacks& callbacks)
+{
+    return static_cast<bool>(callbacks.shouldCancel) && callbacks.shouldCancel();
 }
 
 int configInt(const QJsonObject& object, const QString& key, const int fallback = 0)
@@ -173,6 +185,8 @@ QString defaultSystemPrompt()
     return QStringLiteral(
         "Du bist ein praeziser Assistent fuer Projektarbeit. "
         "Antworte standardmaessig auf Deutsch. "
+        "Gib niemals Thinking Process, Analyse, Planungsnotizen oder Prompt-Wiederholungen aus, "
+        "sondern nur die finale Nutzantwort. "
         "Nutze nur Informationen aus dem gegebenen Kontext und erfinde keine Fakten. "
         "Wenn fuer eine Aufgabe wichtige Informationen fehlen, sage das klar und knapp. "
         "Wenn eine Zusammenfassung in Stichpunkten gewuenscht ist, liefere nur kurze Stichpunkte."
@@ -495,45 +509,14 @@ void captureDebugState(WorkflowDebugStep* debugStep, const RunContext& runContex
     debugStep->variablesAfterStep = snapshotDebugVariables(runContext.variables);
 }
 
-QString cleanupVisiblePromptText(QString text)
-{
-    text.replace(QRegularExpression("\n{3,}"), "\n\n");
-    return text.trimmed();
-}
-
 SanitizedPromptResponse sanitizePromptResponse(const QString& rawText)
 {
+    const utils::SanitizedResponseContent sanitized = utils::sanitizeModelVisibleText(rawText);
+
     SanitizedPromptResponse result;
-    result.visibleText = rawText.trimmed();
-
-    static const QRegularExpression reasoningBlockPattern(
-        R"(<\s*(think|thinking|reasoning|analysis|thought|reflection)\b[^>]*>(.*?)<\s*/\s*\1\s*>)",
-        QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption
-    );
-    static const QRegularExpression strayReasoningTagPattern(
-        R"(<\s*/?\s*(think|thinking|reasoning|analysis|thought|reflection)\b[^>]*>)",
-        QRegularExpression::CaseInsensitiveOption
-    );
-
-    QStringList reasoningParts;
-    const QRegularExpressionMatchIterator matches = reasoningBlockPattern.globalMatch(result.visibleText);
-    for (QRegularExpressionMatchIterator it = matches; it.hasNext();) {
-        const QRegularExpressionMatch match = it.next();
-        const QString reasoning = cleanupVisiblePromptText(match.captured(2));
-        if (!reasoning.isEmpty()) {
-            reasoningParts.append(reasoning);
-        }
-        result.hadReasoningTags = true;
-    }
-
-    result.visibleText.remove(reasoningBlockPattern);
-    if (result.visibleText.contains(strayReasoningTagPattern)) {
-        result.visibleText.remove(strayReasoningTagPattern);
-        result.hadReasoningTags = true;
-    }
-
-    result.visibleText = cleanupVisiblePromptText(result.visibleText);
-    result.reasoningText = reasoningParts.join("\n\n").trimmed();
+    result.visibleText = sanitized.visibleText;
+    result.reasoningText = sanitized.reasoningText;
+    result.hadReasoningContent = sanitized.hadReasoningContent;
     return result;
 }
 
@@ -859,11 +842,23 @@ ExecutionResult WorkflowEngine::executeWorkflow(
             callbacks.onPromptChunk(stepId, chunk);
         }
     };
+    const auto interruptExecution = [&](const QString& message) {
+        result.interrupted = true;
+        result.errorMessage = message;
+        result.memoryEntriesToPersist.clear();
+        appendLog(QString("[engine] %1").arg(message));
+        result.variables = runContext.variables;
+    };
 
     appendLog(
         QString("[engine] Starte Workflow '%1' fuer Projekt '%2' ueber Provider '%3'.")
             .arg(workflow.name, runContext.projectName, provider.name())
     );
+
+    if (isCancellationRequested(callbacks)) {
+        interruptExecution(manualCancellationMessage());
+        return result;
+    }
 
     const QString validationError = validateWorkflow(workflow);
     if (!validationError.isEmpty()) {
@@ -927,6 +922,11 @@ ExecutionResult WorkflowEngine::executeWorkflow(
 
         int currentStepIndex = 0;
         while (currentStepIndex >= 0 && currentStepIndex < stepList.size()) {
+            if (isCancellationRequested(callbacks)) {
+                interruptExecution(manualCancellationMessage());
+                return false;
+            }
+
             if (++executedStepCount > maxStepExecutions) {
                 result.errorMessage =
                     "Workflow wurde wegen zu vieler Schritt-Ausfuehrungen abgebrochen. Pruefe Decision-Spruenge.";
@@ -967,15 +967,70 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                 finalizeDebugStep("failed", summary);
                 result.variables = runContext.variables;
             };
+            const auto interruptStep = [&](const QString& message, const QString& summary) {
+                appendLog(QString("[step:%1] Abbruch: %2").arg(displayStepId, message));
+                debugStep.errorMessage = message;
+                debugStep.nextStepId = "[abbruch]";
+                finalizeDebugStep("interrupted", summary);
+                result.interrupted = true;
+                result.errorMessage = message;
+                result.memoryEntriesToPersist.clear();
+                result.variables = runContext.variables;
+            };
 
         if (stepType == "save_memory") {
-            QString contentTemplate = configString(step.config, "content");
-            if (contentTemplate.isEmpty()) {
-                contentTemplate = "{{last_response}}";
+            QJsonObject renderedConfig = renderJsonValue(step.config, runContext).toObject();
+            if (!renderedConfig.contains("content")) {
+                renderedConfig.insert("content", runContext.variables.value("last_response"));
             }
 
-            const QString content = renderTemplate(contentTemplate, runContext).trimmed();
+            domain::MemoryEntry entry;
+            entry.projectId = runContext.projectId;
+            entry.type = configString(renderedConfig, "entry_type");
+            if (entry.type.isEmpty()) {
+                entry.type = configString(renderedConfig, "memory_type");
+            }
+            if (entry.type.isEmpty()) {
+                entry.type = "note";
+            }
+
+            QString content = renderedConfig.value("content").toString().trimmed();
             debugStep.inputPreview = previewText(content);
+
+            const utils::PersistedContentGuardResult guard = utils::guardPersistedContent(
+                content,
+                entry.type,
+                renderedConfig
+            );
+            for (const QString& warning : guard.warnings) {
+                appendLog(QString("[warn][step:%1] %2").arg(displayStepId, warning));
+            }
+
+            if (guard.shouldFail) {
+                failStep(
+                    QString("Schritt '%1' fehlgeschlagen: %2").arg(displayStepId, guard.errorMessage),
+                    "Memory-Persistenz von Guardrails blockiert."
+                );
+                return false;
+            }
+
+            if (guard.shouldSkip) {
+                appendLog(QString("[step:%1] Memory-Speichern wurde bewusst uebersprungen.").arg(displayStepId));
+                runContext.variables.insert("last_memory_content", QString());
+                runContext.variables.insert("last_memory_type", entry.type);
+                debugStep.outputKey = "last_memory_content";
+                debugStep.outputPreview = "-";
+                debugStep.outputText.clear();
+                debugStep.nextStepId = nextStepLabel(stepList, sequentialNextIndex, scopePrefix);
+                finalizeDebugStep(
+                    "skipped",
+                    QString("Memory-Eintrag vom Typ '%1' wurde uebersprungen.").arg(entry.type)
+                );
+                currentStepIndex = sequentialNextIndex;
+                continue;
+            }
+
+            content = guard.finalText.trimmed();
             if (content.isEmpty()) {
                 failStep(
                     QString("Schritt '%1' konnte keinen Memory-Inhalt erzeugen.").arg(displayStepId),
@@ -984,24 +1039,14 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                 return false;
             }
 
-            domain::MemoryEntry entry;
-            entry.projectId = runContext.projectId;
-            entry.type = configString(step.config, "entry_type");
-            if (entry.type.isEmpty()) {
-                entry.type = configString(step.config, "memory_type");
-            }
-            if (entry.type.isEmpty()) {
-                entry.type = "note";
-            }
-
-            entry.source = renderTemplate(configString(step.config, "source"), runContext).trimmed();
+            entry.source = configString(renderedConfig, "source");
             if (entry.source.isEmpty()) {
                 entry.source = QString("workflow:%1/%2").arg(runContext.workflowName, displayStepId);
             }
 
-            entry.tags = configTags(step.config, "tags", runContext);
-            entry.relevance = configRelevance(step.config, "relevance", 50);
-            entry.pinned = configBool(step.config, "pinned", false);
+            entry.tags = configTags(renderedConfig, "tags", runContext);
+            entry.relevance = configRelevance(renderedConfig, "relevance", 50);
+            entry.pinned = configBool(renderedConfig, "pinned", false);
             entry.content = content;
 
             appendPreparedMemoryEntries({ entry });
@@ -1278,6 +1323,12 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                 }
 
                 for (int iterationIndex = 0; iterationIndex < iterationCount; ++iterationIndex) {
+                    if (isCancellationRequested(callbacks)) {
+                        debugStep.outputKey = outputKey;
+                        interruptStep(manualCancellationMessage(), "Foreach wurde manuell abgebrochen.");
+                        return false;
+                    }
+
                     for (const QString& key : previousIterationKeys) {
                         runContext.variables.remove(key);
                     }
@@ -1321,6 +1372,17 @@ ExecutionResult WorkflowEngine::executeWorkflow(
                     );
                     if (!executeStepList(nestedSteps, iterationScope)) {
                         const QString iterationError = result.errorMessage;
+                        if (result.interrupted) {
+                            debugStep.outputKey = outputKey;
+                            debugStep.nextStepId = "[abbruch]";
+                            finalizeDebugStep(
+                                "interrupted",
+                                QString("Foreach wurde in Iteration %1 manuell abgebrochen.").arg(iterationIndex + 1)
+                            );
+                            result.variables = runContext.variables;
+                            return false;
+                        }
+
                         if (onErrorMode == "continue") {
                             appendLog(
                                 QString("[step:%1] Iteration %2 uebersprungen: %3")
@@ -1440,6 +1502,10 @@ ExecutionResult WorkflowEngine::executeWorkflow(
 
             if (!toolResult.success) {
                 debugStep.outputKey = outputKey;
+                if (isCancellationRequested(callbacks)) {
+                    interruptStep(manualCancellationMessage(), QString("Tool '%1' wurde manuell abgebrochen.").arg(toolName));
+                    return false;
+                }
                 failStep(
                     QString("Schritt '%1' fehlgeschlagen: %2").arg(displayStepId, toolResult.errorMessage),
                     QString("Tool '%1' fehlgeschlagen.").arg(toolName)
@@ -1557,8 +1623,18 @@ ExecutionResult WorkflowEngine::executeWorkflow(
         } else {
             response = provider.chat(request);
         }
+        for (const QString& providerLogLine : response.logs) {
+            appendLog(QString("[step:%1] %2").arg(displayStepId, providerLogLine));
+        }
         if (!response.success) {
             debugStep.outputKey = outputKey;
+            if (isCancellationRequested(callbacks)) {
+                interruptStep(
+                    manualCancellationMessage(),
+                    QString("Prompt-Schritt mit Modell '%1' wurde manuell abgebrochen.").arg(model)
+                );
+                return false;
+            }
             failStep(
                 QString("Schritt '%1' fehlgeschlagen: %2").arg(displayStepId, response.errorMessage),
                 QString("Prompt-Schritt mit Modell '%1' fehlgeschlagen.").arg(model)
@@ -1574,17 +1650,17 @@ ExecutionResult WorkflowEngine::executeWorkflow(
         runContext.variables.insert("last_response_raw", response.text);
         result.finalOutput = sanitizedResponse.visibleText;
 
-        if (sanitizedResponse.hadReasoningTags) {
+        if (sanitizedResponse.hadReasoningContent) {
             runContext.variables.insert(outputKey + "_reasoning", sanitizedResponse.reasoningText);
             runContext.variables.insert("last_reasoning", sanitizedResponse.reasoningText);
             runContext.variables.insert("last_response_reasoning", sanitizedResponse.reasoningText);
             appendLog(
-                QString("[step:%1] Reasoning-Tags erkannt und aus der sichtbaren Ausgabe entfernt.")
+                QString("[warn][step:%1] Reasoning- oder Meta-Inhalt erkannt und aus der sichtbaren Ausgabe entfernt.")
                     .arg(displayStepId)
             );
             if (!sanitizedResponse.reasoningText.isEmpty()) {
                 appendLog(
-                    QString("[step:%1] Reasoning gespeichert in '%2_reasoning' und 'last_reasoning'.")
+                    QString("[warn][step:%1] Reasoning gespeichert in '%2_reasoning' und 'last_reasoning'.")
                         .arg(displayStepId, outputKey)
                 );
             }
@@ -1605,8 +1681,8 @@ ExecutionResult WorkflowEngine::executeWorkflow(
         debugStep.nextStepId = nextStepLabel(stepList, sequentialNextIndex, scopePrefix);
         finalizeDebugStep(
             "completed",
-            sanitizedResponse.hadReasoningTags
-                ? QString("Prompt-Schritt mit Modell '%1' erfolgreich. Reasoning wurde getrennt gespeichert.").arg(model)
+            sanitizedResponse.hadReasoningContent
+                ? QString("Prompt-Schritt mit Modell '%1' erfolgreich. Reasoning bzw. Meta-Inhalt wurde getrennt gespeichert.").arg(model)
                 : QString("Prompt-Schritt mit Modell '%1' erfolgreich.").arg(model)
         );
         currentStepIndex = sequentialNextIndex;

@@ -7,6 +7,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
 #include <QStringList>
 #include <QTimer>
 #include <QUrl>
@@ -16,6 +17,22 @@
 namespace privateclaw::providers {
 
 namespace {
+
+QString manualCancellationMessage()
+{
+    return "Workflow wurde manuell abgebrochen.";
+}
+
+bool isCancellationRequested(const std::function<bool()>& shouldCancel)
+{
+    return static_cast<bool>(shouldCancel) && shouldCancel();
+}
+
+struct ModelContextInfo
+{
+    int contextLength = -1;
+    int maxContextLength = -1;
+};
 
 QUrl buildEndpoint(const QString& baseUrl, const QString& suffix)
 {
@@ -46,6 +63,31 @@ QUrl buildEndpoint(const QString& baseUrl, const QString& suffix)
     return url;
 }
 
+QUrl buildServerEndpoint(const QString& baseUrl, const QString& suffix)
+{
+    QUrl url(baseUrl);
+    QString path = url.path().trimmed();
+    const QString normalizedSuffix = suffix.startsWith('/') ? suffix : QString("/%1").arg(suffix);
+
+    if (path.endsWith('/')) {
+        path.chop(1);
+    }
+    if (path.endsWith("/api/v1")) {
+        path.chop(7);
+    } else if (path.endsWith("/v1")) {
+        path.chop(3);
+    }
+
+    if (path.isEmpty()) {
+        path = normalizedSuffix;
+    } else {
+        path += normalizedSuffix;
+    }
+
+    url.setPath(path);
+    return url;
+}
+
 QUrl modelsEndpoint(const QString& baseUrl)
 {
     return buildEndpoint(baseUrl, "/v1/models");
@@ -54,6 +96,11 @@ QUrl modelsEndpoint(const QString& baseUrl)
 QUrl chatEndpoint(const QString& baseUrl)
 {
     return buildEndpoint(baseUrl, "/v1/chat/completions");
+}
+
+QUrl restModelsEndpoint(const QString& baseUrl)
+{
+    return buildServerEndpoint(baseUrl, "/api/v1/models");
 }
 
 QJsonArray buildMessages(const ChatRequest& request)
@@ -261,10 +308,532 @@ bool parseLmStudioChatPayload(const QByteArray& payload, QString* text, QString*
     return true;
 }
 
+bool isContextLengthError(const QString& errorMessage)
+{
+    const QString normalized = errorMessage.trimmed().toLower();
+    return normalized.contains("n_ctx")
+        || normalized.contains("n_keep")
+        || normalized.contains("context length")
+        || normalized.contains("context window")
+        || normalized.contains("tokens to keep");
+}
+
+int extractContextLengthFromError(const QString& errorMessage)
+{
+    static const QRegularExpression directPattern("n_ctx\\s*:\\s*(\\d+)", QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch directMatch = directPattern.match(errorMessage);
+    if (directMatch.hasMatch()) {
+        return directMatch.captured(1).toInt();
+    }
+
+    static const QRegularExpression fallbackPattern(
+        "context\\s+length[^\\d]*(\\d+)",
+        QRegularExpression::CaseInsensitiveOption
+    );
+    const QRegularExpressionMatch fallbackMatch = fallbackPattern.match(errorMessage);
+    return fallbackMatch.hasMatch() ? fallbackMatch.captured(1).toInt() : -1;
+}
+
+QString trimTextForContext(const QString& text, const int maxChars, const QString& label)
+{
+    if (maxChars <= 0 || text.size() <= maxChars) {
+        return text;
+    }
+
+    const QString marker =
+        QString("\n\n[... %1 wurde automatisch gekuerzt, damit der Request in das LM-Studio-Kontextfenster passt ...]\n\n")
+            .arg(label);
+    if (maxChars <= marker.size() + 48) {
+        return text.left(qMax(0, maxChars)).trimmed();
+    }
+
+    const int keepChars = maxChars - marker.size();
+    const int headChars = qMax(24, keepChars * 2 / 3);
+    const int tailChars = qMax(24, keepChars - headChars);
+    return text.left(headChars).trimmed() + marker + text.right(tailChars).trimmed();
+}
+
+int estimatedTokenCount(const QString& text)
+{
+    if (text.trimmed().isEmpty()) {
+        return 0;
+    }
+
+    const int charEstimate = (text.size() + 2) / 3;
+    const int newlinePenalty = text.count('\n') / 8;
+    return charEstimate + newlinePenalty;
+}
+
+ChatRequest prepareRequestForContext(
+    const ChatRequest& request,
+    const ModelContextInfo& contextInfo,
+    QStringList* logs = nullptr,
+    const bool aggressive = false
+)
+{
+    ChatRequest preparedRequest = request;
+    const int contextLength = contextInfo.contextLength > 0 ? contextInfo.contextLength : contextInfo.maxContextLength;
+    if (contextLength <= 0) {
+        return preparedRequest;
+    }
+
+    const int outputReserve = aggressive
+        ? qBound(256, contextLength / 5, 1536)
+        : qBound(192, contextLength / 6, 1024);
+    const int promptBudgetTokens = qMax(512, contextLength - outputReserve - 128);
+    const int estimatedPromptTokens =
+        estimatedTokenCount(request.systemPrompt) + estimatedTokenCount(request.userPrompt) + 48;
+    if (estimatedPromptTokens <= promptBudgetTokens) {
+        return preparedRequest;
+    }
+
+    const int safeChars = qMax(1600, aggressive ? promptBudgetTokens * 2 : (promptBudgetTokens * 5) / 2);
+    int systemBudget = 0;
+    int userBudget = 0;
+    if (!request.systemPrompt.isEmpty() && !request.userPrompt.isEmpty()) {
+        systemBudget = qMin(request.systemPrompt.size(), qMax(500, safeChars * 3 / 10));
+        userBudget = qMin(request.userPrompt.size(), qMax(900, safeChars - systemBudget));
+        if (systemBudget + userBudget > safeChars) {
+            userBudget = qMax(400, safeChars - systemBudget);
+        }
+        if (systemBudget + userBudget > safeChars) {
+            systemBudget = qMax(200, safeChars - userBudget);
+        }
+        if (request.userPrompt.size() < userBudget) {
+            systemBudget = qMin(request.systemPrompt.size(), safeChars - request.userPrompt.size());
+        } else if (request.systemPrompt.size() < systemBudget) {
+            userBudget = qMin(request.userPrompt.size(), safeChars - request.systemPrompt.size());
+        }
+    } else if (!request.systemPrompt.isEmpty()) {
+        systemBudget = safeChars;
+    } else {
+        userBudget = safeChars;
+    }
+
+    preparedRequest.systemPrompt = trimTextForContext(request.systemPrompt, systemBudget, "Systemprompt");
+    preparedRequest.userPrompt = trimTextForContext(request.userPrompt, userBudget, "Prompt");
+    if (logs != nullptr) {
+        logs->append(
+            QString(
+                "[warn] LM Studio Request wurde vorab auf das gemeldete Kontextfenster von %1 Token gekuerzt."
+            ).arg(contextLength)
+        );
+    }
+    return preparedRequest;
+}
+
+bool runNetworkLoop(
+    QNetworkReply* reply,
+    const int timeoutMs,
+    const std::function<bool()>& shouldCancel,
+    QByteArray* payload,
+    QString* errorMessage
+)
+{
+    if (reply == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "Netzwerk-Reply fehlt.";
+        }
+        return false;
+    }
+
+    QEventLoop loop;
+    QTimer timeoutTimer;
+    QTimer cancelTimer;
+    bool cancelled = false;
+
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    if (timeoutMs > 0) {
+        timeoutTimer.setInterval(timeoutMs);
+        timeoutTimer.setSingleShot(true);
+        QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        timeoutTimer.start();
+    }
+    if (shouldCancel) {
+        cancelTimer.setInterval(100);
+        cancelTimer.setSingleShot(false);
+        QObject::connect(&cancelTimer, &QTimer::timeout, &loop, [&]() {
+            if (!isCancellationRequested(shouldCancel)) {
+                return;
+            }
+
+            cancelled = true;
+            if (reply->isRunning()) {
+                reply->abort();
+            }
+            loop.quit();
+        });
+        cancelTimer.start();
+    }
+
+    loop.exec();
+
+    if (cancelTimer.isActive()) {
+        cancelTimer.stop();
+    }
+    if (timeoutMs > 0 && timeoutTimer.isActive()) {
+        timeoutTimer.stop();
+    } else if (timeoutMs > 0) {
+        reply->abort();
+        if (errorMessage != nullptr) {
+            *errorMessage = "Zeitueberschreitung bei der LM-Studio-Anfrage.";
+        }
+        reply->deleteLater();
+        return false;
+    }
+
+    const QByteArray payloadBytes = reply->readAll();
+    if (payload != nullptr) {
+        *payload = payloadBytes;
+    }
+
+    if (cancelled || (isCancellationRequested(shouldCancel) && reply->error() == QNetworkReply::OperationCanceledError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = manualCancellationMessage();
+        }
+        reply->deleteLater();
+        return false;
+    }
+
+    if (reply->error() != QNetworkReply::NoError) {
+        if (errorMessage != nullptr) {
+            const QString serverError = lmStudioErrorMessageFromPayload(payloadBytes);
+            *errorMessage = serverError.isEmpty() ? reply->errorString() : serverError;
+        }
+        reply->deleteLater();
+        return false;
+    }
+
+    reply->deleteLater();
+    return true;
+}
+
+ModelContextInfo fetchModelContextInfo(
+    const QString& baseUrl,
+    const QString& requestedModel,
+    const std::function<bool()>& shouldCancel,
+    QStringList* logs = nullptr
+)
+{
+    ModelContextInfo info;
+    if (requestedModel.trimmed().isEmpty()) {
+        return info;
+    }
+
+    QNetworkAccessManager networkManager;
+    QNetworkRequest request(restModelsEndpoint(baseUrl));
+    QByteArray payload;
+    QString errorMessage;
+    if (!runNetworkLoop(networkManager.get(request), 3500, shouldCancel, &payload, &errorMessage)) {
+        if (logs != nullptr && !errorMessage.trimmed().isEmpty() && errorMessage != manualCancellationMessage()) {
+            logs->append(QString("[warn] LM Studio Kontextfenster konnte nicht abgefragt werden: %1").arg(errorMessage));
+        }
+        return info;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        if (logs != nullptr) {
+            logs->append(
+                QString("[warn] LM Studio Kontextfenster konnte nicht geparst werden: %1").arg(parseError.errorString())
+            );
+        }
+        return info;
+    }
+
+    const QString normalizedRequestedModel = requestedModel.trimmed().toCaseFolded();
+    const QJsonArray models = document.object().value("models").toArray();
+
+    QJsonObject exactLoadedMatch;
+    QJsonObject exactModelMatch;
+    QJsonObject singleLoadedModel;
+    int loadedModelCount = 0;
+
+    for (const QJsonValue& modelValue : models) {
+        const QJsonObject modelObject = modelValue.toObject();
+        const QString key = modelObject.value("key").toString().trimmed();
+        const QString displayName = modelObject.value("display_name").toString().trimmed();
+        const QJsonArray loadedInstances = modelObject.value("loaded_instances").toArray();
+
+        if (!loadedInstances.isEmpty()) {
+            ++loadedModelCount;
+            singleLoadedModel = modelObject;
+        }
+
+        for (const QJsonValue& loadedValue : loadedInstances) {
+            const QString loadedId = loadedValue.toObject().value("id").toString().trimmed();
+            if (!loadedId.isEmpty() && loadedId.toCaseFolded() == normalizedRequestedModel) {
+                exactLoadedMatch = modelObject;
+                break;
+            }
+        }
+        if (!exactLoadedMatch.isEmpty()) {
+            break;
+        }
+
+        if ((!key.isEmpty() && key.toCaseFolded() == normalizedRequestedModel)
+            || (!displayName.isEmpty() && displayName.toCaseFolded() == normalizedRequestedModel)) {
+            exactModelMatch = modelObject;
+        }
+    }
+
+    const QJsonObject matchedModel = !exactLoadedMatch.isEmpty()
+        ? exactLoadedMatch
+        : (!exactModelMatch.isEmpty() ? exactModelMatch : (loadedModelCount == 1 ? singleLoadedModel : QJsonObject()));
+    if (matchedModel.isEmpty()) {
+        return info;
+    }
+
+    info.maxContextLength = matchedModel.value("max_context_length").toInt(-1);
+    const QJsonArray loadedInstances = matchedModel.value("loaded_instances").toArray();
+    for (const QJsonValue& loadedValue : loadedInstances) {
+        const QJsonObject loadedObject = loadedValue.toObject();
+        const QString loadedId = loadedObject.value("id").toString().trimmed();
+        if (!normalizedRequestedModel.isEmpty()
+            && !loadedId.isEmpty()
+            && loadedId.toCaseFolded() != normalizedRequestedModel
+            && loadedModelCount != 1) {
+            continue;
+        }
+
+        info.contextLength = loadedObject.value("config").toObject().value("context_length").toInt(-1);
+        if (info.contextLength > 0) {
+            break;
+        }
+    }
+
+    return info;
+}
+
+ChatResponse executeChatOnce(const QString& baseUrl, const ChatRequest& request, const std::function<bool()>& shouldCancel)
+{
+    ChatResponse response;
+
+    QNetworkAccessManager networkManager;
+    QNetworkRequest networkRequest(chatEndpoint(baseUrl));
+    networkRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QByteArray payloadBytes;
+    QString requestError;
+    if (!runNetworkLoop(
+            networkManager.post(networkRequest, QJsonDocument(buildChatPayload(request, false)).toJson(QJsonDocument::Compact)),
+            0,
+            shouldCancel,
+            &payloadBytes,
+            &requestError
+        )) {
+        response.errorMessage = requestError;
+        return response;
+    }
+
+    QString text;
+    QString parseError;
+    if (!parseLmStudioChatPayload(payloadBytes, &text, &parseError)) {
+        response.errorMessage = parseError;
+        return response;
+    }
+
+    response.success = true;
+    response.text = text;
+    return response;
+}
+
+ChatResponse executeStreamingChatOnce(
+    const QString& baseUrl,
+    const ChatRequest& request,
+    const ChatStreamCallback& onChunk,
+    const std::function<bool()>& shouldCancel
+)
+{
+    ChatResponse response;
+
+    QNetworkAccessManager networkManager;
+    QNetworkRequest networkRequest(chatEndpoint(baseUrl));
+    networkRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QEventLoop loop;
+    QTimer cancelTimer;
+    QNetworkReply* reply = networkManager.post(
+        networkRequest,
+        QJsonDocument(buildChatPayload(request, true)).toJson(QJsonDocument::Compact)
+    );
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+
+    QByteArray pendingBuffer;
+    QByteArray rawPayload;
+    QString accumulatedText;
+    QString parseError;
+    bool reasoningOpen = false;
+    bool cancelled = false;
+
+    const auto appendChunk = [&](const QString& chunk) {
+        if (chunk.isEmpty()) {
+            return;
+        }
+
+        accumulatedText += chunk;
+        if (onChunk) {
+            onChunk(chunk);
+        }
+    };
+
+    const auto processEventLine = [&](QByteArray line) {
+        line = line.trimmed();
+        if (line.isEmpty() || line.startsWith(':') || !parseError.isEmpty()) {
+            return;
+        }
+
+        if (!line.startsWith("data:")) {
+            return;
+        }
+
+        const QByteArray data = line.mid(5).trimmed();
+        if (data == "[DONE]") {
+            if (reasoningOpen) {
+                appendChunk("</think>");
+                reasoningOpen = false;
+            }
+            return;
+        }
+
+        QJsonParseError jsonError;
+        const QJsonDocument json = QJsonDocument::fromJson(data, &jsonError);
+        if (jsonError.error != QJsonParseError::NoError || !json.isObject()) {
+            parseError = QString("LM-Studio-Streaming lieferte ungueltiges JSON: %1").arg(jsonError.errorString());
+            return;
+        }
+
+        const QJsonObject root = json.object();
+        const QString streamError = lmStudioErrorMessageFromJsonObject(root);
+        if (!streamError.isEmpty()) {
+            parseError = streamError;
+            return;
+        }
+
+        const QJsonArray choices = root.value("choices").toArray();
+        if (choices.isEmpty()) {
+            return;
+        }
+
+        appendChunk(extractLmStudioChoiceText(choices.first().toObject(), &reasoningOpen));
+    };
+
+    QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&]() {
+        const QByteArray incoming = reply->readAll();
+        rawPayload += incoming;
+        pendingBuffer += incoming;
+
+        int newlineIndex = pendingBuffer.indexOf('\n');
+        while (newlineIndex >= 0) {
+            processEventLine(pendingBuffer.left(newlineIndex));
+            pendingBuffer.remove(0, newlineIndex + 1);
+            newlineIndex = pendingBuffer.indexOf('\n');
+        }
+    });
+
+    if (shouldCancel) {
+        cancelTimer.setInterval(100);
+        cancelTimer.setSingleShot(false);
+        QObject::connect(&cancelTimer, &QTimer::timeout, &loop, [&]() {
+            if (!isCancellationRequested(shouldCancel)) {
+                return;
+            }
+
+            cancelled = true;
+            if (reply->isRunning()) {
+                reply->abort();
+            }
+            loop.quit();
+        });
+        cancelTimer.start();
+    }
+
+    loop.exec();
+    if (cancelTimer.isActive()) {
+        cancelTimer.stop();
+    }
+
+    if (!pendingBuffer.trimmed().isEmpty()) {
+        processEventLine(pendingBuffer);
+    }
+
+    if (cancelled || (isCancellationRequested(shouldCancel) && reply->error() == QNetworkReply::OperationCanceledError)) {
+        response.errorMessage = manualCancellationMessage();
+        reply->deleteLater();
+        return response;
+    }
+    if (reply->error() != QNetworkReply::NoError) {
+        const QString serverError = lmStudioErrorMessageFromPayload(rawPayload);
+        response.errorMessage = serverError.isEmpty() ? reply->errorString() : serverError;
+        reply->deleteLater();
+        return response;
+    }
+
+    reply->deleteLater();
+
+    if (!parseError.isEmpty() && accumulatedText.trimmed().isEmpty() && !isCancellationRequested(shouldCancel)) {
+        QString fallbackText;
+        if (parseLmStudioChatPayload(rawPayload, &fallbackText, nullptr)) {
+            appendChunk(fallbackText);
+            parseError.clear();
+        }
+    }
+
+    if (!parseError.isEmpty() && accumulatedText.trimmed().isEmpty() && !isCancellationRequested(shouldCancel)) {
+        const ChatResponse fallbackResponse = executeChatOnce(baseUrl, request, shouldCancel);
+        if (fallbackResponse.success) {
+            appendChunk(fallbackResponse.text);
+            response.logs.append(fallbackResponse.logs);
+            parseError.clear();
+        } else if (!fallbackResponse.errorMessage.trimmed().isEmpty()) {
+            response.errorMessage = fallbackResponse.errorMessage.trimmed();
+            response.logs.append(fallbackResponse.logs);
+            return response;
+        }
+    }
+
+    if (!parseError.isEmpty() && accumulatedText.trimmed().isEmpty()) {
+        response.errorMessage = parseError;
+        return response;
+    }
+
+    if (reasoningOpen) {
+        appendChunk("</think>");
+    }
+
+    if (accumulatedText.trimmed().isEmpty()) {
+        QString fallbackText;
+        if (!isCancellationRequested(shouldCancel) && parseLmStudioChatPayload(rawPayload, &fallbackText, nullptr)) {
+            appendChunk(fallbackText);
+        } else {
+            if (isCancellationRequested(shouldCancel)) {
+                response.errorMessage = manualCancellationMessage();
+                return response;
+            }
+            const ChatResponse fallbackResponse = executeChatOnce(baseUrl, request, shouldCancel);
+            response.logs.append(fallbackResponse.logs);
+            if (fallbackResponse.success) {
+                appendChunk(fallbackResponse.text);
+            } else {
+                response.errorMessage = fallbackResponse.errorMessage.trimmed().isEmpty()
+                    ? "LM Studio hat keine auswertbare Streaming-Antwort geliefert."
+                    : fallbackResponse.errorMessage.trimmed();
+                return response;
+            }
+        }
+    }
+
+    response.success = true;
+    response.text = accumulatedText.trimmed();
+    return response;
+}
+
 } // namespace
 
-LmStudioProvider::LmStudioProvider(QString baseUrl)
+LmStudioProvider::LmStudioProvider(QString baseUrl, std::function<bool()> shouldCancel)
     : m_baseUrl(std::move(baseUrl))
+    , m_shouldCancel(std::move(shouldCancel))
 {
 }
 
@@ -362,37 +931,70 @@ ChatResponse LmStudioProvider::chat(const ChatRequest& request)
         return response;
     }
 
-    QNetworkAccessManager networkManager;
-    QNetworkRequest networkRequest(chatEndpoint(m_baseUrl));
-    networkRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-
-    QEventLoop loop;
-    QNetworkReply* reply = networkManager.post(
-        networkRequest,
-        QJsonDocument(buildChatPayload(request, false)).toJson(QJsonDocument::Compact)
-    );
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
-
-    const QByteArray payloadBytes = reply->readAll();
-    if (reply->error() != QNetworkReply::NoError) {
-        const QString serverError = lmStudioErrorMessageFromPayload(payloadBytes);
-        response.errorMessage = serverError.isEmpty() ? reply->errorString() : serverError;
-        reply->deleteLater();
-        return response;
+    const QString cacheKey = request.model.trimmed().toCaseFolded();
+    QStringList preparationLogs;
+    ModelContextInfo contextInfo;
+    contextInfo.contextLength = m_contextLengthCache.value(cacheKey, -1);
+    contextInfo.maxContextLength = m_maxContextLengthCache.value(cacheKey, -1);
+    if (contextInfo.contextLength <= 0 && contextInfo.maxContextLength <= 0) {
+        contextInfo = fetchModelContextInfo(m_baseUrl, request.model, m_shouldCancel, &preparationLogs);
+        if (contextInfo.contextLength > 0) {
+            m_contextLengthCache.insert(cacheKey, contextInfo.contextLength);
+        }
+        if (contextInfo.maxContextLength > 0) {
+            m_maxContextLengthCache.insert(cacheKey, contextInfo.maxContextLength);
+        }
     }
 
-    reply->deleteLater();
-
-    QString text;
-    QString parseError;
-    if (!parseLmStudioChatPayload(payloadBytes, &text, &parseError)) {
-        response.errorMessage = parseError;
-        return response;
+    if (contextInfo.contextLength > 0 && contextInfo.maxContextLength > contextInfo.contextLength) {
+        preparationLogs.append(
+            QString(
+                "[warn] LM Studio meldet fuer '%1' aktuell %2 Token geladenen Kontext bei %3 Token Modellmaximum."
+            ).arg(request.model).arg(contextInfo.contextLength).arg(contextInfo.maxContextLength)
+        );
+        preparationLogs.append(
+            "[warn] Hinweis: Wenn du die Kontextlaenge gerade in LM Studio erhoeht hast, muss das Modell meist neu geladen werden."
+        );
     }
 
-    response.success = true;
-    response.text = text;
+    ChatRequest preparedRequest = prepareRequestForContext(request, contextInfo, &preparationLogs, false);
+    response = executeChatOnce(m_baseUrl, preparedRequest, m_shouldCancel);
+    response.logs.append(preparationLogs);
+
+    if (!response.success && isContextLengthError(response.errorMessage) && !isCancellationRequested(m_shouldCancel)) {
+        const int errorContextLength = extractContextLengthFromError(response.errorMessage);
+        if (errorContextLength > 0) {
+            contextInfo.contextLength = errorContextLength;
+            m_contextLengthCache.insert(cacheKey, errorContextLength);
+        }
+
+        QStringList retryLogs;
+        const ChatRequest retryRequest = prepareRequestForContext(request, contextInfo, &retryLogs, true);
+        if (retryRequest.systemPrompt != preparedRequest.systemPrompt || retryRequest.userPrompt != preparedRequest.userPrompt) {
+            const QString retryNote =
+                "[warn] LM Studio meldete ein Kontextlimit. Request wird mit aggressiverer Kuerzung erneut gesendet.";
+            response.logs.append(retryNote);
+            const ChatResponse retryResponse = executeChatOnce(m_baseUrl, retryRequest, m_shouldCancel);
+            response.logs.append(retryLogs);
+            response.logs.append(retryResponse.logs);
+            if (retryResponse.success || !retryResponse.errorMessage.trimmed().isEmpty()) {
+                response = retryResponse;
+                response.logs.append(retryNote);
+                response.logs.append(preparationLogs);
+                response.logs.append(retryLogs);
+            }
+        }
+    }
+
+    if (!response.success && isContextLengthError(response.errorMessage)) {
+        const int effectiveContextLength = contextInfo.contextLength > 0 ? contextInfo.contextLength : extractContextLengthFromError(response.errorMessage);
+        if (effectiveContextLength > 0) {
+            response.errorMessage = QString(
+                "%1 LM Studio meldet derzeit ein geladenes Kontextfenster von %2 Token."
+            ).arg(response.errorMessage, QString::number(effectiveContextLength));
+        }
+    }
+
     return response;
 }
 
@@ -409,150 +1011,70 @@ ChatResponse LmStudioProvider::chatStream(const ChatRequest& request, const Chat
         return response;
     }
 
-    QNetworkAccessManager networkManager;
-    QNetworkRequest networkRequest(chatEndpoint(m_baseUrl));
-    networkRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-
-    QEventLoop loop;
-    QNetworkReply* reply = networkManager.post(
-        networkRequest,
-        QJsonDocument(buildChatPayload(request, true)).toJson(QJsonDocument::Compact)
-    );
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-
-    QByteArray pendingBuffer;
-    QByteArray rawPayload;
-    QString accumulatedText;
-    QString parseError;
-    bool reasoningOpen = false;
-
-    const auto appendChunk = [&](const QString& chunk) {
-        if (chunk.isEmpty()) {
-            return;
+    const QString cacheKey = request.model.trimmed().toCaseFolded();
+    QStringList preparationLogs;
+    ModelContextInfo contextInfo;
+    contextInfo.contextLength = m_contextLengthCache.value(cacheKey, -1);
+    contextInfo.maxContextLength = m_maxContextLengthCache.value(cacheKey, -1);
+    if (contextInfo.contextLength <= 0 && contextInfo.maxContextLength <= 0) {
+        contextInfo = fetchModelContextInfo(m_baseUrl, request.model, m_shouldCancel, &preparationLogs);
+        if (contextInfo.contextLength > 0) {
+            m_contextLengthCache.insert(cacheKey, contextInfo.contextLength);
         }
-
-        accumulatedText += chunk;
-        if (onChunk) {
-            onChunk(chunk);
-        }
-    };
-
-    const auto processEventLine = [&](QByteArray line) {
-        line = line.trimmed();
-        if (line.isEmpty() || line.startsWith(':') || !parseError.isEmpty()) {
-            return;
-        }
-
-        if (!line.startsWith("data:")) {
-            return;
-        }
-
-        const QByteArray data = line.mid(5).trimmed();
-        if (data == "[DONE]") {
-            if (reasoningOpen) {
-                appendChunk("</think>");
-                reasoningOpen = false;
-            }
-            return;
-        }
-
-        QJsonParseError jsonError;
-        const QJsonDocument json = QJsonDocument::fromJson(data, &jsonError);
-        if (jsonError.error != QJsonParseError::NoError || !json.isObject()) {
-            parseError = QString("LM-Studio-Streaming lieferte ungueltiges JSON: %1").arg(jsonError.errorString());
-            return;
-        }
-
-        const QJsonObject root = json.object();
-        const QString streamError = lmStudioErrorMessageFromJsonObject(root);
-        if (!streamError.isEmpty()) {
-            parseError = streamError;
-            return;
-        }
-
-        const QJsonArray choices = root.value("choices").toArray();
-        if (choices.isEmpty()) {
-            return;
-        }
-
-        appendChunk(extractLmStudioChoiceText(choices.first().toObject(), &reasoningOpen));
-    };
-
-    QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&]() {
-        const QByteArray incoming = reply->readAll();
-        rawPayload += incoming;
-        pendingBuffer += incoming;
-
-        int newlineIndex = pendingBuffer.indexOf('\n');
-        while (newlineIndex >= 0) {
-            processEventLine(pendingBuffer.left(newlineIndex));
-            pendingBuffer.remove(0, newlineIndex + 1);
-            newlineIndex = pendingBuffer.indexOf('\n');
-        }
-    });
-
-    loop.exec();
-
-    if (!pendingBuffer.trimmed().isEmpty()) {
-        processEventLine(pendingBuffer);
-    }
-
-    if (reply->error() != QNetworkReply::NoError) {
-        const QString serverError = lmStudioErrorMessageFromPayload(rawPayload);
-        response.errorMessage = serverError.isEmpty() ? reply->errorString() : serverError;
-        reply->deleteLater();
-        return response;
-    }
-
-    reply->deleteLater();
-
-    if (!parseError.isEmpty() && accumulatedText.trimmed().isEmpty()) {
-        QString fallbackText;
-        if (parseLmStudioChatPayload(rawPayload, &fallbackText, nullptr)) {
-            appendChunk(fallbackText);
-            parseError.clear();
+        if (contextInfo.maxContextLength > 0) {
+            m_maxContextLengthCache.insert(cacheKey, contextInfo.maxContextLength);
         }
     }
 
-    if (!parseError.isEmpty() && accumulatedText.trimmed().isEmpty()) {
-        const ChatResponse fallbackResponse = chat(request);
-        if (fallbackResponse.success) {
-            appendChunk(fallbackResponse.text);
-            parseError.clear();
-        } else if (!fallbackResponse.errorMessage.trimmed().isEmpty()) {
-            response.errorMessage = fallbackResponse.errorMessage.trimmed();
-            return response;
+    if (contextInfo.contextLength > 0 && contextInfo.maxContextLength > contextInfo.contextLength) {
+        preparationLogs.append(
+            QString(
+                "[warn] LM Studio meldet fuer '%1' aktuell %2 Token geladenen Kontext bei %3 Token Modellmaximum."
+            ).arg(request.model).arg(contextInfo.contextLength).arg(contextInfo.maxContextLength)
+        );
+        preparationLogs.append(
+            "[warn] Hinweis: Wenn du die Kontextlaenge gerade in LM Studio erhoeht hast, muss das Modell meist neu geladen werden."
+        );
+    }
+
+    ChatRequest preparedRequest = prepareRequestForContext(request, contextInfo, &preparationLogs, false);
+    response = executeStreamingChatOnce(m_baseUrl, preparedRequest, onChunk, m_shouldCancel);
+    response.logs.append(preparationLogs);
+
+    if (!response.success && isContextLengthError(response.errorMessage) && !isCancellationRequested(m_shouldCancel)) {
+        const int errorContextLength = extractContextLengthFromError(response.errorMessage);
+        if (errorContextLength > 0) {
+            contextInfo.contextLength = errorContextLength;
+            m_contextLengthCache.insert(cacheKey, errorContextLength);
         }
-    }
 
-    if (!parseError.isEmpty() && accumulatedText.trimmed().isEmpty()) {
-        response.errorMessage = parseError;
-        return response;
-    }
-
-    if (reasoningOpen) {
-        appendChunk("</think>");
-    }
-
-    if (accumulatedText.trimmed().isEmpty()) {
-        QString fallbackText;
-        if (parseLmStudioChatPayload(rawPayload, &fallbackText, nullptr)) {
-            appendChunk(fallbackText);
-        } else {
-            const ChatResponse fallbackResponse = chat(request);
-            if (fallbackResponse.success) {
-                appendChunk(fallbackResponse.text);
-            } else {
-                response.errorMessage = fallbackResponse.errorMessage.trimmed().isEmpty()
-                    ? "LM Studio hat keine auswertbare Streaming-Antwort geliefert."
-                    : fallbackResponse.errorMessage.trimmed();
-                return response;
+        QStringList retryLogs;
+        const ChatRequest retryRequest = prepareRequestForContext(request, contextInfo, &retryLogs, true);
+        if (retryRequest.systemPrompt != preparedRequest.systemPrompt || retryRequest.userPrompt != preparedRequest.userPrompt) {
+            const QString retryNote =
+                "[warn] LM Studio meldete ein Kontextlimit. Streaming-Request wird mit aggressiverer Kuerzung erneut gesendet.";
+            response.logs.append(retryNote);
+            const ChatResponse retryResponse = executeStreamingChatOnce(m_baseUrl, retryRequest, onChunk, m_shouldCancel);
+            response.logs.append(retryLogs);
+            response.logs.append(retryResponse.logs);
+            if (retryResponse.success || !retryResponse.errorMessage.trimmed().isEmpty()) {
+                response = retryResponse;
+                response.logs.append(retryNote);
+                response.logs.append(preparationLogs);
+                response.logs.append(retryLogs);
             }
         }
     }
 
-    response.success = true;
-    response.text = accumulatedText.trimmed();
+    if (!response.success && isContextLengthError(response.errorMessage)) {
+        const int effectiveContextLength = contextInfo.contextLength > 0 ? contextInfo.contextLength : extractContextLengthFromError(response.errorMessage);
+        if (effectiveContextLength > 0) {
+            response.errorMessage = QString(
+                "%1 LM Studio meldet derzeit ein geladenes Kontextfenster von %2 Token."
+            ).arg(response.errorMessage, QString::number(effectiveContextLength));
+        }
+    }
+
     return response;
 }
 

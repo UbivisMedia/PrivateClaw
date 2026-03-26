@@ -4,6 +4,8 @@
 #include "services/ProjectVariableService.h"
 #include "tools/ToolRisk.h"
 #include "utils/JsonExtraction.h"
+#include "utils/ModelResponseSanitizer.h"
+#include "utils/PersistenceGuards.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -62,7 +64,7 @@ struct SanitizedModelResponse
 {
     QString visibleText;
     QString reasoningText;
-    bool hadReasoningTags = false;
+    bool hadReasoningContent = false;
 };
 
 struct ScopedSqliteConnection
@@ -106,6 +108,16 @@ struct MemoryQueryResult
 QString configString(const QJsonObject& object, const QString& key)
 {
     return object.value(key).toString().trimmed();
+}
+
+QString manualCancellationMessage()
+{
+    return "Workflow wurde manuell abgebrochen.";
+}
+
+bool isCancellationRequested(const std::function<bool()>& shouldCancel)
+{
+    return static_cast<bool>(shouldCancel) && shouldCancel();
 }
 
 QString rawConfigString(const QJsonObject& object, const QString& key)
@@ -689,45 +701,14 @@ QString formatMemoryEntries(
     return blocks.join("\n\n").trimmed();
 }
 
-QString cleanupVisibleText(QString text)
-{
-    text.replace(QRegularExpression("\n{3,}"), "\n\n");
-    return text.trimmed();
-}
-
 SanitizedModelResponse sanitizeModelResponse(const QString& rawText)
 {
+    const utils::SanitizedResponseContent sanitized = utils::sanitizeModelVisibleText(rawText);
+
     SanitizedModelResponse result;
-    result.visibleText = rawText.trimmed();
-
-    static const QRegularExpression reasoningBlockPattern(
-        R"(<\s*(think|thinking|reasoning|analysis|thought|reflection)\b[^>]*>(.*?)<\s*/\s*\1\s*>)",
-        QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption
-    );
-    static const QRegularExpression strayReasoningTagPattern(
-        R"(<\s*/?\s*(think|thinking|reasoning|analysis|thought|reflection)\b[^>]*>)",
-        QRegularExpression::CaseInsensitiveOption
-    );
-
-    QStringList reasoningParts;
-    const QRegularExpressionMatchIterator matches = reasoningBlockPattern.globalMatch(result.visibleText);
-    for (QRegularExpressionMatchIterator it = matches; it.hasNext();) {
-        const QRegularExpressionMatch match = it.next();
-        const QString reasoning = cleanupVisibleText(match.captured(2));
-        if (!reasoning.isEmpty()) {
-            reasoningParts.append(reasoning);
-        }
-        result.hadReasoningTags = true;
-    }
-
-    result.visibleText.remove(reasoningBlockPattern);
-    if (result.visibleText.contains(strayReasoningTagPattern)) {
-        result.visibleText.remove(strayReasoningTagPattern);
-        result.hadReasoningTags = true;
-    }
-
-    result.visibleText = cleanupVisibleText(result.visibleText);
-    result.reasoningText = reasoningParts.join("\n\n").trimmed();
+    result.visibleText = sanitized.visibleText;
+    result.reasoningText = sanitized.reasoningText;
+    result.hadReasoningContent = sanitized.hadReasoningContent;
     return result;
 }
 
@@ -944,7 +925,11 @@ QUrl buildEndpoint(const QString& baseUrl, const QString& suffix)
     return url;
 }
 
-NetworkCallResult waitForReply(QNetworkReply* reply, const int timeoutMs)
+NetworkCallResult waitForReply(
+    QNetworkReply* reply,
+    const int timeoutMs,
+    const std::function<bool()>& shouldCancel = {}
+)
 {
     NetworkCallResult result;
     if (reply == nullptr) {
@@ -954,6 +939,8 @@ NetworkCallResult waitForReply(QNetworkReply* reply, const int timeoutMs)
 
     QEventLoop loop;
     QTimer timeoutTimer;
+    QTimer cancelTimer;
+    bool cancelled = false;
 
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     if (timeoutMs > 0) {
@@ -962,9 +949,28 @@ NetworkCallResult waitForReply(QNetworkReply* reply, const int timeoutMs)
         QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
         timeoutTimer.start();
     }
+    if (shouldCancel) {
+        cancelTimer.setInterval(100);
+        cancelTimer.setSingleShot(false);
+        QObject::connect(&cancelTimer, &QTimer::timeout, &loop, [&]() {
+            if (!isCancellationRequested(shouldCancel)) {
+                return;
+            }
+
+            cancelled = true;
+            if (reply->isRunning()) {
+                reply->abort();
+            }
+            loop.quit();
+        });
+        cancelTimer.start();
+    }
 
     loop.exec();
 
+    if (cancelTimer.isActive()) {
+        cancelTimer.stop();
+    }
     if (timeoutMs > 0 && !timeoutTimer.isActive()) {
         reply->abort();
         result.errorMessage = "Zeitueberschreitung bei der Netzwerkanfrage.";
@@ -974,6 +980,12 @@ NetworkCallResult waitForReply(QNetworkReply* reply, const int timeoutMs)
 
     if (timeoutMs > 0) {
         timeoutTimer.stop();
+    }
+
+    if (cancelled || (isCancellationRequested(shouldCancel) && reply->error() == QNetworkReply::OperationCanceledError)) {
+        result.errorMessage = manualCancellationMessage();
+        reply->deleteLater();
+        return result;
     }
 
     result.statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -1791,12 +1803,14 @@ ToolExecutor::ToolExecutor(
     QString workspaceRoot,
     QString comfyUiBaseUrl,
     QString databasePath,
-    QStringList allowedToolPaths
+    QStringList allowedToolPaths,
+    std::function<bool()> shouldCancel
 )
     : m_workspaceRoot(std::move(workspaceRoot))
     , m_comfyUiBaseUrl(std::move(comfyUiBaseUrl))
     , m_databasePath(std::move(databasePath))
     , m_allowedToolPaths(std::move(allowedToolPaths))
+    , m_shouldCancel(std::move(shouldCancel))
 {
     if (m_workspaceRoot.trimmed().isEmpty()) {
         m_workspaceRoot = QDir::currentPath();
@@ -1864,6 +1878,13 @@ QStringList ToolExecutor::availableTools() const
 
 ToolExecutionResult ToolExecutor::execute(const ToolExecutionRequest& request) const
 {
+    if (isCancellationRequested()) {
+        ToolExecutionResult result;
+        result.errorMessage = manualCancellationMessage();
+        result.logs.append("Tool-Ausfuehrung wurde vor dem Start abgebrochen.");
+        return result;
+    }
+
     const QString toolName = request.toolName.trimmed().toLower();
     const RiskyToolKind riskyKind = classifyRiskyTool(toolName);
     if (riskyKind == RiskyToolKind::ShellRun && !request.allowShellRun) {
@@ -1981,6 +2002,11 @@ QString ToolExecutor::databasePath() const
     return m_databasePath;
 }
 
+bool ToolExecutor::isCancellationRequested() const
+{
+    return privateclaw::tools::isCancellationRequested(m_shouldCancel);
+}
+
 ToolExecutionResult ToolExecutor::executeFileRead(const QJsonObject& config) const
 {
     ToolExecutionResult result;
@@ -2090,7 +2116,7 @@ ToolExecutionResult ToolExecutor::executeJsonExtract(const QJsonObject& config) 
 
     result.success = true;
     if (utils::normalizedJsonText(inputJson) != extractedJsonText) {
-        result.logs.append("JSON wurde aus umgebendem Text oder Markdown-Codeblock extrahiert.");
+        result.logs.append("[warn] JSON wurde aus umgebendem Text oder Markdown-Codeblock extrahiert.");
     }
     result.logs.append(QString("JSON erfolgreich extrahiert: %1").arg(configString(config, "path").isEmpty() ? "<root>" : configString(config, "path")));
     return result;
@@ -2378,6 +2404,11 @@ ToolExecutionResult ToolExecutor::executeDirectoryReadRecursive(const QJsonObjec
     bool totalLimitReached = false;
 
     while (iterator.hasNext()) {
+        if (isCancellationRequested()) {
+            result.errorMessage = manualCancellationMessage();
+            return result;
+        }
+
         const QString absoluteFilePath = iterator.next();
         const QFileInfo fileInfo(absoluteFilePath);
         const QString relativePath = QDir(absoluteDirectoryPath).relativeFilePath(absoluteFilePath);
@@ -2523,6 +2554,11 @@ ToolExecutionResult ToolExecutor::executeDirectoryReadChanged(const QJsonObject&
     bool totalLimitReached = false;
 
     while (iterator.hasNext()) {
+        if (isCancellationRequested()) {
+            result.errorMessage = manualCancellationMessage();
+            return result;
+        }
+
         const QString absoluteFilePath = iterator.next();
         const QFileInfo fileInfo(absoluteFilePath);
         const QString relativePath = QDir(absoluteDirectoryPath).relativeFilePath(absoluteFilePath);
@@ -2896,6 +2932,8 @@ ToolExecutionResult ToolExecutor::executeMemorySummarize(const ToolExecutionRequ
     if (systemPrompt.isEmpty()) {
         systemPrompt =
             "Du bist ein praeziser Assistent fuer Projektgedaechtnis. "
+            "Gib niemals Thinking Process, Analyse, Planungsnotizen oder Prompt-Wiederholungen aus, "
+            "sondern nur die finale Nutzantwort. "
             "Verdichte Inhalte verlustarm, erfinde nichts und antworte standardmaessig auf Deutsch.";
     }
 
@@ -2905,6 +2943,9 @@ ToolExecutionResult ToolExecutor::executeMemorySummarize(const ToolExecutionRequ
     chatRequest.userPrompt = summaryPrompt;
 
     const providers::ChatResponse response = request.llmProvider->chat(chatRequest);
+    for (const QString& providerLogLine : response.logs) {
+        result.logs.append(providerLogLine);
+    }
     if (!response.success) {
         result.errorMessage = QString("Memory-Zusammenfassung fehlgeschlagen: %1").arg(response.errorMessage);
         return result;
@@ -2914,8 +2955,8 @@ ToolExecutionResult ToolExecutor::executeMemorySummarize(const ToolExecutionRequ
     result.success = true;
     result.outputText = sanitized.visibleText;
     result.logs.append(QString("Memory-Eintraege zusammengefasst: %1").arg(queryResult.entries.size()));
-    if (sanitized.hadReasoningTags) {
-        result.logs.append("Reasoning-Tags wurden aus der Zusammenfassung entfernt.");
+    if (sanitized.hadReasoningContent) {
+        result.logs.append("[warn] Reasoning- oder Meta-Inhalt wurde aus der Zusammenfassung entfernt.");
     }
 
     if (configBool(request.config, "save_as_memory", true)) {
@@ -3336,8 +3377,34 @@ ToolExecutionResult ToolExecutor::executeFileWriteText(const QJsonObject& config
         }
     }
 
-    const QString content = config.value("content").toString();
+    QString content = config.value("content").toString();
     const bool returnContent = configBool(config, "return_content", false);
+
+    const utils::PersistedContentGuardResult guard = utils::guardPersistedContent(content, {}, config);
+    for (const QString& warning : guard.warnings) {
+        result.logs.append(QString("[warn] %1").arg(warning));
+    }
+
+    if (guard.shouldFail) {
+        result.errorMessage = guard.errorMessage;
+        return result;
+    }
+
+    if (guard.shouldSkip) {
+        QJsonObject summary{
+            { "tool", "file.write_text" },
+            { "path", QDir(m_workspaceRoot).relativeFilePath(absolutePath) },
+            { "mode", mode },
+            { "skipped", true },
+            { "reason", guard.warnings.isEmpty() ? QString("Persistenz uebersprungen.") : guard.warnings.first() }
+        };
+        result.success = true;
+        result.outputText = QString::fromUtf8(QJsonDocument(summary).toJson(QJsonDocument::Indented));
+        result.logs.append(QString("[warn] Datei-Schreiben uebersprungen: %1").arg(absolutePath));
+        return result;
+    }
+
+    content = guard.finalText;
 
     if (mode == "append") {
         QFile file(absolutePath);
@@ -3558,19 +3625,23 @@ ToolExecutionResult ToolExecutor::executeHttpRequest(const QJsonObject& config) 
     NetworkCallResult response;
 
     if (method == "GET") {
-        response = waitForReply(networkManager.get(request), timeoutMs);
+        response = waitForReply(networkManager.get(request), timeoutMs, m_shouldCancel);
     } else if (method == "POST") {
-        response = waitForReply(networkManager.post(request, requestBody), timeoutMs);
+        response = waitForReply(networkManager.post(request, requestBody), timeoutMs, m_shouldCancel);
     } else if (method == "PUT") {
-        response = waitForReply(networkManager.put(request, requestBody), timeoutMs);
+        response = waitForReply(networkManager.put(request, requestBody), timeoutMs, m_shouldCancel);
     } else if (method == "PATCH") {
-        response = waitForReply(networkManager.sendCustomRequest(request, "PATCH", requestBody), timeoutMs);
+        response = waitForReply(
+            networkManager.sendCustomRequest(request, "PATCH", requestBody),
+            timeoutMs,
+            m_shouldCancel
+        );
     } else if (method == "DELETE") {
         response = hasRequestBody
-            ? waitForReply(networkManager.sendCustomRequest(request, "DELETE", requestBody), timeoutMs)
-            : waitForReply(networkManager.deleteResource(request), timeoutMs);
+            ? waitForReply(networkManager.sendCustomRequest(request, "DELETE", requestBody), timeoutMs, m_shouldCancel)
+            : waitForReply(networkManager.deleteResource(request), timeoutMs, m_shouldCancel);
     } else if (method == "HEAD") {
-        response = waitForReply(networkManager.head(request), timeoutMs);
+        response = waitForReply(networkManager.head(request), timeoutMs, m_shouldCancel);
     } else {
         result.errorMessage = QString("HTTP-Methode wird nicht unterstuetzt: %1").arg(method);
         return result;
@@ -3661,15 +3732,24 @@ ToolExecutionResult ToolExecutor::executeShellRun(const QJsonObject& config) con
         return result;
     }
 
-    if (timeoutMs > 0) {
-        if (!process.waitForFinished(timeoutMs)) {
+    QElapsedTimer elapsedTimer;
+    elapsedTimer.start();
+    while (process.state() != QProcess::NotRunning) {
+        if (isCancellationRequested()) {
+            process.kill();
+            process.waitForFinished(3000);
+            result.errorMessage = manualCancellationMessage();
+            return result;
+        }
+
+        if (timeoutMs > 0 && elapsedTimer.elapsed() > timeoutMs) {
             process.kill();
             process.waitForFinished(3000);
             result.errorMessage = "shell.run wurde wegen lokaler Zeitueberschreitung beendet.";
             return result;
         }
-    } else {
-        process.waitForFinished(-1);
+
+        process.waitForFinished(150);
     }
 
     QString output = QString::fromUtf8(process.readAllStandardOutput());
@@ -3776,7 +3856,8 @@ ToolExecutionResult ToolExecutor::executeComfyUiWorkflow(const QJsonObject& conf
     const int submitTimeoutMs = qMax(1000, configInt(config, "submit_timeout_ms", 15000));
     const NetworkCallResult submitResult = waitForReply(
         networkManager.post(submitRequest, QJsonDocument(payload).toJson(QJsonDocument::Compact)),
-        submitTimeoutMs
+        submitTimeoutMs,
+        m_shouldCancel
     );
     if (!submitResult.success) {
         result.errorMessage = QString("ComfyUI-Queue fehlgeschlagen: %1").arg(submitResult.errorMessage);
@@ -3808,6 +3889,11 @@ ToolExecutionResult ToolExecutor::executeComfyUiWorkflow(const QJsonObject& conf
 
     QJsonObject historyEntry;
     while (historyEntry.isEmpty()) {
+        if (isCancellationRequested()) {
+            result.errorMessage = manualCancellationMessage();
+            return result;
+        }
+
         if (timeoutMs > 0 && elapsedTimer.elapsed() > timeoutMs) {
             result.errorMessage = "Zeitueberschreitung beim Warten auf ComfyUI-History.";
             return result;
@@ -3815,7 +3901,8 @@ ToolExecutionResult ToolExecutor::executeComfyUiWorkflow(const QJsonObject& conf
 
         const NetworkCallResult historyResult = waitForReply(
             networkManager.get(QNetworkRequest(buildEndpoint(comfyUiBaseUrl, QString("/history/%1").arg(promptId)))),
-            10000
+            10000,
+            m_shouldCancel
         );
         if (historyResult.success) {
             const QJsonDocument historyDocument = QJsonDocument::fromJson(historyResult.payload);
@@ -3859,7 +3946,8 @@ ToolExecutionResult ToolExecutor::executeComfyUiWorkflow(const QJsonObject& conf
 
                 const NetworkCallResult imageResult = waitForReply(
                     networkManager.get(QNetworkRequest(viewUrl)),
-                    15000
+                    15000,
+                    m_shouldCancel
                 );
                 if (!imageResult.success) {
                     result.logs.append(

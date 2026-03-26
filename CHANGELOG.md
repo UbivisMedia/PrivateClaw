@@ -19,6 +19,7 @@ Wenn kein passender Abschnitt gefunden wird, faellt der Workflow automatisch auf
 - `variables.set` als Workflow-Tool fuer String- und Integer-Variablen, inklusive Inkrementen fuer Kapitel-, Szenen- und Retry-Zaehler
 - `workflow.foreach` als Workflow-Tool fuer JSON-Arrays, Listen und Unter-Schritte mit `loop_item`-, Index- und Sammelvariablen
 - Projektvariablen mit eigener Sidebar-Ansicht, Typen `string`/`int`/`float` und direkter Nutzung in Workflows
+- Run-Historie mit Schnellaktion zum nachtraeglichen Bereinigen offensichtlicher Thinking-/Meta-Leaks in Runs, Memories und Artefakt-Dateien
 
 ### Changed
 
@@ -31,6 +32,8 @@ Wenn kein passender Abschnitt gefunden wird, faellt der Workflow automatisch auf
 - Eingeklappte Bereiche verteilen den freigewordenen Platz jetzt aktiv an die verbleibenden Editor-Bereiche weiter, statt Leeraum stehenzulassen
 - Projekt-, Memory-, Run- und Zeitplan-Ansichten nutzen jetzt ebenfalls einklappbare Hauptkarten, damit sich grosse Bereiche bei Bedarf gezielt ausblenden lassen
 - Vollständige Reorganisation des Userinfaces
+- Persistenzpfade wie `save_memory` und `file.write_text` koennen Ausgaben jetzt optional vor dem Speichern validieren, Meta-Inhalt markieren und unbrauchbare Inhalte blockieren oder ueberspringen
+- Die Run-Historie zeigt jetzt sichtbare Warnungszaehler fuer Laeufe mit gekuerztem, repariertem oder bereinigtem Output
 
 ### Fixed
 
@@ -40,6 +43,8 @@ Wenn kein passender Abschnitt gefunden wird, faellt der Workflow automatisch auf
 - `memory.search` sucht mehrwortige Queries jetzt ueber einzelne Begriffe statt nur als exakte Gesamtphrase, damit Fortschritts- und Story-Memories zuverlaessiger wiedergefunden werden
 - LM-Studio-Streaming faellt bei leerer oder nicht auswertbarer Stream-Antwort jetzt automatisch auf verwertbare Abschlussdaten oder den normalen Chat-Pfad zurueck
 - `variables.set` kann jetzt optional projektweit persistent speichern (`scope: "project"`), inklusive Float-Werten fuer fortlaufende Zaehler oder Metriken
+- Offensichtlich leere Entity-Memories fuer Figuren, Orte und Ereignisse werden jetzt vor dem Speichern verworfen statt den Story-Kontext zu verschmutzen
+- Warnungen fuer entfernten Reasoning-Inhalt, reparierte JSON-Ausgaben und kontextbedingt gekuerzte LM-Studio-Requests werden jetzt explizit im Run-Log markiert
 
 
 ## [v0.1.2] - 2026-03-25

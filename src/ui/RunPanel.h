@@ -12,8 +12,10 @@ class QListWidget;
 class QPlainTextEdit;
 
 namespace privateclaw::services {
+class MemoryService;
 class ProjectService;
 class RunService;
+class SettingsService;
 class WorkflowService;
 }
 
@@ -23,7 +25,9 @@ class RunPanel : public QWidget
 {
 public:
     RunPanel(
+        services::SettingsService& settingsService,
         services::ProjectService& projectService,
+        services::MemoryService& memoryService,
         services::WorkflowService& workflowService,
         services::RunService& runService,
         QWidget* parent = nullptr
@@ -37,14 +41,19 @@ private:
     void refreshProjects();
     void refreshRuns(qint64 runIdToSelect = -1);
     void loadRunFromRow(int row);
+    void cleanupContaminatedArtifacts();
     int indexOfRun(qint64 runId) const;
     qint64 currentProjectId() const;
+    qint64 effectiveCleanupProjectId() const;
     QString projectNameForId(qint64 projectId) const;
     QString workflowNameForId(qint64 workflowId) const;
     QString formatRunLabel(const domain::Run& run) const;
+    int warningCountForRun(const domain::Run& run) const;
     void clearDetails();
 
+    services::SettingsService& m_settingsService;
     services::ProjectService& m_projectService;
+    services::MemoryService& m_memoryService;
     services::WorkflowService& m_workflowService;
     services::RunService& m_runService;
 
@@ -65,6 +74,7 @@ private:
     QLabel* m_startedAtValueLabel = nullptr;
     QLabel* m_finishedAtValueLabel = nullptr;
     QLabel* m_memoryCountValueLabel = nullptr;
+    QLabel* m_warningCountValueLabel = nullptr;
     QLabel* m_summaryValueLabel = nullptr;
     QLabel* m_errorValueLabel = nullptr;
     QPlainTextEdit* m_outputView = nullptr;

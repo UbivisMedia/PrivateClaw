@@ -8,6 +8,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 namespace privateclaw::providers {
 class ILlmProvider;
 }
@@ -47,7 +49,8 @@ public:
         QString workspaceRoot = QString(),
         QString comfyUiBaseUrl = QString(),
         QString databasePath = QString(),
-        QStringList allowedToolPaths = {}
+        QStringList allowedToolPaths = {},
+        std::function<bool()> shouldCancel = {}
     );
 
     QStringList availableTools() const;
@@ -78,11 +81,13 @@ private:
 
     QString resolveWorkspacePath(const QString& path, bool allowNonExisting, QString* errorMessage) const;
     bool isPathWithinAllowedRoots(const QString& absolutePath) const;
+    bool isCancellationRequested() const;
 
     QString m_workspaceRoot;
     QString m_comfyUiBaseUrl;
     QString m_databasePath;
     QStringList m_allowedToolPaths;
+    std::function<bool()> m_shouldCancel;
 };
 
 } // namespace privateclaw::tools

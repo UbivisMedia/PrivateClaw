@@ -24,9 +24,15 @@ Hinweis:
 Der Beispiel-Workflow nutzt den neuen Formular-/Builder-Modus von `comfyui.workflow`.
 Falls du spaeter etwas Komplexeres brauchst, kannst du denselben Schritt im Editor jederzeit auf `Rohes Workflow-JSON` umstellen.
 
-Prompt-Ausgaben werden beim Workflow-Lauf automatisch von typischen Reasoning-Tags wie `<think>...</think>` bereinigt.
+Prompt-Ausgaben werden beim Workflow-Lauf automatisch von typischen Reasoning-Tags wie `<think>...</think>` und offensichtlichen Thinking-/Meta-Bloecken bereinigt.
 Fuer sichtbare Folge-Schritte wie `{{last_response}}` oder `{{positive_prompt}}` wird nur die bereinigte Ausgabe verwendet.
 Falls du das extrahierte Reasoning bewusst separat speichern willst, stehen zusaetzlich Variablen wie `{{last_reasoning}}` oder `{{positive_prompt_reasoning}}` zur Verfuegung.
+
+Fuer persistente Folgeschritte gibt es zusaetzlich einfache Guardrails:
+
+- `sanitize_before_persist` fuer `save_memory`
+- `sanitize_before_write` fuer `file.write_text`
+- `skip_if_all_inputs_empty` oder `fail_if_all_inputs_empty`, um leere Entity-Extrakte oder leere Exporte vor dem Speichern abzufangen
 
 ## Buchautor Szene Workflow
 

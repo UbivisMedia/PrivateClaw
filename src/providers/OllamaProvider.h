@@ -7,7 +7,7 @@ namespace privateclaw::providers {
 class OllamaProvider : public ILlmProvider
 {
 public:
-    explicit OllamaProvider(QString baseUrl);
+    explicit OllamaProvider(QString baseUrl, std::function<bool()> shouldCancel = {});
 
     QString name() const override;
     QString baseUrl() const override;
@@ -20,6 +20,7 @@ public:
 
 private:
     QString m_baseUrl;
+    std::function<bool()> m_shouldCancel;
 };
 
 } // namespace privateclaw::providers

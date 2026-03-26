@@ -290,7 +290,11 @@
         "entry_type": "artifact",
         "source": "workflow:buchautor_szene/szene",
         "tags": "roman,{{roman_slug}},szene,kapitel",
-        "relevance": 90
+        "relevance": 90,
+        "sanitize_before_persist": true,
+        "fail_if_all_inputs_empty": [
+          "{{neue_szene}}"
+        ]
       }
     },
     {
@@ -303,6 +307,10 @@
         "mode": "overwrite",
         "create_dirs": true,
         "content": "# {{kapitel_szene_label}}\n\n{{neue_szene}}",
+        "sanitize_before_write": true,
+        "fail_if_all_inputs_empty": [
+          "{{neue_szene}}"
+        ],
         "return_content": false,
         "output": "export_ergebnis"
       }
@@ -342,7 +350,15 @@
               "entry_type": "character",
               "source": "workflow:buchautor_szene/nebencharaktere",
               "tags": "roman,{{roman_slug}},figuren,nebencharaktere,{{nebenfigur.name}}",
-              "relevance": 84
+              "relevance": 84,
+              "skip_if_all_inputs_empty": [
+                "{{nebenfigur.name}}",
+                "{{nebenfigur.rolle}}",
+                "{{nebenfigur.erster_eindruck}}",
+                "{{nebenfigur.motivation}}",
+                "{{nebenfigur.beziehung}}",
+                "{{nebenfigur.story_relevanz}}"
+              ]
             }
           }
         ]
@@ -383,7 +399,14 @@
               "entry_type": "location",
               "source": "workflow:buchautor_szene/orte",
               "tags": "roman,{{roman_slug}},orte,schauplaetze,{{ort.name}}",
-              "relevance": 82
+              "relevance": 82,
+              "skip_if_all_inputs_empty": [
+                "{{ort.name}}",
+                "{{ort.funktion}}",
+                "{{ort.atmosphaere}}",
+                "{{ort.details}}",
+                "{{ort.konsequenzen}}"
+              ]
             }
           }
         ]
@@ -424,7 +447,13 @@
               "entry_type": "event",
               "source": "workflow:buchautor_szene/ereignisse",
               "tags": "roman,{{roman_slug}},ereignisse,plot",
-              "relevance": 88
+              "relevance": 88,
+              "skip_if_all_inputs_empty": [
+                "{{ereignis.ereignis}}",
+                "{{ereignis.direkte_auswirkung}}",
+                "{{ereignis.betroffene_figuren}}",
+                "{{ereignis.spaetere_folgen}}"
+              ]
             }
           }
         ]
@@ -449,7 +478,11 @@
         "entry_type": "note",
         "source": "workflow:buchautor_szene/lektorat",
         "tags": "roman,{{roman_slug}},lektorat,feedback",
-        "relevance": 70
+        "relevance": 70,
+        "sanitize_before_persist": true,
+        "fail_if_all_inputs_empty": [
+          "{{lektorat_feedback}}"
+        ]
       }
     },
     {
@@ -472,7 +505,11 @@
         "source": "workflow:buchautor_szene/baustellen",
         "tags": "roman,{{roman_slug}},todo,baustellen",
         "relevance": 86,
-        "pinned": true
+        "pinned": true,
+        "sanitize_before_persist": true,
+        "fail_if_all_inputs_empty": [
+          "{{offene_baustellen}}"
+        ]
       }
     },
     {
