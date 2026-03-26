@@ -93,6 +93,7 @@ struct MemoryQueryOptions
     QString queryText;
     QString entryType;
     QStringList tags;
+    QString tagMatchMode = "all";
     int limit = 20;
 };
 
@@ -576,12 +577,14 @@ MemoryQueryResult queryMemoryEntries(const QSqlDatabase& database, const MemoryQ
         }
     }
     if (!normalizedTags.isEmpty()) {
+        const QString normalizedTagMatchMode = options.tagMatchMode.trimmed().toLower();
+        const bool matchAnyTag = normalizedTagMatchMode == "any" || normalizedTagMatchMode == "or";
         QStringList tagConditions;
         tagConditions.reserve(normalizedTags.size());
         for (int index = 0; index < normalizedTags.size(); ++index) {
             tagConditions.append("LOWER(tags) LIKE ?");
         }
-        statement += " AND (" + tagConditions.join(" OR ") + ")";
+        statement += " AND (" + tagConditions.join(matchAnyTag ? " OR " : " AND ") + ")";
     }
 
     statement += " ORDER BY is_pinned DESC, relevance DESC, created_at DESC, id DESC";
@@ -2807,6 +2810,7 @@ ToolExecutionResult ToolExecutor::executeMemorySearch(const ToolExecutionRequest
     options.queryText = configString(request.config, "query");
     options.entryType = configString(request.config, "entry_type");
     options.tags = configStringList(request.config, "tags");
+    options.tagMatchMode = configString(request.config, "tag_match_mode");
     options.limit = qMax(1, configInt(request.config, "limit", 10));
 
     const MemoryQueryResult queryResult = queryMemoryEntries(connection.database, options);
@@ -2859,6 +2863,7 @@ ToolExecutionResult ToolExecutor::executeMemorySummarize(const ToolExecutionRequ
     options.queryText = configString(request.config, "query");
     options.entryType = configString(request.config, "entry_type");
     options.tags = configStringList(request.config, "tags");
+    options.tagMatchMode = configString(request.config, "tag_match_mode");
     options.limit = qMax(1, configInt(request.config, "limit", 12));
 
     const MemoryQueryResult queryResult = queryMemoryEntries(connection.database, options);
@@ -2961,6 +2966,7 @@ ToolExecutionResult ToolExecutor::executeMemoryDeleteOld(const ToolExecutionRequ
     options.queryText = configString(request.config, "query");
     options.entryType = configString(request.config, "entry_type");
     options.tags = configStringList(request.config, "tags");
+    options.tagMatchMode = configString(request.config, "tag_match_mode");
     options.limit = 0;
 
     const MemoryQueryResult queryResult = queryMemoryEntries(connection.database, options);

@@ -395,6 +395,7 @@ Sucht projektbezogen in der persistenten Erinnerung und liefert Treffer als Snip
 - `query`
 - `entry_type`
 - `tags`
+- `tag_match_mode`
 - `limit`
 - `max_chars`
 - `format`
@@ -404,6 +405,11 @@ Sucht projektbezogen in der persistenten Erinnerung und liefert Treffer als Snip
 
 - `snippets`
 - `full`
+
+### Werte fuer `tag_match_mode`
+
+- `all` Standard. Alle angegebenen Tags muessen im Eintrag vorkommen.
+- `any` Mindestens eines der angegebenen Tags muss vorkommen.
 
 ### Beispiel
 
@@ -433,6 +439,7 @@ Sucht passende Memory-Eintraege, fasst sie mit dem aktuell ausgewaehlten LLM zus
 - `query`
 - `entry_type`
 - `tags`
+- `tag_match_mode`
 - `limit`
 - `max_chars`
 - `prompt`
@@ -478,6 +485,7 @@ Hohe Relevanz oder die neuesten Eintraege koennen geschuetzt werden.
 - `query`
 - `entry_type`
 - `tags`
+- `tag_match_mode`
 - `dry_run`
 - `output`
 

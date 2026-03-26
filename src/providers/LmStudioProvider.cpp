@@ -81,14 +81,8 @@ QJsonObject buildChatPayload(const ChatRequest& request, const bool stream)
     };
 }
 
-QString lmStudioErrorMessageFromPayload(const QByteArray& payload)
+QString lmStudioErrorMessageFromJsonObject(const QJsonObject& root)
 {
-    const QJsonDocument json = QJsonDocument::fromJson(payload);
-    if (!json.isObject()) {
-        return {};
-    }
-
-    const QJsonObject root = json.object();
     const QJsonValue errorValue = root.value("error");
     if (errorValue.isString()) {
         return errorValue.toString().trimmed();
@@ -99,6 +93,16 @@ QString lmStudioErrorMessageFromPayload(const QByteArray& payload)
     }
 
     return root.value("message").toString().trimmed();
+}
+
+QString lmStudioErrorMessageFromPayload(const QByteArray& payload)
+{
+    const QJsonDocument json = QJsonDocument::fromJson(payload);
+    if (!json.isObject()) {
+        return {};
+    }
+
+    return lmStudioErrorMessageFromJsonObject(json.object());
 }
 
 QString extractTextFromValue(const QJsonValue& value, const bool trimParts, const QString& separator)
@@ -181,6 +185,30 @@ QString extractLmStudioResponseText(const QJsonObject& messageObject, bool* reas
     return chunk;
 }
 
+QString extractLmStudioChoiceText(const QJsonObject& choiceObject, bool* reasoningOpen)
+{
+    QString chunk = extractLmStudioResponseText(choiceObject.value("delta").toObject(), reasoningOpen);
+    if (!chunk.isEmpty()) {
+        return chunk;
+    }
+
+    chunk = extractLmStudioResponseText(choiceObject.value("message").toObject(), reasoningOpen);
+    if (!chunk.isEmpty()) {
+        return chunk;
+    }
+
+    chunk = extractLmStudioResponseText(choiceObject, reasoningOpen);
+    if (!chunk.isEmpty()) {
+        return chunk;
+    }
+
+    if (choiceObject.contains("content")) {
+        return extractTextFromValue(choiceObject.value("content"), false, QString());
+    }
+
+    return firstNonEmptyString(choiceObject, { "text" });
+}
+
 bool parseLmStudioChatPayload(const QByteArray& payload, QString* text, QString* errorMessage = nullptr)
 {
     if (text == nullptr) {
@@ -198,7 +226,16 @@ bool parseLmStudioChatPayload(const QByteArray& payload, QString* text, QString*
         return false;
     }
 
-    const QJsonArray choices = json.object().value("choices").toArray();
+    const QJsonObject root = json.object();
+    const QString serverError = lmStudioErrorMessageFromJsonObject(root);
+    if (!serverError.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = serverError;
+        }
+        return false;
+    }
+
+    const QJsonArray choices = root.value("choices").toArray();
     if (choices.isEmpty()) {
         if (errorMessage != nullptr) {
             *errorMessage = "LM Studio hat keine Antwortauswahl geliefert.";
@@ -207,12 +244,8 @@ bool parseLmStudioChatPayload(const QByteArray& payload, QString* text, QString*
     }
 
     const QJsonObject choiceObject = choices.first().toObject();
-    const QJsonObject messageObject = choiceObject.value("message").toObject();
     bool reasoningOpen = false;
-    QString parsedText = extractLmStudioResponseText(messageObject, &reasoningOpen).trimmed();
-    if (parsedText.isEmpty()) {
-        parsedText = choiceObject.value("text").toString().trimmed();
-    }
+    QString parsedText = extractLmStudioChoiceText(choiceObject, &reasoningOpen).trimmed();
     if (reasoningOpen) {
         parsedText += "</think>";
     }
@@ -430,12 +463,19 @@ ChatResponse LmStudioProvider::chatStream(const ChatRequest& request, const Chat
             return;
         }
 
-        const QJsonArray choices = json.object().value("choices").toArray();
+        const QJsonObject root = json.object();
+        const QString streamError = lmStudioErrorMessageFromJsonObject(root);
+        if (!streamError.isEmpty()) {
+            parseError = streamError;
+            return;
+        }
+
+        const QJsonArray choices = root.value("choices").toArray();
         if (choices.isEmpty()) {
             return;
         }
 
-        appendChunk(extractLmStudioResponseText(choices.first().toObject().value("delta").toObject(), &reasoningOpen));
+        appendChunk(extractLmStudioChoiceText(choices.first().toObject(), &reasoningOpen));
     };
 
     QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&]() {
@@ -479,6 +519,9 @@ ChatResponse LmStudioProvider::chatStream(const ChatRequest& request, const Chat
         if (fallbackResponse.success) {
             appendChunk(fallbackResponse.text);
             parseError.clear();
+        } else if (!fallbackResponse.errorMessage.trimmed().isEmpty()) {
+            response.errorMessage = fallbackResponse.errorMessage.trimmed();
+            return response;
         }
     }
 
@@ -500,7 +543,9 @@ ChatResponse LmStudioProvider::chatStream(const ChatRequest& request, const Chat
             if (fallbackResponse.success) {
                 appendChunk(fallbackResponse.text);
             } else {
-                response.errorMessage = "LM Studio hat keine auswertbare Streaming-Antwort geliefert.";
+                response.errorMessage = fallbackResponse.errorMessage.trimmed().isEmpty()
+                    ? "LM Studio hat keine auswertbare Streaming-Antwort geliefert."
+                    : fallbackResponse.errorMessage.trimmed();
                 return response;
             }
         }

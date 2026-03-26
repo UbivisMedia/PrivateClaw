@@ -1361,7 +1361,7 @@ void WorkflowPanel::buildUi()
     m_visualGraphView->setScene(m_visualGraphScene);
     m_visualGraphView->setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
     m_visualGraphView->setFrameShape(QFrame::StyledPanel);
-    m_visualGraphView->setMinimumHeight(280);
+    m_visualGraphView->setMinimumHeight(120);
     m_visualGraphView->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_visualGraphView->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_visualGraphView->setBackgroundBrush(QColor("#fbf8f2"));
@@ -2158,28 +2158,22 @@ void WorkflowPanel::buildUi()
     m_jsonDefinitionLabel->setProperty("sectionBody", true);
 
     m_definitionEdit = new QPlainTextEdit(editorCard);
-    m_definitionEdit->setMinimumHeight(320);
+    m_definitionEdit->setMinimumHeight(80);
     m_definitionEdit->setPlainText(defaultWorkflowJson());
 
     m_executionOutputView = new QPlainTextEdit(editorCard);
     m_executionOutputView->setReadOnly(true);
-    m_executionOutputView->setMinimumHeight(160);
+    m_executionOutputView->setMinimumHeight(60);
     m_executionOutputView->setPlaceholderText("Hier erscheint die letzte Workflow-Ausgabe.");
 
     m_executionStatusLabel = new QLabel("Status: Bereit.", editorCard);
     m_executionStatusLabel->setProperty("sectionBody", true);
     m_executionStatusLabel->setWordWrap(true);
 
-    auto* editorActions = new QHBoxLayout();
     auto* saveButton = new QPushButton("Workflow speichern", editorCard);
     auto* runButton = new QPushButton("Workflow ausfuehren", editorCard);
     auto* debugRunButton = new QPushButton("Debug-Ausfuehrung", editorCard);
     auto* resetButton = new QPushButton("Editor zuruecksetzen", editorCard);
-    editorActions->addWidget(saveButton);
-    editorActions->addWidget(runButton);
-    editorActions->addWidget(debugRunButton);
-    editorActions->addWidget(resetButton);
-    editorActions->addStretch();
 
     m_debuggerToggle = new QCheckBox("Debugger anzeigen", editorCard);
 
@@ -2234,50 +2228,52 @@ void WorkflowPanel::buildUi()
     );
     workflowMetaSectionLayout->addLayout(formLayout);
 
-    editorLayout->addWidget(m_templateFrame);
-    editorLayout->addWidget(m_visualEditorToggle);
-    editorLayout->addWidget(m_visualEditorFrame);
+    // Checkboxen als unsichtbare Sentinel-Objekte – Guards in Methoden bleiben erhalten
+    m_visualEditorToggle->setChecked(true);
+    m_debuggerToggle->setChecked(true);
+    // Beide werden NICHT in ein Layout eingefügt
 
-    auto* jsonSectionLayout = createCollapsibleSection(
-        editorCard,
-        editorLayout,
-        "JSON-Definition",
-        true,
-        nullptr,
-        nullptr,
-        &m_jsonDefinitionFrame
-    );
-    jsonSectionLayout->addWidget(m_jsonDefinitionLabel);
-    jsonSectionLayout->addWidget(m_definitionEdit, 1);
+    m_editorTabs = new QTabWidget(editorCard);
 
-    editorLayout->addLayout(editorActions);
+    // --- Reiter 0: Editor (JSON + Template + Speichern) ---
+    auto* editorTabWidget = new QWidget(m_editorTabs);
+    auto* editorTabLayout = new QVBoxLayout(editorTabWidget);
+    editorTabLayout->setContentsMargins(8, 8, 8, 8);
+    editorTabLayout->addWidget(m_templateFrame);
+    editorTabLayout->addWidget(m_jsonDefinitionLabel);
+    editorTabLayout->addWidget(m_definitionEdit, 1);
+    auto* saveActions = new QHBoxLayout();
+    saveActions->addWidget(saveButton);
+    saveActions->addWidget(resetButton);
+    saveActions->addStretch();
+    editorTabLayout->addLayout(saveActions);
+    editorTabLayout->addWidget(m_feedbackLabel);
+    m_editorTabs->addTab(editorTabWidget, "Editor");
 
-    QFrame* outputSectionFrame = nullptr;
-    auto* outputSectionLayout = createCollapsibleSection(
-        editorCard,
-        editorLayout,
-        "Letzte Ausfuehrung",
-        true,
-        nullptr,
-        nullptr,
-        &outputSectionFrame
-    );
-    outputSectionLayout->addWidget(m_executionStatusLabel);
-    outputSectionLayout->addWidget(m_executionOutputView);
+    // --- Reiter 1: Visuell ---
+    m_editorTabs->addTab(m_visualEditorFrame, "Visuell");
 
-    editorLayout->addWidget(m_debuggerToggle);
-    editorLayout->addWidget(m_debuggerFrame, 1);
-    editorLayout->addWidget(m_feedbackLabel);
-    editorLayout->setStretch(5, 5);
-    editorLayout->setStretch(6, 3);
-    editorLayout->setStretch(8, 2);
-    editorLayout->setStretch(10, 3);
+    // --- Reiter 2: Ausführung ---
+    auto* runTabWidget = new QWidget(m_editorTabs);
+    auto* runTabLayout = new QVBoxLayout(runTabWidget);
+    runTabLayout->setContentsMargins(8, 8, 8, 8);
+    runTabLayout->addWidget(m_executionStatusLabel);
+    runTabLayout->addWidget(m_executionOutputView, 1);
+    auto* runActions = new QHBoxLayout();
+    runActions->addWidget(runButton);
+    runActions->addWidget(debugRunButton);
+    runActions->addStretch();
+    runTabLayout->addLayout(runActions);
+    m_editorTabs->addTab(runTabWidget, "Ausf\u00fchrung");
+
+    // --- Reiter 3: Debugger ---
+    m_editorTabs->addTab(m_debuggerFrame, "Debugger");
+
     if (workflowMetaSectionFrame != nullptr) {
         workflowMetaSectionFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     }
-    if (outputSectionFrame != nullptr) {
-        outputSectionFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
-    }
+
+    editorLayout->addWidget(m_editorTabs, 1);
 
     contentSplitter->setStretchFactor(0, 3);
     contentSplitter->setStretchFactor(1, 5);
@@ -2311,14 +2307,6 @@ void WorkflowPanel::buildUi()
 
     connect(m_workflowList, &QListWidget::currentRowChanged, this, [this](const int row) {
         loadWorkflowFromRow(row);
-    });
-
-    connect(m_visualEditorToggle, &QCheckBox::toggled, this, [this]() {
-        updateVisualEditorVisibility();
-    });
-
-    connect(m_debuggerToggle, &QCheckBox::toggled, this, [this]() {
-        updateDebuggerVisibility();
     });
 
     connect(m_templateCombo, &QComboBox::currentIndexChanged, this, [this]() {
@@ -3088,8 +3076,8 @@ void WorkflowPanel::executeWorkflow(const bool debugRequested)
 
     m_lastExecutionWasDebug = debugRequested;
     resetDebugger(true);
-    if (debugRequested && m_debuggerToggle != nullptr) {
-        m_debuggerToggle->setChecked(true);
+    if (debugRequested && m_editorTabs != nullptr) {
+        m_editorTabs->setCurrentIndex(3);
     }
     if (m_debuggerStatusLabel != nullptr) {
         m_debuggerStatusLabel->setText(
@@ -3299,8 +3287,8 @@ void WorkflowPanel::executeWorkflow(const bool debugRequested)
                           .arg(runId)
             );
         }
-        if (debugRequested && m_debuggerToggle != nullptr) {
-            m_debuggerToggle->setChecked(true);
+        if (debugRequested && m_editorTabs != nullptr) {
+            m_editorTabs->setCurrentIndex(3);
         }
 
         int savedMemoryCount = 0;
@@ -3605,28 +3593,7 @@ void WorkflowPanel::loadSelectedTemplateIntoEditor()
 
 void WorkflowPanel::updateVisualEditorVisibility()
 {
-    if (m_visualEditorFrame == nullptr || m_visualEditorToggle == nullptr) {
-        return;
-    }
-
-    const bool visualEditorEnabled = m_visualEditorToggle->isChecked();
-    m_visualEditorFrame->setVisible(visualEditorEnabled);
-
-    if (m_jsonDefinitionFrame != nullptr) {
-        m_jsonDefinitionFrame->setVisible(!visualEditorEnabled);
-    } else {
-        if (m_jsonDefinitionLabel != nullptr) {
-            m_jsonDefinitionLabel->setVisible(!visualEditorEnabled);
-        }
-
-        if (m_definitionEdit != nullptr) {
-            m_definitionEdit->setVisible(!visualEditorEnabled);
-        }
-    }
-    if (layout() != nullptr) {
-        layout()->invalidate();
-        layout()->activate();
-    }
+    // Der visuelle Editor lebt im Reiter "Visuell" und ist immer verfügbar.
 }
 
 void WorkflowPanel::resetDebugger(const bool keepVisibilityState)
@@ -3650,22 +3617,14 @@ void WorkflowPanel::resetDebugger(const bool keepVisibilityState)
         m_debuggerStatusLabel->setText("Noch keine Debug-Ausfuehrung vorhanden.");
     }
 
-    if (!keepVisibilityState && m_debuggerToggle != nullptr) {
-        m_debuggerToggle->setChecked(false);
+    if (!keepVisibilityState && m_editorTabs != nullptr) {
+        m_editorTabs->setCurrentIndex(0);
     }
 }
 
 void WorkflowPanel::updateDebuggerVisibility()
 {
-    if (m_debuggerFrame == nullptr || m_debuggerToggle == nullptr) {
-        return;
-    }
-
-    m_debuggerFrame->setVisible(m_debuggerToggle->isChecked());
-    if (layout() != nullptr) {
-        layout()->invalidate();
-        layout()->activate();
-    }
+    // Der Debugger lebt im Reiter "Debugger" und ist immer verfügbar.
 }
 
 void WorkflowPanel::rebuildDebugStepList()

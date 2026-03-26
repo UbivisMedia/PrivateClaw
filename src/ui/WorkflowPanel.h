@@ -180,6 +180,7 @@ private:
     QLabel* m_debuggerStatusLabel = nullptr;
     QListWidget* m_debugStepList = nullptr;
     QTabWidget* m_debugDetailTabs = nullptr;
+    QTabWidget* m_editorTabs = nullptr;
     QPlainTextEdit* m_debugSummaryView = nullptr;
     QPlainTextEdit* m_debugVariablesView = nullptr;
     QPlainTextEdit* m_debugLogsView = nullptr;

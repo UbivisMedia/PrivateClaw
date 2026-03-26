@@ -12,6 +12,7 @@ class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QTabWidget;
 class QTextEdit;
 class QToolButton;
 
@@ -101,6 +102,7 @@ private:
     QCheckBox* m_confirmFileEditDiffCheck = nullptr;
     QCheckBox* m_confirmHttpRequestCheck = nullptr;
     QCheckBox* m_allowUnattendedRiskyToolsCheck = nullptr;
+    QTabWidget* m_projectTabs = nullptr;
     QLabel* m_feedbackLabel = nullptr;
     QString m_lastProviderName;
     std::function<void()> m_onProjectDataChanged;

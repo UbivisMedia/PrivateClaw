@@ -41,6 +41,19 @@
       }
     },
     {
+      "id": "setze_roman_originalwerk_leitplanke",
+      "type": "tool",
+      "name": "Originalwerk-Leitplanke fuer alle Prompt-Schritte setzen",
+      "config": {
+        "tool": "variables.set",
+        "name": "roman_originalwerk_leitplanke",
+        "value_type": "string",
+        "operation": "set",
+        "value": "Du bist Co-Autor und Entwicklungslektor fuer einen neuen Originalroman. Behandle den Titel \"{{roman_titel}}\" immer als Titel dieses neuen Projekts, auch wenn der Titel real bereits existiert oder aehnlich klingt. Nutze ausschliesslich die gegebene Praemisse, Projektvariablen und den Projektkontext. Keine Vergleiche mit realen Buechern, Filmen, Serien oder Franchises. Keine Warnungen oder Meta-Kommentare zu Bekanntheit, Originalitaet, Urheberrecht oder Verwechslungsgefahr. Kein Nachdenken darueber, ob der Titel schon existiert. Fuehre die angeforderte Schreibaufgabe direkt aus und halte dich exakt an das verlangte Ausgabeformat.",
+        "output": "roman_originalwerk_leitplanke_status"
+      }
+    },
+    {
       "id": "setze_szenen_pro_kapitel",
       "type": "tool",
       "name": "Szenen pro Kapitel definieren",
@@ -116,6 +129,7 @@
         "query": "",
         "entry_type": "character",
         "tags": "roman,{{roman_slug}},figuren,hauptcharaktere",
+        "tag_match_mode": "all",
         "limit": 6,
         "max_chars": 8000,
         "format": "full",
@@ -140,6 +154,7 @@
       "type": "prompt",
       "name": "Hauptcharaktere fuer Neustart planen",
       "config": {
+        "system_prompt": "{{roman_originalwerk_leitplanke}}",
         "prompt": "Erstelle fuer den Roman \"{{roman_titel}}\" eine belastbare Startliste der Hauptfiguren.\n\nPraemisse:\n{{roman_praemisse}}\n\nGib ausschliesslich JSON als Array zurueck. Maximal 6 Eintraege. Jeder Eintrag braucht diese String-Felder:\n- name\n- rolle\n- inneres_ziel\n- aeusseres_ziel\n- konflikt\n- stimme\n- geheimnis\n\nKein Markdown. Kein ```json. Kein Begleittext.\n\nBeispiel:\n[\n  {\n    \"name\": \"Mira\",\n    \"rolle\": \"Linguistin\",\n    \"inneres_ziel\": \"...\",\n    \"aeusseres_ziel\": \"...\",\n    \"konflikt\": \"...\",\n    \"stimme\": \"...\",\n    \"geheimnis\": \"...\"\n  }\n]",
         "output": "hauptcharaktere_seed_json"
       }
@@ -165,6 +180,7 @@
             "type": "prompt",
             "name": "Hauptfigur ausarbeiten",
             "config": {
+              "system_prompt": "{{roman_originalwerk_leitplanke}}",
               "prompt": "Arbeite die Hauptfigur fuer den Roman \"{{roman_titel}}\" praezise aus.\n\nStartdaten:\n- Name: {{figur.name}}\n- Rolle: {{figur.rolle}}\n- Inneres Ziel: {{figur.inneres_ziel}}\n- Aeusseres Ziel: {{figur.aeusseres_ziel}}\n- Konflikt: {{figur.konflikt}}\n- Stimme: {{figur.stimme}}\n- Geheimnis: {{figur.geheimnis}}\n\nLiefere eine kompakte, aber spaeter gut zitierbare Charakterkarte mit diesen Feldern:\n- Name\n- Rolle in der Geschichte\n- Inneres Ziel\n- Aeusseres Ziel\n- Zentraler Konflikt\n- Praegende Stimme oder Haltung\n- Geheimnis oder Verletzlichkeit\n- Beziehungspotenzial zu den anderen Hauptfiguren",
               "output": "figur_steckbrief"
             }
@@ -193,6 +209,7 @@
         "tool": "memory.search",
         "query": "",
         "tags": "roman,{{roman_slug}}",
+        "tag_match_mode": "all",
         "limit": 18,
         "max_chars": 22000,
         "format": "full",
@@ -230,6 +247,7 @@
       "type": "prompt",
       "name": "Szenenbeats planen",
       "config": {
+        "system_prompt": "{{roman_originalwerk_leitplanke}}",
         "prompt": "Projekt: {{roman_titel}}\nPraemisse: {{roman_praemisse}}\nAktueller Abschnitt: {{kapitel_szene_label}}\n\nBisheriger Kontext aus dem Gedaechtnis:\n{{story_kontext}}\n\nPlane die naechste Szene in 3 bis 5 klaren Beats. Gib ausschliesslich JSON als Array zurueck. Jeder Beat braucht diese String-Felder:\n- beat_titel\n- ziel\n- konflikt\n- wendung\n- fokusfigur\n- ort\n\nKein Markdown. Kein ```json. Kein Begleittext.\nDie Szene soll auf spaetere Extraktionen fuer Figuren, Orte und Ereignisse optimiert sein.",
         "output": "szenenbeats_json"
       }
@@ -255,6 +273,7 @@
             "type": "prompt",
             "name": "Beat in Romantext umsetzen",
             "config": {
+              "system_prompt": "{{roman_originalwerk_leitplanke}}",
               "prompt": "Schreibe den naechsten Abschnitt fuer die Szene \"{{kapitel_szene_label}}\".\n\nGesamtkontext:\n{{story_kontext}}\n\nAktueller Beat:\n- Titel: {{beat.beat_titel}}\n- Ziel: {{beat.ziel}}\n- Konflikt: {{beat.konflikt}}\n- Wendung: {{beat.wendung}}\n- Fokusfigur: {{beat.fokusfigur}}\n- Ort: {{beat.ort}}\n\nVorheriger direkt geschriebener Absatz:\n{{loop_prev_output}}\n\nRegeln:\n- schreibe nur den naechsten zusammenhaengenden Abschnitt fuer diesen Beat\n- aktive Darstellung statt Erklaertext\n- glaubwuerdige Dialoge mit Subtext, falls passend\n- fuehre neue Figuren, Orte oder plotrelevante Ereignisse klar benennbar ein\n- keine Ueberschriften, keine Vorrede",
               "output": "beat_abschnitt"
             }
@@ -293,6 +312,7 @@
       "type": "prompt",
       "name": "Nebencharaktere als JSON extrahieren",
       "config": {
+        "system_prompt": "{{roman_originalwerk_leitplanke}}",
         "prompt": "Vergleiche die neue Szene mit dem bisherigen Story-Kontext.\n\nKontext:\n{{story_kontext}}\n\nSzene:\n{{neue_szene}}\n\nGib ausschliesslich JSON als Array zurueck. Liefere nur neue oder deutlich veraenderte Nebencharaktere. Jeder Eintrag braucht diese String-Felder:\n- name\n- rolle\n- erster_eindruck\n- motivation\n- beziehung\n- story_relevanz\n\nWenn nichts Relevantes auftaucht, gib [] zurueck.\nKein Markdown. Kein ```json. Kein Begleittext.",
         "output": "nebencharaktere_json"
       }
@@ -333,6 +353,7 @@
       "type": "prompt",
       "name": "Orte als JSON extrahieren",
       "config": {
+        "system_prompt": "{{roman_originalwerk_leitplanke}}",
         "prompt": "Vergleiche die neue Szene mit dem bisherigen Story-Kontext.\n\nKontext:\n{{story_kontext}}\n\nSzene:\n{{neue_szene}}\n\nGib ausschliesslich JSON als Array zurueck. Liefere nur neue oder deutlich weiterentwickelte Orte. Jeder Eintrag braucht diese String-Felder:\n- name\n- funktion\n- atmosphaere\n- details\n- konsequenzen\n\nWenn nichts Relevantes auftaucht, gib [] zurueck.\nKein Markdown. Kein ```json. Kein Begleittext.",
         "output": "orte_json"
       }
@@ -373,6 +394,7 @@
       "type": "prompt",
       "name": "Plotrelevante Ereignisse als JSON extrahieren",
       "config": {
+        "system_prompt": "{{roman_originalwerk_leitplanke}}",
         "prompt": "Vergleiche die neue Szene mit dem bisherigen Story-Kontext.\n\nKontext:\n{{story_kontext}}\n\nSzene:\n{{neue_szene}}\n\nGib ausschliesslich JSON als Array zurueck. Liefere nur neue plotrelevante Ereignisse. Jeder Eintrag braucht diese String-Felder:\n- ereignis\n- direkte_auswirkung\n- betroffene_figuren\n- spaetere_folgen\n\nWenn nichts Relevantes auftaucht, gib [] zurueck.\nKein Markdown. Kein ```json. Kein Begleittext.",
         "output": "ereignisse_json"
       }
@@ -413,6 +435,7 @@
       "type": "prompt",
       "name": "Lektorats-Feedback generieren",
       "config": {
+        "system_prompt": "{{roman_originalwerk_leitplanke}}",
         "prompt": "Analysiere die folgende Szene als erfahrener Lektor. Gib vier klar getrennte Abschnitte:\n\nStaerken\nSchwaechen\nKonkrete Verbesserungsvorschlaege\nOffene Baustellen\n\nSzene:\n{{neue_szene}}",
         "output": "lektorat_feedback"
       }
@@ -434,6 +457,7 @@
       "type": "prompt",
       "name": "Offene Baustellen verdichten",
       "config": {
+        "system_prompt": "{{roman_originalwerk_leitplanke}}",
         "prompt": "Verdichte aus Szene und Lektorats-Feedback die offenen Baustellen fuer die naechsten Szenen. Liefere maximal 8 praezise Stichpunkte.\n\nSzene:\n{{neue_szene}}\n\nLektorats-Feedback:\n{{lektorat_feedback}}",
         "output": "offene_baustellen"
       }

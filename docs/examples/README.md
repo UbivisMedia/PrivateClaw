@@ -43,6 +43,7 @@ Zweck:
 - plant Szenenbeats als JSON und schreibt die Szene absatzweise ueber einen zweiten `workflow.foreach`
 - legt neue Nebencharaktere, Orte und plotrelevante Ereignisse gezielt als einzelne Memories an
 - aktualisiert den naechsten Kapitel-/Szenenstand direkt als persistente Projektvariable
+- legt alle Prompt-Schritte explizit auf ein neues Originalwerk fest, damit Titelgleichheiten mit bestehenden Werken nicht zu Meta-Schleifen fuehren
 
 Hinweis:
 
@@ -51,3 +52,6 @@ Der Workflow zeigt den neuen `workflow.foreach`-MVP in drei typischen Schreibpro
 - Figurenlisten in einzelne Character-Memories aufteilen
 - Szenen in Beats oder Absaetze zerlegen und wieder zusammensetzen
 - neue Entitaeten wie Nebencharaktere, Orte und Ereignisse einzeln persistieren
+
+Zusaetzlich nutzt das Beispiel fuer die relevanten `memory.search`-Schritte bewusst `tag_match_mode: "all"`,
+damit Story-Kontext wirklich nur zum aktuellen Roman-Slug geladen wird.

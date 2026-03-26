@@ -25,12 +25,12 @@ Wenn kein passender Abschnitt gefunden wird, faellt der Workflow automatisch auf
 - Decision-Schritte koennen jetzt auch numerisch vergleichen (`greater_than`, `greater_or_equal`, `less_than`, `less_or_equal`), sodass Workflow-Zaehler direkt nutzbar werden
 - Der Beispiel-Workflow fuer Romanszenen nutzt jetzt gezielte Foreach-Schleifen fuer Figuren-Bootstrap, beatweises Schreiben und entity-spezifische Memories
 - Der Romanschreiber-Beispielworkflow speichert Kapitel- und Szenenzaehler jetzt als Projektvariablen statt sie ueber Fortschritts-Memories wieder per KI auszulesen
+- Der Buchautor-Beispielworkflow verankert Prompt-Schritte jetzt explizit als neues Originalwerk und laedt Story-Memories mit strengem `tag_match_mode: "all"`, damit bekannte oder aehnliche Titel weniger leicht Meta-Schleifen ausloesen
 - Der Workflow-Editor nutzt jetzt einklappbare Bereiche fuer Metadaten, Canvas, Schrittdetails, JSON und Ausgaben, damit lange Workflows deutlich platzsparender bearbeitet werden koennen
 - Die linke Hauptnavigation laesst sich jetzt zu einer kompakten Icon-Leiste einklappen, um mehr Platz fuer Editor und Graph freizugeben
 - Eingeklappte Bereiche verteilen den freigewordenen Platz jetzt aktiv an die verbleibenden Editor-Bereiche weiter, statt Leeraum stehenzulassen
 - Projekt-, Memory-, Run- und Zeitplan-Ansichten nutzen jetzt ebenfalls einklappbare Hauptkarten, damit sich grosse Bereiche bei Bedarf gezielt ausblenden lassen
-- Das Schliessen ueber das Fenster-`X` beendet die App jetzt wieder direkt, waehrend ein eigener Toolbar-Button das bewusste Minimieren in den Tray uebernimmt
-- Die obere Workflow-Editor-Infokarte laesst sich jetzt ebenfalls einklappen, um dem eigentlichen Editor mehr Hoehe zu geben
+- Vollständige Reorganisation des Userinfaces
 
 ### Fixed
 

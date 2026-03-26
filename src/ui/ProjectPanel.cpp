@@ -24,6 +24,7 @@
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QTabWidget>
 #include <QTextEdit>
 #include <QVBoxLayout>
 
@@ -71,70 +72,9 @@ void ProjectPanel::buildUi()
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
 
-    const CollapsibleCardParts providerCard = createCollapsibleCard(this, "Provider-Verbindung", true);
-    auto* providerLayout = providerCard.bodyLayout;
-    auto* providerBody = new QLabel(
-        "Hier pruefen wir den aktuell gewaehlten Provider und laden dessen verfuegbare Modelle.",
-        providerCard.bodyFrame
-    );
-    providerBody->setProperty("sectionBody", true);
-    providerBody->setWordWrap(true);
-
-    m_providerEndpointLabel = new QLabel(providerCard.bodyFrame);
-    m_providerEndpointLabel->setProperty("sectionBody", true);
-
-    m_providerStatusLabel = new QLabel("Status: Noch nicht getestet.", providerCard.bodyFrame);
-    m_providerStatusLabel->setProperty("sectionBody", true);
-    m_providerStatusLabel->setWordWrap(true);
-
-    auto* testButton = new QPushButton("Provider testen", providerCard.bodyFrame);
-    auto* refreshModelsButton = new QPushButton("Modelle laden", providerCard.bodyFrame);
-
-    auto* providerButtonLayout = new QHBoxLayout();
-    providerButtonLayout->addWidget(testButton);
-    providerButtonLayout->addWidget(refreshModelsButton);
-    providerButtonLayout->addStretch();
-
-    providerLayout->addWidget(providerBody);
-    providerLayout->addWidget(m_providerEndpointLabel);
-    providerLayout->addWidget(m_providerStatusLabel);
-    providerLayout->addLayout(providerButtonLayout);
-
-    const CollapsibleCardParts allowedPathsCard = createCollapsibleCard(this, "Erlaubte Dateipfade", true);
-    auto* allowedPathsLayout = allowedPathsCard.bodyLayout;
-    auto* allowedPathsBody = new QLabel(
-        "Datei-Tools duerfen ausserhalb des Workspace nur auf hier freigegebene Pfade zugreifen. "
-        "Der Workspace selbst bleibt immer erlaubt.",
-        allowedPathsCard.bodyFrame
-    );
-    allowedPathsBody->setProperty("sectionBody", true);
-    allowedPathsBody->setWordWrap(true);
-
-    m_allowedPathInfoLabel = new QLabel(allowedPathsCard.bodyFrame);
-    m_allowedPathInfoLabel->setProperty("sectionBody", true);
-    m_allowedPathInfoLabel->setWordWrap(true);
-
-    m_allowedPathList = new QListWidget(allowedPathsCard.bodyFrame);
-    m_allowedPathList->setAlternatingRowColors(true);
-
-    auto* allowedPathInputLayout = new QHBoxLayout();
-    m_allowedPathEdit = new QLineEdit(allowedPathsCard.bodyFrame);
-    m_allowedPathEdit->setPlaceholderText("z. B. D:/ComfyUI/output");
-    auto* addAllowedPathButton = new QPushButton("Pfad hinzufuegen", allowedPathsCard.bodyFrame);
-    auto* removeAllowedPathButton = new QPushButton("Auswahl entfernen", allowedPathsCard.bodyFrame);
-    auto* refreshAllowedPathsButton = new QPushButton("Liste aktualisieren", allowedPathsCard.bodyFrame);
-    allowedPathInputLayout->addWidget(m_allowedPathEdit, 1);
-    allowedPathInputLayout->addWidget(addAllowedPathButton);
-    allowedPathInputLayout->addWidget(removeAllowedPathButton);
-    allowedPathInputLayout->addWidget(refreshAllowedPathsButton);
-
-    allowedPathsLayout->addWidget(allowedPathsBody);
-    allowedPathsLayout->addWidget(m_allowedPathInfoLabel);
-    allowedPathsLayout->addWidget(m_allowedPathList);
-    allowedPathsLayout->addLayout(allowedPathInputLayout);
-
     auto* contentSplitter = new QSplitter(Qt::Horizontal, this);
 
+    // --- Linke Seite: Projektliste ---
     const CollapsibleCardParts listCard = createCollapsibleCard(contentSplitter, "Projekte", true);
     auto* listLayout = listCard.bodyLayout;
     auto* listBody = new QLabel(
@@ -157,48 +97,104 @@ void ProjectPanel::buildUi()
     listLayout->addWidget(m_projectList, 1);
     listLayout->addWidget(refreshButton, 0, Qt::AlignLeft);
 
-    auto* formScrollArea = new QScrollArea(contentSplitter);
-    formScrollArea->setWidgetResizable(true);
-    formScrollArea->setFrameShape(QFrame::NoFrame);
-    formScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // --- Rechte Seite: Tab-Widget ---
+    m_projectTabs = new QTabWidget(contentSplitter);
 
-    const CollapsibleCardParts formCard = createCollapsibleCard(formScrollArea, "Neues Projekt anlegen", true);
-    auto* formOuterLayout = formCard.bodyLayout;
-    formOuterLayout->setSizeConstraint(QLayout::SetMinAndMaxSize);
-    m_formTitleButton = formCard.toggleButton;
-
-    auto* formBody = new QLabel(
-        "Name, Provider, Standardmodell und Systemprompt werden direkt in SQLite gespeichert.",
-        formCard.bodyFrame
-    );
-    formBody->setProperty("sectionBody", true);
-    formBody->setWordWrap(true);
+    // --- Reiter 0: Eigenschaften ---
+    auto* eigenschaftenWidget = new QWidget(m_projectTabs);
+    auto* eigenschaftenLayout = new QVBoxLayout(eigenschaftenWidget);
+    eigenschaftenLayout->setContentsMargins(12, 12, 12, 12);
 
     auto* formLayout = new QFormLayout();
     formLayout->setLabelAlignment(Qt::AlignLeft);
 
-    m_nameEdit = new QLineEdit(formCard.bodyFrame);
+    m_nameEdit = new QLineEdit(eigenschaftenWidget);
     m_nameEdit->setPlaceholderText("z. B. PrivateClaw MVP");
 
-    m_providerCombo = new QComboBox(formCard.bodyFrame);
+    m_providerCombo = new QComboBox(eigenschaftenWidget);
 
-    m_providerBaseUrlEdit = new QLineEdit(formCard.bodyFrame);
+    m_providerBaseUrlEdit = new QLineEdit(eigenschaftenWidget);
     m_providerBaseUrlEdit->setPlaceholderText("http://127.0.0.1:11434");
 
-    m_modelCombo = new QComboBox(formCard.bodyFrame);
+    m_modelCombo = new QComboBox(eigenschaftenWidget);
     m_modelCombo->setEditable(true);
     m_modelCombo->setInsertPolicy(QComboBox::NoInsert);
     m_modelCombo->setPlaceholderText("Modell des gewaehlten Providers auswaehlen oder eintragen");
 
-    m_descriptionEdit = new QTextEdit(formCard.bodyFrame);
+    m_descriptionEdit = new QTextEdit(eigenschaftenWidget);
     m_descriptionEdit->setPlaceholderText("Kurzbeschreibung des Projekts");
-    m_descriptionEdit->setMinimumHeight(90);
+    m_descriptionEdit->setMinimumHeight(60);
 
-    m_systemPromptEdit = new QTextEdit(formCard.bodyFrame);
+    m_systemPromptEdit = new QTextEdit(eigenschaftenWidget);
     m_systemPromptEdit->setPlaceholderText("Optionaler Systemprompt fuer das Projekt");
-    m_systemPromptEdit->setMinimumHeight(120);
+    m_systemPromptEdit->setMinimumHeight(60);
 
-    auto* policyWidget = new QWidget(formCard.bodyFrame);
+    formLayout->addRow("Name", m_nameEdit);
+    formLayout->addRow("Provider", m_providerCombo);
+    formLayout->addRow("Provider-URL", m_providerBaseUrlEdit);
+    formLayout->addRow("Standardmodell", m_modelCombo);
+    formLayout->addRow("Beschreibung", m_descriptionEdit);
+    formLayout->addRow("Systemprompt", m_systemPromptEdit);
+
+    auto* actionLayout = new QHBoxLayout();
+    auto* saveButton = new QPushButton("Projekt speichern", eigenschaftenWidget);
+    auto* deleteButton = new QPushButton("Projekt loeschen", eigenschaftenWidget);
+    auto* clearButton = new QPushButton("Formular leeren", eigenschaftenWidget);
+    actionLayout->addWidget(saveButton);
+    actionLayout->addWidget(deleteButton);
+    actionLayout->addWidget(clearButton);
+    actionLayout->addStretch();
+
+    m_feedbackLabel = new QLabel(eigenschaftenWidget);
+    m_feedbackLabel->setProperty("sectionBody", true);
+    m_feedbackLabel->setWordWrap(true);
+
+    eigenschaftenLayout->addLayout(formLayout);
+    eigenschaftenLayout->addLayout(actionLayout);
+    eigenschaftenLayout->addWidget(m_feedbackLabel);
+    eigenschaftenLayout->addStretch();
+    m_projectTabs->addTab(eigenschaftenWidget, "Eigenschaften");
+
+    // --- Reiter 1: Provider ---
+    auto* providerWidget = new QWidget(m_projectTabs);
+    auto* providerTabLayout = new QVBoxLayout(providerWidget);
+    providerTabLayout->setContentsMargins(12, 12, 12, 12);
+
+    auto* providerBody = new QLabel(
+        "Hier pruefen wir den aktuell gewaehlten Provider und laden dessen verfuegbare Modelle.",
+        providerWidget
+    );
+    providerBody->setProperty("sectionBody", true);
+    providerBody->setWordWrap(true);
+
+    m_providerEndpointLabel = new QLabel(providerWidget);
+    m_providerEndpointLabel->setProperty("sectionBody", true);
+
+    m_providerStatusLabel = new QLabel("Status: Noch nicht getestet.", providerWidget);
+    m_providerStatusLabel->setProperty("sectionBody", true);
+    m_providerStatusLabel->setWordWrap(true);
+
+    auto* testButton = new QPushButton("Provider testen", providerWidget);
+    auto* refreshModelsButton = new QPushButton("Modelle laden", providerWidget);
+
+    auto* providerButtonLayout = new QHBoxLayout();
+    providerButtonLayout->addWidget(testButton);
+    providerButtonLayout->addWidget(refreshModelsButton);
+    providerButtonLayout->addStretch();
+
+    providerTabLayout->addWidget(providerBody);
+    providerTabLayout->addWidget(m_providerEndpointLabel);
+    providerTabLayout->addWidget(m_providerStatusLabel);
+    providerTabLayout->addLayout(providerButtonLayout);
+    providerTabLayout->addStretch();
+    m_projectTabs->addTab(providerWidget, "Provider");
+
+    // --- Reiter 2: Sicherheit ---
+    auto* sicherheitWidget = new QWidget(m_projectTabs);
+    auto* sicherheitLayout = new QVBoxLayout(sicherheitWidget);
+    sicherheitLayout->setContentsMargins(12, 12, 12, 12);
+
+    auto* policyWidget = new QWidget(sicherheitWidget);
     auto* policyLayout = new QVBoxLayout(policyWidget);
     policyLayout->setContentsMargins(0, 0, 0, 0);
     policyLayout->setSpacing(6);
@@ -227,85 +223,88 @@ void ProjectPanel::buildUi()
     policyLayout->addWidget(m_confirmHttpRequestCheck);
     policyLayout->addWidget(m_allowUnattendedRiskyToolsCheck);
 
-    formLayout->addRow("Name", m_nameEdit);
-    formLayout->addRow("Provider", m_providerCombo);
-    formLayout->addRow("Provider-URL", m_providerBaseUrlEdit);
-    formLayout->addRow("Standardmodell", m_modelCombo);
-    formLayout->addRow("Beschreibung", m_descriptionEdit);
-    formLayout->addRow("Systemprompt", m_systemPromptEdit);
-    formLayout->addRow("Sicherheitsrichtlinien", policyWidget);
+    auto* allowedPathsBody = new QLabel(
+        "Datei-Tools duerfen ausserhalb des Workspace nur auf hier freigegebene Pfade zugreifen. "
+        "Der Workspace selbst bleibt immer erlaubt.",
+        sicherheitWidget
+    );
+    allowedPathsBody->setProperty("sectionBody", true);
+    allowedPathsBody->setWordWrap(true);
 
-    auto* actionLayout = new QHBoxLayout();
-    auto* saveButton = new QPushButton("Projekt speichern", formCard.bodyFrame);
-    auto* deleteButton = new QPushButton("Projekt loeschen", formCard.bodyFrame);
-    auto* clearButton = new QPushButton("Formular leeren", formCard.bodyFrame);
-    actionLayout->addWidget(saveButton);
-    actionLayout->addWidget(deleteButton);
-    actionLayout->addWidget(clearButton);
-    actionLayout->addStretch();
+    m_allowedPathInfoLabel = new QLabel(sicherheitWidget);
+    m_allowedPathInfoLabel->setProperty("sectionBody", true);
+    m_allowedPathInfoLabel->setWordWrap(true);
+
+    m_allowedPathList = new QListWidget(sicherheitWidget);
+    m_allowedPathList->setAlternatingRowColors(true);
+
+    auto* allowedPathInputLayout = new QHBoxLayout();
+    m_allowedPathEdit = new QLineEdit(sicherheitWidget);
+    m_allowedPathEdit->setPlaceholderText("z. B. D:/ComfyUI/output");
+    auto* addAllowedPathButton = new QPushButton("Pfad hinzufuegen", sicherheitWidget);
+    auto* removeAllowedPathButton = new QPushButton("Auswahl entfernen", sicherheitWidget);
+    auto* refreshAllowedPathsButton = new QPushButton("Liste aktualisieren", sicherheitWidget);
+    allowedPathInputLayout->addWidget(m_allowedPathEdit, 1);
+    allowedPathInputLayout->addWidget(addAllowedPathButton);
+    allowedPathInputLayout->addWidget(removeAllowedPathButton);
+    allowedPathInputLayout->addWidget(refreshAllowedPathsButton);
+
+    sicherheitLayout->addWidget(policyWidget);
+    sicherheitLayout->addSpacing(12);
+    sicherheitLayout->addWidget(allowedPathsBody);
+    sicherheitLayout->addWidget(m_allowedPathInfoLabel);
+    sicherheitLayout->addWidget(m_allowedPathList, 1);
+    sicherheitLayout->addLayout(allowedPathInputLayout);
+    m_projectTabs->addTab(sicherheitWidget, "Sicherheit");
+
+    // --- Reiter 3: Secrets ---
+    auto* secretsWidget = new QWidget(m_projectTabs);
+    auto* secretsLayout = new QVBoxLayout(secretsWidget);
+    secretsLayout->setContentsMargins(12, 12, 12, 12);
 
     auto* secretBody = new QLabel(
         "API-Keys und andere Zugangsdaten werden lokal verschluesselt gespeichert. "
         "Im Workflow kannst du sie als {{secret.name}} verwenden.",
-        formCard.bodyFrame
+        secretsWidget
     );
     secretBody->setProperty("sectionBody", true);
     secretBody->setWordWrap(true);
 
-    m_secretInfoLabel = new QLabel(formCard.bodyFrame);
+    m_secretInfoLabel = new QLabel(secretsWidget);
     m_secretInfoLabel->setProperty("sectionBody", true);
     m_secretInfoLabel->setWordWrap(true);
 
-    m_secretList = new QListWidget(formCard.bodyFrame);
+    m_secretList = new QListWidget(secretsWidget);
     m_secretList->setAlternatingRowColors(true);
-    m_secretList->setMinimumHeight(120);
 
     auto* secretInputLayout = new QHBoxLayout();
-    m_secretNameEdit = new QLineEdit(formCard.bodyFrame);
+    m_secretNameEdit = new QLineEdit(secretsWidget);
     m_secretNameEdit->setPlaceholderText("z. B. comfy_api_key");
-    m_secretValueEdit = new QLineEdit(formCard.bodyFrame);
+    m_secretValueEdit = new QLineEdit(secretsWidget);
     m_secretValueEdit->setEchoMode(QLineEdit::Password);
     m_secretValueEdit->setPlaceholderText("Secret-Wert eingeben oder zum Ueberschreiben neu setzen");
     secretInputLayout->addWidget(m_secretNameEdit, 1);
     secretInputLayout->addWidget(m_secretValueEdit, 1);
 
     auto* secretButtonLayout = new QHBoxLayout();
-    auto* saveSecretButton = new QPushButton("Secret speichern", formCard.bodyFrame);
-    auto* deleteSecretButton = new QPushButton("Secret loeschen", formCard.bodyFrame);
-    auto* clearSecretButton = new QPushButton("Secret leeren", formCard.bodyFrame);
+    auto* saveSecretButton = new QPushButton("Secret speichern", secretsWidget);
+    auto* deleteSecretButton = new QPushButton("Secret loeschen", secretsWidget);
+    auto* clearSecretButton = new QPushButton("Secret leeren", secretsWidget);
     secretButtonLayout->addWidget(saveSecretButton);
     secretButtonLayout->addWidget(deleteSecretButton);
     secretButtonLayout->addWidget(clearSecretButton);
     secretButtonLayout->addStretch();
 
-    m_feedbackLabel = new QLabel(formCard.bodyFrame);
-    m_feedbackLabel->setProperty("sectionBody", true);
-    m_feedbackLabel->setWordWrap(true);
-
-    formOuterLayout->addWidget(formBody);
-
-    const CollapsibleCardParts projectDetailsCard = createCollapsibleCard(formCard.bodyFrame, "Projektdetails", true);
-    projectDetailsCard.bodyLayout->addLayout(formLayout);
-    projectDetailsCard.bodyLayout->addLayout(actionLayout);
-
-    const CollapsibleCardParts projectSecretsCard = createCollapsibleCard(formCard.bodyFrame, "Projekt-Secrets", true);
-    projectSecretsCard.bodyLayout->addWidget(secretBody);
-    projectSecretsCard.bodyLayout->addWidget(m_secretInfoLabel);
-    projectSecretsCard.bodyLayout->addWidget(m_secretList);
-    projectSecretsCard.bodyLayout->addLayout(secretInputLayout);
-    projectSecretsCard.bodyLayout->addLayout(secretButtonLayout);
-
-    formOuterLayout->addWidget(projectDetailsCard.frame);
-    formOuterLayout->addWidget(projectSecretsCard.frame);
-    formOuterLayout->addWidget(m_feedbackLabel);
-    formOuterLayout->addStretch();
-    formScrollArea->setWidget(formCard.frame);
+    secretsLayout->addWidget(secretBody);
+    secretsLayout->addWidget(m_secretInfoLabel);
+    secretsLayout->addWidget(m_secretList, 1);
+    secretsLayout->addLayout(secretInputLayout);
+    secretsLayout->addLayout(secretButtonLayout);
+    m_projectTabs->addTab(secretsWidget, "Secrets");
 
     contentSplitter->setStretchFactor(0, 3);
     contentSplitter->setStretchFactor(1, 4);
 
-    layout->addWidget(providerCard.frame);
-    layout->addWidget(allowedPathsCard.frame);
     layout->addWidget(contentSplitter, 1);
 
     connect(refreshButton, &QPushButton::clicked, this, [this]() {
@@ -526,7 +525,9 @@ void ProjectPanel::loadProjectFromRow(const int row)
 
     const domain::Project& project = m_projects.at(row);
     m_currentProjectId = project.id;
-    m_formTitleButton->setText("Projekt bearbeiten");
+    if (m_formTitleButton != nullptr) {
+        m_formTitleButton->setText("Projekt bearbeiten");
+    }
     m_nameEdit->setText(project.name);
     populateProviderChoices(project.providerName);
     const QString providerBaseUrl = project.providerBaseUrl.trimmed().isEmpty()
@@ -1004,7 +1005,9 @@ void ProjectPanel::clearForm()
         const QSignalBlocker blocker(m_projectList);
         m_projectList->setCurrentRow(-1);
     }
-    m_formTitleButton->setText("Neues Projekt anlegen");
+    if (m_formTitleButton != nullptr) {
+        m_formTitleButton->setText("Neues Projekt anlegen");
+    }
     m_nameEdit->clear();
     populateProviderChoices("Ollama");
     if (m_providerBaseUrlEdit != nullptr) {
